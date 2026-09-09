@@ -1,0 +1,1 @@
+ALTER TABLE `settings` ADD `cross_channel_messages` integer DEFAULT 30 NOT NULL;

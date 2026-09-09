@@ -1,0 +1,12 @@
+# Local development only. The base compose file keeps Chroma unreachable from
+# the host, which is what you want when the bot runs in Docker too. When you
+# run the server with `npm run dev` instead, it sits outside the compose
+# network and needs a way in:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d chromadb
+#
+# Never layer this file onto a deployment.
+services:
+  chromadb:
+    ports:
+      - "8000:8000"

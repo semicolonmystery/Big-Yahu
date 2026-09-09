@@ -1,0 +1,2 @@
+ALTER TABLE `settings` ADD `rate_limit_per_hour` integer DEFAULT 40 NOT NULL;--> statement-breakpoint
+ALTER TABLE `settings` ADD `rate_limit_message` text DEFAULT 'You''ve hit me up a lot this hour — give me a bit and try again.' NOT NULL;

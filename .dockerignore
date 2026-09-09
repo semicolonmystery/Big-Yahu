@@ -1,0 +1,8 @@
+node_modules
+dist
+data
+chroma_data
+.env
+.git
+*.sqlite3
+*.sqlite3-*

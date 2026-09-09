@@ -1,0 +1,1 @@
+ALTER TABLE `settings` ADD `duplicate_distance` integer DEFAULT 25 NOT NULL;

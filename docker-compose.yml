@@ -1,0 +1,39 @@
+# Bind mounts are relative to this file, so `docker compose up -d` works from a
+# plain clone. HOST_WORKSPACE_FOLDER only needs setting when the Docker daemon
+# runs outside this filesystem (e.g. a devcontainer talking to the host daemon),
+# where it must hold the host-side path of this directory.
+
+services:
+  # No published port: only the bot talks to Chroma, and it does so over the
+  # compose network by service name. Nothing is exposed to the host.
+  chromadb:
+    image: chromadb/chroma:latest
+    restart: unless-stopped
+    volumes:
+      - ${HOST_WORKSPACE_FOLDER:-.}/chroma_data:/data
+    environment:
+      IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /data
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - chromadb
+    ports:
+      - "3000:3000"
+    # DISCORD_TOKEN, DISCORD_GUILD_ID and GEMINI_API_KEY come from here.
+    env_file:
+      - .env
+    environment:
+      # Set after env_file, so these win over whatever .env holds. Chroma is
+      # reached by service name on the compose network, so it needs no
+      # configuring by hand and no port on the host. The SQLite file lives on
+      # the mounted volume rather than inside the image.
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      SQLITE_PATH: /app/data/big-yahu.sqlite3
+      NODE_ENV: production
+      PORT: "3000"
+    volumes:
+      - ${HOST_WORKSPACE_FOLDER:-.}/data:/app/data

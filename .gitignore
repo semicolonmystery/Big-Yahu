@@ -1,0 +1,61 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+dist-ssr
+*.tsbuildinfo
+
+# Secrets — never commit real credentials
+.env
+.env.*
+!.env.example
+
+# Runtime data stores (SQLite file + Chroma's persisted volume)
+data/
+chroma_data/
+*.sqlite3
+*.sqlite3-*
+*.db
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Test / tooling output
+coverage
+playwright-report
+test-results
+.cache
+
+# Agent and assistant tooling. None of it is part of the project: it is
+# per-machine setup that each person regenerates for whatever they happen to
+# use, and committing one contributor's choice of tools onto everyone else is
+# noise at best. CLAUDE.md is deliberately not here — it documents how to work
+# in this repo, which is the project's business.
+.agents/
+.claude/
+.mcp.json
+skills-lock.json
+mempalace.yaml
+entities.json
+
+# Editor / OS
+*.local
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Dev environment scaffolding, specific to this machine
+.devcontainer/

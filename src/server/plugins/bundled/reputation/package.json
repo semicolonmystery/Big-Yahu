@@ -1,0 +1,11 @@
+{
+  "name": "reputation",
+  "version": "1.0.0",
+  "description": "Tracks how each person treats the bot over time, and quietly shapes how much effort they get back.",
+  "main": "index.ts",
+  "type": "module",
+  "bigYahu": {
+    "displayName": "Reputation",
+    "apiVersion": 1
+  }
+}

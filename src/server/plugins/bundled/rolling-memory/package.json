@@ -1,0 +1,11 @@
+{
+  "name": "rolling-memory",
+  "version": "1.0.0",
+  "description": "A short working memory of what is going on right now, measured in messages rather than time.",
+  "main": "index.ts",
+  "type": "module",
+  "bigYahu": {
+    "displayName": "Rolling Memory",
+    "apiVersion": 1
+  }
+}

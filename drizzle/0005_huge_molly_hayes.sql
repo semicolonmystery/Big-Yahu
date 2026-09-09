@@ -1,0 +1,1 @@
+ALTER TABLE `settings` ADD `timezone` text DEFAULT 'UTC' NOT NULL;

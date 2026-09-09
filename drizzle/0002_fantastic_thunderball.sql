@@ -1,0 +1,1 @@
+ALTER TABLE `settings` ADD `reply_language` text DEFAULT 'en' NOT NULL;
