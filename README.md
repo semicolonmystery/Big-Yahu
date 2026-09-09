@@ -62,6 +62,21 @@ Two plugins ship with it, both off until you turn them on:
   forget where it was. Anything still worth keeping when it runs out is
   promoted into permanent memory.
 
+## Licence
+
+[PolyForm Noncommercial 1.0.0](LICENSE). Use it, change it, run it for your
+server, build on it and share what you build — all of that is fine, for any
+noncommercial purpose. Charities, schools and public institutions count as
+noncommercial whatever their funding.
+
+What it does not allow is making money from it. If you want to run it
+commercially, sell it, or build a paid service on top, ask me and we can agree
+terms.
+
+Note that this is deliberately **not** an open source licence in the OSI sense,
+since it discriminates against commercial use. If that matters for what you are
+doing, it is better to know now than after you have written a plugin.
+
 ## Requirements
 
 - Docker and Docker Compose
