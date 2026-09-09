@@ -6,6 +6,8 @@ import type { AppSettings } from '@shared/types';
 
 const ROW_ID = 1;
 
+export class SettingsValidationError extends Error {}
+
 export function getSettings(): AppSettings {
   const row = db.select().from(settings).where(eq(settings.id, ROW_ID)).get();
   if (!row) {
@@ -39,6 +41,7 @@ const BOUNDS: Record<NumericSetting, { min: number; max: number }> = {
   modelFailureThreshold: { min: 1, max: 20 },
   modelRestMinutes: { min: 1, max: 24 * 60 },
   maxImages: { min: 0, max: 16 },
+  textAttachmentMaxKb: { min: 0, max: 64 },
   // 0 is meaningful: it switches cross-channel reading off entirely.
   crossChannelMessages: { min: 0, max: 100 },
 };
@@ -59,22 +62,23 @@ export function updateSettings(patch: Partial<AppSettings>): AppSettings {
   for (const [key, bounds] of Object.entries(BOUNDS) as [NumericSetting, { min: number; max: number }][]) {
     const value = patch[key];
     if (value === undefined) continue;
-    if (!Number.isInteger(value)) throw new Error(`${key} must be an integer`);
+    if (!Number.isInteger(value)) throw new SettingsValidationError(`${key} must be an integer`);
     next[key] = Math.min(bounds.max, Math.max(bounds.min, value));
   }
 
   for (const key of BOOLEAN_SETTINGS) {
     const value = patch[key];
     if (value === undefined) continue;
-    if (typeof value !== 'boolean') throw new Error(`${key} must be true or false`);
+    if (typeof value !== 'boolean') throw new SettingsValidationError(`${key} must be true or false`);
     next[key] = value;
   }
 
   for (const [key, maxLength] of Object.entries(TEXT_LIMITS) as [TextSetting, number][]) {
     const value = patch[key];
     if (value === undefined) continue;
+    if (typeof value !== 'string') throw new SettingsValidationError(`${key} must be a string`);
     const trimmed = value.trim();
-    if (!trimmed) throw new Error(`${key} cannot be empty`);
+    if (!trimmed) throw new SettingsValidationError(`${key} cannot be empty`);
     next[key] = trimmed.slice(0, maxLength);
   }
 
@@ -82,12 +86,12 @@ export function updateSettings(patch: Partial<AppSettings>): AppSettings {
     try {
       new Intl.DateTimeFormat('en-GB', { timeZone: next.timezone });
     } catch {
-      throw new Error(`Unknown timezone: ${patch.timezone}`);
+      throw new SettingsValidationError(`Unknown timezone: ${patch.timezone}`);
     }
   }
 
   if (patch.replyLanguage !== undefined && !LANGUAGES.some((language) => language.code === next.replyLanguage)) {
-    throw new Error(`Unsupported language: ${patch.replyLanguage}`);
+    throw new SettingsValidationError(`Unsupported language: ${patch.replyLanguage}`);
   }
 
   db.update(settings).set({ ...next, updatedAt: Date.now() }).where(eq(settings.id, ROW_ID)).run();

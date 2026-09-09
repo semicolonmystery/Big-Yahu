@@ -1,0 +1,1 @@
+ALTER TABLE `settings` ADD `text_attachment_max_kb` integer DEFAULT 16 NOT NULL;

@@ -18,3 +18,8 @@ export type Db = typeof db;
 export function runMigrations(): void {
   migrate(db, { migrationsFolder: path.resolve('./drizzle') });
 }
+
+/** Call only after HTTP handlers, message handlers and extraction have drained. */
+export function closeDatabase(): void {
+  if (sqlite.open) sqlite.close();
+}

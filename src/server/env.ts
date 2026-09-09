@@ -2,39 +2,47 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-function optional(name: string): string | undefined {
-  const value = process.env[name];
-  return value && value.length > 0 ? value : undefined;
+/** Validate before opening databases, listening, or connecting to Discord. */
+export function parseEnvironment(values: NodeJS.ProcessEnv) {
+  const optional = (name: string): string | undefined => values[name]?.trim() || undefined;
+  const integer = (name: string, fallback: number, min: number, max: number): number => {
+    const raw = optional(name);
+    if (raw === undefined) return fallback;
+    const value = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < min || value > max) {
+      throw new Error(`${name} must be an integer between ${min} and ${max}`);
+    }
+    return value;
+  };
+  const discordToken = optional('DISCORD_TOKEN');
+  const discordGuildId = optional('DISCORD_GUILD_ID');
+  const geminiApiKey = optional('GEMINI_API_KEY');
+  if (discordGuildId && (!/^[1-9]\d{16,19}$/.test(discordGuildId) || BigInt(discordGuildId) > 18446744073709551615n)) {
+    throw new Error('DISCORD_GUILD_ID must be a valid Discord server ID');
+  }
+  if (discordToken && !discordGuildId) {
+    throw new Error('DISCORD_GUILD_ID is required when DISCORD_TOKEN is set; this bot serves one server only');
+  }
+  if (discordToken && !geminiApiKey) {
+    throw new Error('GEMINI_API_KEY is required when DISCORD_TOKEN is set');
+  }
+  return {
+    discordToken,
+    discordGuildId,
+    geminiApiKey,
+    chromaHost: optional('CHROMA_HOST') ?? 'localhost',
+    chromaPort: integer('CHROMA_PORT', 8000, 1, 65535),
+    sqlitePath: optional('SQLITE_PATH') ?? './data/big-yahu.sqlite3',
+    port: integer('PORT', 3000, 1, 65535),
+    isProduction: values.NODE_ENV === 'production',
+    // Exact proxy hop count, never blanket trust of client-supplied forwarding headers.
+    trustedProxyHops: integer('TRUSTED_PROXY_HOPS', 0, 0, Number.MAX_SAFE_INTEGER),
+  };
 }
 
-export const env = {
-  discordToken: optional('DISCORD_TOKEN'),
-  discordGuildId: optional('DISCORD_GUILD_ID'),
-  geminiApiKey: optional('GEMINI_API_KEY'),
-  chromaHost: process.env.CHROMA_HOST ?? 'localhost',
-  chromaPort: Number(process.env.CHROMA_PORT ?? 8000),
-  sqlitePath: process.env.SQLITE_PATH ?? './data/big-yahu.sqlite3',
-  port: Number(process.env.PORT ?? 3000),
-  isProduction: process.env.NODE_ENV === 'production',
-  /**
-   * How many reverse proxies sit in front of this instance. 0 means none, which
-   * is what `docker compose up` gives you.
-   *
-   * It is a count rather than a boolean because `X-Forwarded-For` is a list the
-   * client can prepend to. Telling Express to trust the whole header lets anyone
-   * claim any address; telling it exactly how many hops are yours makes it count
-   * that many from the right, past anything the caller wrote. Set it to 1 behind
-   * a single nginx, 2 behind nginx behind Cloudflare, and so on.
-   */
-  trustedProxyHops: Math.max(0, Math.trunc(Number(process.env.TRUSTED_PROXY_HOPS ?? 0)) || 0),
-};
+export const env = parseEnvironment(process.env);
 
-/**
- * With DISCORD_GUILD_ID set, this instance serves that guild only and ignores
- * every other one — so several instances can share a bot account, each doing
- * no work for guilds that are not theirs.
- */
+/** Missing configuration is closed, including in admin-only mode. */
 export function isServedGuild(guildId: string | null): boolean {
-  if (!env.discordGuildId) return true;
-  return guildId === env.discordGuildId;
+  return Boolean(env.discordGuildId) && guildId === env.discordGuildId;
 }

@@ -30,6 +30,11 @@ how it behaves.
   with the text, each labelled with the message it came from, for replies and
   for the periodic scan alike. Capped and switchable, since vision is the
   expensive part of a call.
+- **Reads message.txt.** UTF-8 Discord attachments named `message.txt` are read
+  as labelled message content. Settings controls their maximum size (16 KiB by
+  default, 0 to disable, hard cap 64 KiB). One context shares a 64 KiB budget,
+  at most eight files and two files per message. Downloads time out after five
+  seconds, reject redirects and stop at the byte limit while streaming.
 - **Reads the room.** Transcripts carry who is replying to whom, so interleaved
   conversations can be told apart, and it can see who is around and what they
   are playing.
@@ -39,9 +44,8 @@ how it behaves.
 - **Handles rate limits.** Retries transient Gemini errors with a configurable
   count and delay, and falls back to a message you choose if it stays down.
   Per-user hourly reply caps are configurable too.
-- **One guild per instance.** With `DISCORD_GUILD_ID` set, an instance ignores
-  every other guild before doing any work, so the same bot account can back
-  several instances without them tripping over each other.
+- **One guild.** `DISCORD_GUILD_ID` is required in bot mode. Every other guild
+  is ignored before any work, and an absent guild never enables a global mode.
 - **Per-channel control.** Reading for facts and replying are separate switches
   per channel, enforced in the message handler and the scheduler alike. Replying
   is on by default; **reading is off** until you enable it channel by channel,
@@ -80,7 +84,7 @@ doing, it is better to know now than after you have written a plugin.
 ## Requirements
 
 - Docker and Docker Compose
-- A Discord bot token, with the **Message Content** intent enabled
+- A Discord bot token, with **Message Content** and **Presence** intents enabled
 - A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
 
 ## Getting started
@@ -100,8 +104,8 @@ docker compose up -d
 Open <http://localhost:3000>. On first run the panel asks you to create the
 admin account.
 
-Invite the bot to your server with the **Message Content** intent enabled in
-the Discord Developer Portal, otherwise it cannot read anything.
+Enable the **Message Content** and **Presence** privileged intents in the
+Discord Developer Portal before starting the bot.
 
 ## Configuration
 
@@ -128,10 +132,10 @@ hit.
 
 ## Development
 
-Requires Node 24.
+Requires Node 24. The version is also enforced in `package.json`.
 
 ```bash
-npm install
+npm ci
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d chromadb
 npm run dev
 ```
@@ -146,10 +150,42 @@ and should never be layered onto a deployment.
 ```bash
 npm run build   # typechecks client and server, then builds the UI
 npm run lint    # oxlint
+npm run check   # build, test typechecking, lint and coverage
+npm test        # offline unit, component and HTTP/SQLite regression tests
+npm run test:coverage
+npx playwright install chromium
+npm run test:e2e # real browser + isolated admin server, no Discord/Gemini calls
 ```
 
 Database migrations are generated with `npx drizzle-kit generate` and applied
 automatically when the server starts.
+
+The bot requires exactly one `DISCORD_GUILD_ID` and a Gemini key whenever a
+Discord token is configured. Enable both Message Content and Presence intents
+in the Discord developer portal. With no Discord token, the admin panel can run
+on its own. `/api/health` checks SQLite and, in bot mode, Discord and Chroma.
+
+Core memory writes from replies respect the channel's read-for-facts switch. Core
+retrieval also hides facts and source messages from channels whose reading has
+been disabled; existing stored records are preserved for the admin to manage.
+The per-user hourly limit counts admitted AI work, including failed and silent
+attempts, and survives restart. Only one reply per user and four replies total
+can be in flight. Each reply has a 24-request AI budget and a two-minute AI
+deadline; retries and embeddings count towards that budget.
+Chroma requests have fresh ten-second timeouts and inherit the reply deadline.
+Waiting for retries or queued memory writes also stops when that deadline expires.
+
+For an isolated Chroma check, set `CHROMA_HOST` and `CHROMA_PORT` to a test server
+and run `npm run test:integration`. It uses deterministic embeddings and its own
+temporary collection, never a Gemini key or the bot's facts collection. CI runs
+Windows/Linux checks, the browser flow, a real Chroma check, and production
+image startup/shutdown.
+
+Before upgrading an existing deployment, stop the bot and back up both `data/`
+and `chroma_data/`, including the generated plugin encryption key. Chroma is
+pinned; use `CHROMA_IMAGE` to retain an existing server image until its upgrade
+has been tested against a backup. Plugin code and its lifecycle are maintained
+separately from the core reliability changes.
 
 ### Running inside a devcontainer
 

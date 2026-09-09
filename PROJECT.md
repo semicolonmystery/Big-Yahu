@@ -1,5 +1,21 @@
 # Big Yahu
 
+## Reliability and attachment work (September 2026)
+
+| Work | Status | Scope |
+|---|---|---|
+| Durable fact updates, batch dedupe and bounded extraction | IMPL | Preserve IDs and existing facts on outages; serialize mutations; checkpoint successful pages |
+| Gemini tool dispatch and admission limits | IMPL | Pair every call/result; preserve signatures; durable reservations and bounded AI work |
+| Bounded message.txt attachments | IMPL | Configurable 0–64 KiB per file (default 16); shared 64 KiB/eight-file budget; five-second downloads |
+| Admin error states, permissions and regression tests | IMPL | Correct defaults, recoverable auth, pagination, validated settings and browser coverage |
+| Strict single-guild runtime and deployment checks | IMPL | Required guild in bot mode; health checks, graceful shutdown, Docker/Chroma smoke and CI |
+
+Plugin implementation is outside this change: it is maintained separately. Existing plugin APIs and unfinished features are retained.
+
+New admin controls reuse the existing shadcn `base-nova` components. Generated
+Button, Badge and Tabs stay unchanged; their standard variant exports are allowed
+explicitly in the React Fast Refresh lint rule.
+
 A Discord bot that builds a durable memory of a server, plus a single-admin web panel to inspect and configure it.
 
 The bot periodically reads each channel, asks Gemini to extract *facts* worth remembering, embeds them and stores them in ChromaDB alongside the message IDs they came from. When someone mentions the bot, it works out what is being discussed, recalls relevant facts from across the server, and replies — linking back to the original messages so people can jump to the moment being referenced.
@@ -19,7 +35,7 @@ The bot periodically reads each channel, asks Gemini to extract *facts* worth re
 ### Why these
 
 - **Drizzle over Prisma** — zero codegen, so it works under `tsx` with no generate step and no engine binary in the image.
-- **`better-sqlite3`** ships prebuilt binaries for every target including linux-musl, so no compiler is needed at image build time.
+- **`better-sqlite3`** uses a prebuilt binary when available. Docker build stages include compiler tools for the fallback and remove them from the runtime image.
 - **`gemini-embedding-001` over the newer `gemini-embedding-2`** — it still supports `taskType`, which maps onto Chroma's document/query embedding split (`RETRIEVAL_DOCUMENT` / `RETRIEVAL_QUERY`) and measurably helps retrieval. Both are free tier.
 - **Opaque session cookie + `crypto.scrypt`** over JWT/bcrypt — no extra dependency, no signing secret to manage, no second native module.
 
@@ -46,7 +62,7 @@ drizzle/        Generated SQL migrations, applied at boot
 
 ### Fact extraction (periodic)
 
-Runs every `checkIntervalMinutes`, per channel, reading from each channel's stored checkpoint so nothing is processed twice. **A prompt never mixes channels.** Messages are copied into `cached_messages` as they are read, so a fact keeps its sources even if Discord later loses them.
+Runs every `checkIntervalMinutes`, per enabled channel, reading from its stored checkpoint. Each pass processes at most five pages of 100 messages, oldest first; a newly enabled channel starts with its latest 100. A page advances the checkpoint only after successful processing, including pages containing only bots or empty messages. Failures are retried on a later pass. **A prompt never mixes channels.** Source messages are upserted into `cached_messages`, preserving sources and refreshing edited text.
 
 ### Bot reply (on mention or reply)
 
@@ -84,11 +100,11 @@ The reply prompt is explicit that the model knows only the messages and facts in
 
 ### Surviving Gemini outages
 
-Every Gemini call goes through one wrapper. A 429/500/503/504 is retried `retryAttempts` more times (default 2) with `retryDelayMs` between tries (default 3s); a 400 fails immediately. When every retry is spent the bot replies with the configurable `overloadMessage` instead of going silent.
+Gemini generation and embeddings use explicit application retries for transient errors, including 429/500/502/503/504 and transport timeouts. The SDK's additional automatic retries are disabled. Delays grow exponentially from `retryDelayMs` (default 3s), capped at 60s; a 400 fails immediately. Generation falls back through the configured model pool. Caller cancellation does not penalize a model. Each reply shares 24 AI attempts and a two-minute deadline, with a 45-second ceiling per AI request. Failures and accidental empty output send the configurable `overloadMessage`; deliberate `stay_silent` remains silent.
 
 ### Not writing the same fact twice
 
-Two guards before any insert. A candidate whose source messages are already covered by an existing fact is dropped. A candidate that is semantically near an existing fact (within `duplicateDistance`, default 0.25) supersedes it: the newer wording is written carrying the old one's sources, and the old row is deleted so the pair cannot both come back. Identical text is merged instead of duplicated.
+Embeddings are prepared before existing data is changed. Mutations are serialized, so each completed write is visible to the next candidate, including candidates from the same batch. Sharing source messages alone never drops a fact: one message can contain several independent facts. Identical text merges source metadata. A sufficiently similar candidate about the same mentioned people updates the original record in place, preserving its ID and references. Different mentioned people cannot overwrite one another merely because their sentences are similar. Source IDs, authors, mentioned people and time spans are merged.
 
 ### Voice and language
 
@@ -631,18 +647,20 @@ the cache is dropped when an admin changes one.
 
 ### One guild per instance
 
-`DISCORD_GUILD_ID` binds an instance to a single guild. `isServedGuild` in
-`src/server/env.ts` is checked as the first thing `messageCreate` does, ahead of
-plugin hooks and any database write, so a message from another guild costs
-nothing; the scheduler applies the same filter to stored checkpoints in case a
-guild change leaves stale ones behind. Several instances can therefore share one
-bot account, each serving its own guild. Leaving the variable unset keeps the
-older behaviour of responding everywhere, and startup logs say which mode is
-active.
+The bot is permanently mono-guild. `DISCORD_GUILD_ID` must be a valid snowflake
+whenever a Discord token is configured; a Gemini key is also required.
+`isServedGuild` rejects missing and foreign guilds before hooks, database writes
+or AI work. The scheduler and admin channel list apply the same scope. There is
+no all-guild fallback. With no Discord token, the admin panel can run on its own.
 
 ### Rate limiting
 
-Before any Gemini call, the bot counts that user's replies in the trailing hour from `reply_log`. At or above `rateLimitPerHour` (default 40) it answers with the configured message and does no AI work. A cap of 0 disables replies entirely.
+Before asynchronous reply work begins, an immediate SQLite transaction reserves
+the message in `reply_attempts`. Failed and deliberately silent attempts count
+toward `rateLimitPerHour` (default 40), and the trailing-hour count survives
+restart. Duplicate message IDs are refused. A cap of 0 disables replies. At most
+one reply per user and four replies overall can run concurrently; excess work
+does not queue or invoke AI.
 
 ---
 
@@ -655,7 +673,7 @@ Before any Gemini call, the bot counts that user's replies in the trailing hour 
 | SQLite schema + migrations | IMPL | Drizzle, applied at boot from `drizzle/` |
 | Admin auth (setup, login, logout, sessions) | IMPL | scrypt + opaque session cookie; constant-time and rate-limited |
 | Gemini embedding function for Chroma | IMPL | taskType-aware, unit-normalised |
-| Facts repository + duplicate prevention | IMPL | message-superset check, then similarity merge |
+| Facts repository + duplicate prevention | IMPL | stable-ID updates, serialized writes, same-subject similarity merge |
 | Plugin engine + hooks + example plugin | IMPL | `onMessage`, `onHourlyCheck`, `onBotTagged`, `annotateContext`, `annotateExtraction`, `beforeReply` |
 | Periodic fact extraction + scheduler | IMPL | per-channel, checkpointed, escalation-capable |
 | Bot reply pipeline | IMPL | two-stage, jump links, `save_fact` tool, reply logging |
@@ -669,7 +687,7 @@ Before any Gemini call, the bot counts that user's replies in the trailing hour 
 | Fact deletion (bot + web) | IMPL | `delete_fact` tool, `DELETE /api/facts/:id`, confirm dialog |
 | Browse facts, paginated + per-person filter | IMPL | `authorIds` metadata drives the filter |
 | Fact-shaped query rewriting before embedding | IMPL | falls back to the raw query |
-| Single-guild scoping | IMPL | `DISCORD_GUILD_ID` gates before any work; unset = all guilds |
+| Single-guild scoping | IMPL | required in bot mode; missing/foreign guilds rejected before work |
 | Reply-to triggers a response | IMPL | replying to a bot message works like an @mention |
 | Typing indicator while replying | IMPL | refcounted per channel |
 | Reply-stage `request_more_context` tool | IMPL | verified against live Gemini with a synthetic channel |
@@ -714,6 +732,33 @@ Before any Gemini call, the bot counts that user's replies in the trailing hour 
 
 ### What has actually been verified
 
+For the September 2026 reliability changes, `npm run check` builds the client and
+server, typechecks tests, runs lint and reports Vitest coverage. Regression suites
+cover real migrated SQLite, auth HTTP routes and UI states, extraction/checkpoints,
+fact writes, admission, tool dispatch, channel permissions, attachment limits and
+the real Gemini SDK with mocked HTTP transport. They make no paid AI calls.
+The final local run passed 348 tests across 26 suites, with 61.8% line coverage in
+the configured coverage scope; both Chromium browser scenarios also passed.
+
+Playwright runs a real isolated admin server and Chromium through setup, login,
+logout, settings persistence, session expiry, retry and mobile navigation. Its
+facts/stats responses are explicit fixtures. A separate smoke test exercised a
+real pinned Chroma server with deterministic embeddings and a temporary collection,
+including metadata arrays, queries and stable-ID updates. The production Docker
+image built, served healthy admin-only HTTP, and exited cleanly on SIGTERM.
+
+The installed Chroma SDK is also exercised against a local HTTP server that hangs
+before headers or during the body. Every request gets a fresh ten-second timeout
+and inherits the reply deadline; tests verify closed sockets, recovery on the same
+client and retry after failed collection initialization. Chroma 3.5.0 lacks a public
+dynamic transport hook, so this uses a guarded, narrowly scoped SDK adapter whose
+contract is covered by tests. Retry delays and queued mutations honor cancellation;
+an expired queued deletion cannot execute later.
+
+Live Discord/Gemini behavior and plugin functionality were not revalidated for
+this change. Coverage reports show remaining gaps rather than claiming complete
+coverage. The records below describe verification from earlier development.
+
 Exercised against a running server: migrations apply on boot; the whole auth flow
 (first-run state, setup, login, wrong-password rejection, logout invalidating the session,
 401 on protected routes); settings read/write including server-side clamping
@@ -746,8 +791,8 @@ Still unverified:
   this project a day once.
 - **The reputation plugin against a live guild.** The scoring is simulated and correct;
   whether the model reliably *calls* `reputation__assess` is unproven.
-- **Load.** `listFactsPage` reads the whole collection and pages in memory, because
-  Chroma's `get` offers neither ordering nor offset. Fine at this scale, worth revisiting
+- **Load.** `listFactsPage` reads the whole collection and pages in memory to sort
+  newest-first, since Chroma does not provide that ordering. Worth revisiting
   past a few thousand facts.
 
 ---
@@ -772,4 +817,6 @@ npm run build   # typechecks client AND server, then builds the UI
 npm run lint    # oxlint
 ```
 
-The bot needs the **Message Content** privileged intent enabled in the Discord developer portal, and it only extracts facts from channels it has seen a message in.
+The bot needs both **Message Content** and **Presence** privileged intents enabled
+in the Discord developer portal. Extraction starts when an operator enables a channel;
+the API registers a checkpoint even if the channel has not seen a new message yet.

@@ -9,6 +9,7 @@ import {
   hasAdmin,
   isSessionValid,
   verifyPassword,
+  AdminAlreadyExistsError,
 } from '../../db/repositories/authRepo';
 import { authRateLimit, clearAttempts } from '../middleware/authRateLimit';
 import { SESSION_COOKIE, SESSION_TTL_MS } from '@shared/constants';
@@ -72,7 +73,13 @@ authRouter.post('/setup', authRateLimit, async (req, res) => {
     return;
   }
 
-  await createAdmin(credentials.username, credentials.password);
+  try {
+    await createAdmin(credentials.username, credentials.password);
+  } catch (error) {
+    if (!(error instanceof AdminAlreadyExistsError)) throw error;
+    res.status(409).json({ success: false, error: error.message });
+    return;
+  }
   clearAttempts(req);
   res.cookie(SESSION_COOKIE, createSession(), cookieOptions(req));
   res.json({ success: true, data: { username: credentials.username } });

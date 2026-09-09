@@ -1,10 +1,13 @@
 import type { Message } from 'discord.js';
 import type { Part } from '@google/genai';
+import { readBoundedBody } from './boundedDownload';
 
 /** Gemini's inline image formats. Notably GIF is not among them. */
 const SUPPORTED = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif']);
 
 const MAX_BYTES = 5 * 1024 * 1024;
+// Base64 adds roughly one third; leave space below the inline request ceiling.
+const MAX_WINDOW_BYTES = 10 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 10_000;
 
 interface Candidate {
@@ -48,17 +51,20 @@ function collect(message: Message): Candidate[] {
   return found;
 }
 
-async function download(candidate: Candidate): Promise<Part | null> {
+async function download(candidate: Candidate, maxBytes: number): Promise<Part | null> {
   const needsReencoding = !candidate.mimeType || !SUPPORTED.has(candidate.mimeType);
   const url = needsReencoding ? asStillImage(candidate.url) : candidate.url;
 
-  const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }).catch(() => null);
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password
+    || !/^(?:cdn\.discordapp\.com|media\.discordapp\.net|images-ext-\d+\.discordapp\.net)$/.test(parsed.hostname)) return null;
+  const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }).catch(() => null);
   if (!response?.ok) return null;
 
   const mimeType = response.headers.get('content-type')?.split(';')[0]?.trim() ?? '';
   if (!SUPPORTED.has(mimeType)) return null;
 
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = Buffer.from(await readBoundedBody(response, Math.min(MAX_BYTES, maxBytes)));
   if (buffer.byteLength === 0 || buffer.byteLength > MAX_BYTES) return null;
 
   return { inlineData: { mimeType, data: buffer.toString('base64') } };
@@ -125,12 +131,17 @@ export async function imagePartsFor(messages: (Message | null)[], limit: number)
   const budgeted = spread(candidates, limit);
   const chosen = new Set(budgeted.map((candidate) => candidate.url));
 
-  const downloaded = await Promise.all(
-    budgeted.map(async (candidate) => {
-      const part = await download(candidate).catch(() => null);
+  const downloaded: Array<MessageImage | null> = [];
+  // Divide the byte allowance before parallel downloads, so simultaneous
+  // streams cannot each spend the whole request's budget.
+  const bytesPerImage = Math.min(MAX_BYTES, Math.floor(MAX_WINDOW_BYTES / budgeted.length));
+  for (let start = 0; start < budgeted.length; start += 4) {
+    const group = await Promise.all(budgeted.slice(start, start + 4).map(async (candidate) => {
+      const part = await download(candidate, bytesPerImage).catch(() => null);
       return part ? { messageId: candidate.messageId, part } : null;
-    }),
-  );
+    }));
+    downloaded.push(...group);
+  }
 
   const images: MessageImage[] = [];
   const failed: Candidate[] = [];

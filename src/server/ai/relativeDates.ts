@@ -99,7 +99,7 @@ const RELATIVE_PHRASES = [
  * "moved to friday" is meaningless in a month — but common enough inside an
  * already-dated sentence that it only counts when nothing absolute is present.
  */
-const WEAK_PHRASES = [new RegExp(`\\b(?:v|ve|on|na) (?:${WEEKDAY}|weekend|vikend)\\b`)];
+const WEAK_PHRASES = [new RegExp(`\\b(?:v|ve|on|na|to|for|by|until) (?:${WEEKDAY}|weekend|vikend)\\b`)];
 
 /** 10.9.2026, 2026-09-10, 10 september 2026 — a date that has already been resolved. */
 const ABSOLUTE_DATE = [

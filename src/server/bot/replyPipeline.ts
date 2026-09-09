@@ -1,4 +1,5 @@
 import type { Message } from 'discord.js';
+import { MessageType } from 'discord.js';
 import { extractTopic } from '../ai/topicExtraction';
 import { generateReply } from '../ai/replyGeneration';
 import {
@@ -7,21 +8,25 @@ import {
   fetchRecentMessages,
   formatTranscript,
   markUnseenImages,
-  toWindowMessage,
+  windowMessagesWithAttachments,
 } from '../ai/context';
 import type { WindowMessage } from '../ai/context';
 import type { ForeignChannelMessages } from '../ai/replyGeneration';
 import { readableChannelRoster, resolveReadableChannel } from './channelAccess';
 import { OverloadedError } from '../ai/generate';
+import { AIRequestBudgetError, withAIRequestBudget } from '../ai/requestBudget';
 import { buildReplyInstruction } from '../ai/prompts/systemInstructions';
 import { searchFacts } from '../db/repositories/factsRepo';
 import { isController } from '../db/repositories/controllersRepo';
 import { getMessages, cacheMessages } from '../db/repositories/cachedMessagesRepo';
-import { countRepliesForUserSince, logReply } from '../db/repositories/replyLogRepo';
+import { logReply } from '../db/repositories/replyLogRepo';
+import { canExtractFrom } from '../db/repositories/channelSettingsRepo';
+import { admitReply } from './replyAdmission';
+import { createTextAttachmentBudget, type TextAttachmentBudget } from './textAttachments';
 import { getSettings } from '../db/repositories/settingsRepo';
 import { collectAnnotations, collectInstructions, runBeforeReply } from '../plugins/engine';
 import type { ContextUser, DraftPrompt } from '../plugins/types';
-import { formatNow, languageName, RATE_LIMIT_WINDOW_MS } from '@shared/constants';
+import { formatNow, languageName } from '@shared/constants';
 import type { Fact, SourceMessage } from '@shared/types';
 import { mentionedUserIds } from '@shared/discord';
 import { startTyping } from './typing';
@@ -122,6 +127,7 @@ async function readMentionedChannels(
   message: Message,
   guildId: string,
   limit: number,
+  attachmentBudget: TextAttachmentBudget,
 ): Promise<ForeignChannelMessages[]> {
   if (limit <= 0) return [];
 
@@ -136,7 +142,7 @@ async function readMentionedChannels(
       continue;
     }
 
-    const messages = await fetchRecentMessages(access.channel, limit);
+    const messages = await fetchRecentMessages(access.channel, limit, attachmentBudget);
     if (messages.length === 0) continue;
     reads.push({ channelId, channelName: access.channel.name, messages });
     console.log(`[bot] read ${messages.length} message(s) from #${access.channel.name} for a mention`);
@@ -150,34 +156,37 @@ export async function handleMention(message: Message): Promise<void> {
 
   const settings = getSettings();
 
-  const repliesThisHour = countRepliesForUserSince(message.author.id, Date.now() - RATE_LIMIT_WINDOW_MS);
-  if (repliesThisHour >= settings.rateLimitPerHour) {
+  const release = admitReply(message.id, message.author.id, settings.rateLimitPerHour);
+  if (!release) {
     await message.reply({ content: settings.rateLimitMessage, allowedMentions: ALLOWED_MENTIONS });
     return;
   }
 
   const stopTyping = startTyping(message);
   try {
-    await respond(message, guildId);
+    await withAIRequestBudget(() => respond(message, guildId));
   } catch (error) {
-    if (error instanceof OverloadedError) {
-      console.warn(`[bot] Gemini overloaded after ${error.attempts} attempt(s); sending the overload message`);
+    if (error instanceof OverloadedError || error instanceof AIRequestBudgetError) {
+      console.warn('[bot] AI unavailable or request budget exhausted; sending the overload message');
       await message
         .reply({ content: settings.overloadMessage, allowedMentions: ALLOWED_MENTIONS })
         .catch(() => {});
       return;
     }
-    throw error;
+    console.error('[bot] could not complete the reply:', error);
+    await message.reply({ content: settings.overloadMessage, allowedMentions: ALLOWED_MENTIONS }).catch(() => {});
   } finally {
     stopTyping();
+    release();
   }
 }
 
 async function respond(message: Message, guildId: string): Promise<void> {
   const settings = getSettings();
-  const { topic, windowMessages, discordMessages } = await extractTopic(message, guildId, settings.replyContextMessages);
+  const attachmentBudget = createTextAttachmentBudget();
+  const { topic, windowMessages, discordMessages } = await extractTopic(message, guildId, settings.replyContextMessages, attachmentBudget);
 
-  cacheMessages(
+  if (canExtractFrom(message.channelId)) cacheMessages(
     windowMessages
       .filter((windowMessage) => !windowMessage.isSelf)
       .map((windowMessage) => ({
@@ -191,20 +200,27 @@ async function respond(message: Message, guildId: string): Promise<void> {
       })),
   );
 
-  const retrievedFacts = await searchFacts(
+  const retrievedFacts = (await searchFacts(
     `${topic.coreTopic}\n${topic.whatTaggingMessageIsAbout}`,
     settings.factSearchTopK,
     { guildId },
-  );
-  const sourceMessages = getMessages(retrievedFacts.flatMap((fact) => fact.metadata.messageIds));
+  )).filter((fact) => canExtractFrom(fact.metadata.channelId));
+  const sourceMessages = getMessages(retrievedFacts.flatMap((fact) => fact.metadata.messageIds))
+    .filter((source) => source.guildId === guildId && canExtractFrom(source.channelId));
 
   const controller = isController(message.author.id);
 
   // A reply can point at a message far outside the recent window, so fetch it
   // rather than referring to an id the model was never shown.
-  const repliedTo = message.reference?.messageId
+  const repliedTo = message.type === MessageType.Reply && message.reference?.messageId
     ? await message.fetchReference().catch(() => null)
     : null;
+  const quotedMessages = repliedTo && !windowMessages.some((item) => item.id === repliedTo.id)
+    ? await windowMessagesWithAttachments([repliedTo], attachmentBudget) : [];
+  if (canExtractFrom(message.channelId)) cacheMessages(quotedMessages.map((source) => ({
+    messageId: source.id, guildId, channelId: message.channelId, authorId: source.authorId,
+    authorUsername: source.authorUsername, content: source.content, messageCreatedAt: source.createdAt,
+  })));
   const trigger = repliedTo
     ? repliedTo.author.id === message.client.user?.id
       ? 'The last message is a reply to something you said.'
@@ -213,10 +229,12 @@ async function respond(message: Message, guildId: string): Promise<void> {
 
   // Pictures come first: what could not be sent is marked in the transcript, so
   // a message whose whole content was an image does not read as blank.
-  const { images, unseen } = settings.visionEnabled
-    ? await imagePartsFor([...discordMessages, repliedTo], settings.maxImages)
-    : { images: [], unseen: new Map<string, number>() };
+  // A zero budget counts unseen images without downloading them.
+  const { images, unseen } = await imagePartsFor(
+    [...discordMessages, repliedTo], settings.visionEnabled ? settings.maxImages : 0,
+  );
   const window = markUnseenImages(windowMessages, unseen);
+  const quoted = markUnseenImages(quotedMessages, unseen);
 
   const sections = [
     describeSelf(message),
@@ -236,10 +254,10 @@ async function respond(message: Message, guildId: string): Promise<void> {
 
   // Quote it explicitly: it may predate the window by months.
   if (repliedTo && !window.some((windowMessage) => windowMessage.id === repliedTo.id)) {
-    sections.push(`The message being replied to:\n${formatTranscript([toWindowMessage(repliedTo)])}`);
+    sections.push(`The message being replied to:\n${formatTranscript(quoted)}`);
   }
 
-  const foreign = await readMentionedChannels(message, guildId, settings.crossChannelMessages);
+  const foreign = await readMentionedChannels(message, guildId, settings.crossChannelMessages, attachmentBudget);
   for (const read of foreign) {
     // Kept in its own headed block rather than folded into the transcript: two
     // channels read as one conversation is exactly the muddle reply markers exist
@@ -344,6 +362,8 @@ async function respond(message: Message, guildId: string): Promise<void> {
     taggedMessage: message,
     windowMessages,
     foreignMessages: foreign,
+    quotedMessages: quoted,
+    attachmentBudget,
   });
 
   // Silence is a real outcome: nothing is sent and nothing is logged, since
@@ -353,7 +373,8 @@ async function respond(message: Message, guildId: string): Promise<void> {
   // Producing nothing is not the same thing, and folding the two together is
   // what made a bot that typed and then never answered impossible to spot.
   if (!reply.text) {
-    console.warn(`[bot] no reply produced for message ${message.id} in #${message.channelId} — nothing sent`);
+    console.warn(`[bot] no reply produced for message ${message.id} in #${message.channelId}`);
+    await message.reply({ content: settings.overloadMessage, allowedMentions: ALLOWED_MENTIONS });
     return;
   }
 

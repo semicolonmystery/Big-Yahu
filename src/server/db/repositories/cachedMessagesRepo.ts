@@ -1,4 +1,4 @@
-import { count, inArray } from 'drizzle-orm';
+import { count, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { cachedMessages } from '../schema';
 import { buildJumpLink } from '@shared/discord';
@@ -24,12 +24,24 @@ export function cacheMessages(
   }>,
 ): void {
   if (rows.length === 0) return;
-  db.insert(cachedMessages).values(rows).onConflictDoNothing().run();
+  db.transaction((transaction) => {
+    for (const batch of chunk(rows, CHUNK_SIZE)) {
+      transaction.insert(cachedMessages).values(batch).onConflictDoUpdate({
+        target: cachedMessages.messageId,
+        set: {
+          authorUsername: sql`excluded.author_username`,
+          content: sql`excluded.content`,
+        },
+      }).run();
+    }
+  });
 }
 
 export function getMessages(messageIds: string[]): SourceMessage[] {
   if (messageIds.length === 0) return [];
-  const rows = db.select().from(cachedMessages).where(inArray(cachedMessages.messageId, messageIds)).all();
+  const rows = chunk([...new Set(messageIds)], CHUNK_SIZE).flatMap((batch) =>
+    db.select().from(cachedMessages).where(inArray(cachedMessages.messageId, batch)).all(),
+  );
   return rows.map((row) => ({
     ...row,
     jumpLink: buildJumpLink(row.guildId, row.channelId, row.messageId),

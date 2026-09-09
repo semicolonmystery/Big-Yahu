@@ -68,14 +68,21 @@ export function stripPromptMarkers(text: string): string {
  */
 export function restoreMentions(text: string, roster: Map<string, string>): string {
   const names = [...roster.keys()].filter((name) => name.length > 0).sort((a, b) => b.length - a.length);
-  let result = text;
-  for (const name of names) {
-    const id = roster.get(name);
-    if (!id) continue;
-    // Skip names already written correctly, so `<@123>(Bob)` is left alone.
-    result = result.split(`@${name}`).join(`<@${id}>`);
-  }
-  return result.replace(/<@(\d+|[\w-]+)>\((?:#)?[^)]*\)/g, '<@$1>');
+  return outsideQuotedSpans(text, (segment) => {
+    let result = segment;
+    for (const name of names) {
+      const id = roster.get(name);
+      if (!id) continue;
+      // A handle must stand on its own. A prefix of an unknown username, an
+      // email address or a URL must never turn into a notification for somebody.
+      const pattern = new RegExp(
+        `(?<![\\p{L}\\p{N}_@<./+-])@${escapeRegExp(name)}(?![\\p{L}\\p{N}_]|[.-][\\p{L}\\p{N}_])`,
+        'gu',
+      );
+      result = result.replace(pattern, `<@${id}>`);
+    }
+    return result.replace(/<@(\d+|[\w-]+)>\((?:#)?[^)]*\)/g, '<@$1>');
+  });
 }
 
 function escapeRegExp(value: string): string {
@@ -84,6 +91,16 @@ function escapeRegExp(value: string): string {
 
 /** Quoted runs are left alone, so a fact about someone's nickname keeps the nickname. */
 const QUOTED_SPAN = /"[^"]*"|“[^”]*”|`[^`]*`/g;
+
+function outsideQuotedSpans(text: string, rewrite: (segment: string) => string): string {
+  let result = '';
+  let cursor = 0;
+  for (const quoted of text.matchAll(QUOTED_SPAN)) {
+    result += rewrite(text.slice(cursor, quoted.index)) + quoted[0];
+    cursor = quoted.index + quoted[0].length;
+  }
+  return result + rewrite(text.slice(cursor));
+}
 
 /** Names shorter than this are too easy to hit inside an ordinary word. */
 const MIN_MENTIONABLE_NAME = 3;

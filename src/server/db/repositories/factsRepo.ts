@@ -5,6 +5,8 @@ import { getSettings } from './settingsRepo';
 import { embedDocuments, embedQuery } from '../../ai/embeddings';
 import { rewriteForFactSearch } from '../../ai/queryRewrite';
 import { hasUnresolvedRelativeDate, resolveRelativeDates } from '../../ai/dateEnforcement';
+import { mentionedUserIds } from '@shared/discord';
+import { getAIRequestSignal } from '../../ai/requestBudget';
 
 import type { Fact, FactMetadata } from '@shared/types';
 
@@ -72,58 +74,58 @@ export async function searchFacts(
   }));
 }
 
-/**
- * A candidate whose source messages are already fully covered by an existing
- * fact in the same channel is a re-extraction of ground already walked.
- */
-async function findMessageSupersetFact(candidate: FactCandidate): Promise<Fact | undefined> {
-  // A candidate citing no messages is covered by nothing. `every` on an empty
-  // array is vacuously true, so without this it matches the first fact in the
-  // channel and is silently dropped — which is what a fact promoted out of a
-  // rolling memory can look like.
-  if (candidate.messageIds.length === 0) return undefined;
-
-  const collection = await getFactsCollection();
-  const existing = await collection.get({
-    where: { channelId: candidate.channelId } as never,
-    include: ['documents', 'metadatas'],
-  });
-  return existing
-    .rows()
-    .map((row) => toFact(row.id, row.document, row.metadata))
-    .find((fact) => {
-      const covered = new Set(fact.metadata.messageIds);
-      return candidate.messageIds.every((id) => covered.has(id));
-    });
-}
-
-async function mergeMessageIds(fact: Fact, messageIds: string[]): Promise<void> {
-  const merged = [...new Set([...fact.metadata.messageIds, ...messageIds])];
-  if (merged.length === fact.metadata.messageIds.length) return;
-
-  const collection = await getFactsCollection();
-  const meta = { ...fact.metadata, messageIds: merged } as any;
-  if (meta.referencedFactIds && meta.referencedFactIds.length === 0) {
-    delete meta.referencedFactIds;
-  }
-  if (meta.messageIds && meta.messageIds.length === 0) {
-    delete meta.messageIds;
-  }
-
-  await collection.update({
-    ids: [fact.id],
-    metadatas: [meta as Metadata],
-  });
-}
-
 const normalise = (text: string) => text.trim().toLowerCase().replace(/\s+/g, ' ');
 
-/**
- * Inserts facts that are genuinely new. A candidate close enough to an existing
- * fact either replaces it — the newer wording is the more current one, and the
- * old entry is deleted so the pair cannot both come back later — or is dropped
- * when it says exactly the same thing. Returns the ids actually created.
- */
+// Replies, periodic extraction, plugins and admin deletions share this store.
+// A failed operation must not poison the queue for the next caller.
+let mutationTail: Promise<unknown> = Promise.resolve();
+
+function mutateFacts<T>(run: () => Promise<T>): Promise<T> {
+  const signal = getAIRequestSignal();
+  const result = mutationTail.then(() => {
+    // An expired reply must never perform its queued write later.
+    signal?.throwIfAborted();
+    return run();
+  });
+  mutationTail = result.catch(() => undefined);
+  if (!signal) return result;
+  return new Promise<T>((resolve, reject) => {
+    const aborted = () => reject(signal.reason);
+    if (signal.aborted) aborted();
+    else signal.addEventListener('abort', aborted, { once: true });
+    result.then(
+      (value) => { signal.removeEventListener('abort', aborted); resolve(value); },
+      (error) => { signal.removeEventListener('abort', aborted); reject(error); },
+    );
+  });
+}
+
+function metadataFor(candidate: FactCandidate, previous?: Fact, identical = false): Metadata {
+  const metadata: Metadata = {
+    guildId: candidate.guildId,
+    channelId: identical && previous ? previous.metadata.channelId : candidate.channelId,
+    source: identical && previous ? previous.metadata.source : candidate.source,
+    createdAt: identical && previous ? previous.metadata.createdAt : Date.now(),
+    timePeriodStart: Math.min(candidate.timePeriodStart, previous?.metadata.timePeriodStart ?? candidate.timePeriodStart),
+    timePeriodEnd: Math.max(candidate.timePeriodEnd, previous?.metadata.timePeriodEnd ?? candidate.timePeriodEnd),
+  };
+  for (const key of ['messageIds', 'authorIds', 'referencedFactIds'] as const) {
+    const merged = [...new Set([
+      ...(previous?.metadata[key] ?? []), ...(candidate[key] ?? []),
+      ...(key === 'authorIds' ? mentionedUserIds(candidate.text) : []),
+    ])];
+    // Chroma rejects empty metadata arrays.
+    if (merged.length > 0) metadata[key] = merged;
+  }
+  return metadata;
+}
+
+function sameSubjects(first: string, second: string): boolean {
+  const firstIds = new Set(mentionedUserIds(first));
+  const secondIds = mentionedUserIds(second);
+  return firstIds.size === secondIds.length && secondIds.every((id) => firstIds.has(id));
+}
+
 /**
  * Both write paths are only *asked* to resolve "tomorrow" into a real date, and
  * asking has never been enough — the same lesson as `<@id>` mentions. This is
@@ -156,80 +158,64 @@ async function enforceAbsoluteDates(candidates: FactCandidate[]): Promise<void> 
 }
 
 export async function addFacts(candidates: FactCandidate[]): Promise<string[]> {
-  if (candidates.length === 0) return [];
+  const pending = candidates.filter((candidate) => candidate.text.trim()).map((candidate) => ({ ...candidate }));
+  if (pending.length === 0) return [];
+  await enforceAbsoluteDates(pending);
+  // Finish embedding before touching existing records. In particular, an outage
+  // must never remove the old wording of a fact being replaced.
+  const embeddings = await embedDocuments(pending.map((candidate) => candidate.text));
 
-  await enforceAbsoluteDates(candidates);
+  return mutateFacts(async () => {
+    const threshold = getSettings().duplicateDistance / 100;
+    const collection = await getFactsCollection();
+    const savedIds = new Set<string>();
 
-  const threshold = getSettings().duplicateDistance / 100;
-  const accepted: FactCandidate[] = [];
-
-  for (const candidate of candidates) {
-    if (!candidate.text.trim()) continue;
-
-    const superset = await findMessageSupersetFact(candidate);
-    if (superset) continue;
-
-    // Compared without the rewrite: this is fact-against-fact, already the right shape.
-    const [nearest] = await searchFacts(candidate.text, 1, { guildId: candidate.guildId }, { rewrite: false });
-    if (nearest && nearest.distance !== null && nearest.distance < threshold) {
-      if (normalise(nearest.text) === normalise(candidate.text)) {
-        await mergeMessageIds(nearest, candidate.messageIds);
+    for (const [index, candidate] of pending.entries()) {
+      // Source overlap alone proves nothing: one message can contain several
+      // independent facts. Each completed write is visible to the next candidate.
+      const [nearest] = await searchFacts(candidate.text, 1, { guildId: candidate.guildId }, { rewrite: false });
+      const identical = nearest && normalise(nearest.text) === normalise(candidate.text);
+      // Similar sentences about different people are independent facts, not
+      // updates to each other. Source authors are not a substitute for subjects.
+      if (nearest && (identical || (nearest.distance !== null && nearest.distance < threshold
+        && sameSubjects(nearest.text, candidate.text)))) {
+        await collection.update({
+          ids: [nearest.id],
+          metadatas: [metadataFor(candidate, nearest, identical)],
+          ...(!identical ? { documents: [candidate.text], embeddings: [embeddings[index]] } : {}),
+        });
+        if (!identical) {
+          // Updating one record keeps its ID and references intact. There is no
+          // delete-before-add gap, even if the request fails or the process exits.
+          savedIds.add(nearest.id);
+          console.log(`[facts] updated ${nearest.id}: ${nearest.text.slice(0, 60)}`);
+        }
         continue;
       }
-      // Supersede: carry the old fact's sources forward, then drop it.
-      candidate.messageIds = [...new Set([...nearest.metadata.messageIds, ...candidate.messageIds])];
-      candidate.authorIds = [...new Set([...nearest.metadata.authorIds, ...(candidate.authorIds ?? [])])];
-      await deleteFact(nearest.id);
-      console.log(`[facts] superseded ${nearest.id}: ${nearest.text.slice(0, 60)}`);
+
+      const id = randomUUID();
+      await collection.add({
+        ids: [id], documents: [candidate.text], embeddings: [embeddings[index]], metadatas: [metadataFor(candidate)],
+      });
+      savedIds.add(id);
     }
-    accepted.push(candidate);
-  }
-
-  if (accepted.length === 0) return [];
-
-  const now = Date.now();
-  const ids = accepted.map(() => randomUUID());
-  const documents = accepted.map((candidate) => candidate.text);
-  const embeddings = await embedDocuments(documents);
-  const metadatas = accepted.map(
-    (candidate): Metadata => {
-      const meta: any = {
-        guildId: candidate.guildId,
-        channelId: candidate.channelId,
-        timePeriodStart: candidate.timePeriodStart,
-        timePeriodEnd: candidate.timePeriodEnd,
-        source: candidate.source,
-        createdAt: now,
-      };
-      if (candidate.messageIds && candidate.messageIds.length > 0) {
-        meta.messageIds = candidate.messageIds;
-      }
-      if (candidate.authorIds && candidate.authorIds.length > 0) {
-        meta.authorIds = candidate.authorIds;
-      }
-      if (candidate.referencedFactIds && candidate.referencedFactIds.length > 0) {
-        meta.referencedFactIds = candidate.referencedFactIds;
-      }
-      return meta as Metadata;
-    }
-  );
-
-  const collection = await getFactsCollection();
-  await collection.add({ ids, documents, embeddings, metadatas });
-  return ids;
+    return [...savedIds];
+  });
 }
 
 export async function deleteFact(id: string): Promise<boolean> {
-  const collection = await getFactsCollection();
-  const existing = await collection.get({ ids: [id] });
-  if (existing.ids.length === 0) return false;
-  await collection.delete({ ids: [id] });
-  return true;
+  return mutateFacts(async () => {
+    const collection = await getFactsCollection();
+    const existing = await collection.get({ ids: [id] });
+    if (existing.ids.length === 0) return false;
+    await collection.delete({ ids: [id] });
+    return true;
+  });
 }
 
 /**
- * Facts newest first, optionally narrowed to one person. Chroma has no ordering
- * or offset on `get`, so the collection is read and paged here; the fact store
+ * Facts newest first, optionally narrowed to one person. Chroma cannot order
+ * `get` by createdAt, so the collection is sorted and paged here; the fact store
  * is small enough for that to be the simpler trade.
  */
 export async function listFactsPage(options: {

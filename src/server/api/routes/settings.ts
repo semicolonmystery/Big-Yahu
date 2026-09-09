@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getSettings, updateSettings } from '../../db/repositories/settingsRepo';
+import { getSettings, updateSettings, SettingsValidationError } from '../../db/repositories/settingsRepo';
 import { DEFAULT_SETTINGS } from '@shared/constants';
 import type { AppSettings } from '@shared/types';
 
@@ -28,5 +28,10 @@ settingsRouter.patch('/', (req, res) => {
     res.status(400).json({ success: false, error: 'Request body must be an object' });
     return;
   }
-  res.json({ success: true, data: updateSettings(patch) });
+  try {
+    res.json({ success: true, data: updateSettings(patch) });
+  } catch (error) {
+    if (!(error instanceof SettingsValidationError)) throw error;
+    res.status(400).json({ success: false, error: error.message });
+  }
 });
