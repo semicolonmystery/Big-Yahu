@@ -15,7 +15,8 @@ test-results
 playwright-report
 output
 *.log
-*.tsbuildinfo
+**/*.tsbuildinfo
 **/.plugin-env-key
 *.sqlite3
 *.sqlite3-*
+packages/*/dist

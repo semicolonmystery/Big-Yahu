@@ -1,6 +1,6 @@
 import { Type } from '@google/genai';
 import type { Schema } from '@google/genai';
-import type { BigYahuPlugin, PluginContext, PluginField, PluginPageRow } from '../../types';
+import type { BigYahuPlugin, PluginContext, PluginField, PluginPageRow } from '@big-yahu/plugin-sdk';
 import {
   DEFAULT_CONFIG,
   MIN_SURVIVING_FRACTION,

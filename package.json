@@ -2,11 +2,14 @@
   "name": "big-yahu",
   "private": true,
   "version": "0.0.0",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=24 <25"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev:ui": "vite",
     "dev:server": "nodemon --watch src/server --exec tsx src/server/index.ts",
@@ -21,7 +24,8 @@
     "check": "npm run build && npm run test:typecheck && npm run lint && npm run test:coverage",
     "test:typecheck": "tsc -p tsconfig.tests.json",
     "test:integration": "node scripts/chroma-smoke.mjs",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "build:sdk": "tsc -b packages/plugin-sdk"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

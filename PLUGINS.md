@@ -7,9 +7,11 @@ add screens to the admin panel, and keep their own state. This document describe
 plugin API as it exists today. Read it alongside the source, which is the actual
 authority:
 
-- `src/server/plugins/types.ts` — every interface: `BigYahuPlugin`, `PluginContext`,
-  `PluginTool`, `PluginPanel`, `PanelElement`, `PanelView`, `PanelActionResult`, the hook
-  contexts, `DraftPrompt`.
+- `packages/plugin-sdk/src/` — the contract itself, published as
+  `@big-yahu/plugin-sdk`: `BigYahuPlugin`, `PluginContext`, `PluginTool`, `PluginPanel`,
+  `PluginPage`, `PanelElement`, the hook contexts, `DraftPrompt`, and
+  `PLUGIN_API_VERSION`. This is the package you depend on, so it is also the thing to
+  read.
 - `src/server/plugins/manifest.ts` — what a package must contain, how identity is
   resolved, and `linkNodeModules`.
 - `src/server/plugins/installer.ts` — git and zip install, subfolder detection,
@@ -46,19 +48,39 @@ without disturbing anything npm itself cares about:
 | `description` | `bigYahu.description` → `description`. |
 | `version` | `bigYahu.version` → `version` → `'0.0.0'`. |
 | `main` | `bigYahu.main` → `main` → `'index.js'`. Must exist inside the package and must not resolve outside it. |
-| `apiVersion` | `bigYahu.apiVersion`. **Required.** See below. |
+| `apiVersion` | The major of your `@big-yahu/plugin-sdk` dependency, falling back to `bigYahu.apiVersion`. **Required.** See below. |
 
 ### The API version
 
 ```json
-{ "bigYahu": { "displayName": "My Plugin", "apiVersion": 1 } }
+{ "devDependencies": { "@big-yahu/plugin-sdk": "^2" } }
 ```
 
-The contract is versioned, and a plugin must declare the version it was written
-against. It has to match **exactly**: not "the same major", because the thing being
-prevented is a plugin running against a contract it does not understand, and a partial
-match is precisely the fuzzy version of that. The current version is `PLUGIN_API_VERSION`
-in `src/server/plugins/manifest.ts`.
+**Depending on the SDK is how you declare the contract version.** Its major version *is*
+the contract version, so the range you already maintain says it and there is no second
+field to keep in step — `npm update` is the whole of keeping your declaration current.
+
+It is read out of your `package.json` rather than from your imports, because the check
+happens *before* your entry file is imported: a plugin written against a contract the host
+does not speak may do anything at import time, and running its top level to find out it
+should not have run is the wrong order.
+
+A plugin that does not use the SDK — plain JavaScript, no build step, nothing to typecheck
+— says it directly instead:
+
+```json
+{ "bigYahu": { "displayName": "My Plugin", "apiVersion": 2 } }
+```
+
+Do not do both. When the two disagree the plugin is refused rather than one being quietly
+preferred: silently picking a winner would hide exactly the drift this is here to prevent.
+A `github:` or tag dependency carries no version number and cannot be read, so pair that
+with the explicit field.
+
+It has to match **exactly**: not "the same major", because the thing being prevented is a
+plugin running against a contract it does not understand, and a partial match is precisely
+the fuzzy version of that. The current version is `PLUGIN_API_VERSION`, exported by the
+SDK and imported by the bot, so the two cannot disagree.
 
 A plugin that declares nothing, or declares the wrong number, is **not an error and not
 hidden**. It installs, it is listed in the panel, and it is marked incompatible with the
@@ -97,9 +119,9 @@ Minimal complete `package.json`:
 loaded with a dynamic `import()`. The entry file itself:
 
 ```ts
-import type { BigYahuPlugin } from '../../types';
+import { definePlugin } from '@big-yahu/plugin-sdk';
 
-const plugin: BigYahuPlugin = {
+export default definePlugin({
   id: 'my-plugin',
   name: 'My Plugin',
   description: 'What it does, in one line.',
@@ -108,13 +130,24 @@ const plugin: BigYahuPlugin = {
   onMessage({ message }) {
     // ...
   },
-};
-
-export default plugin;
+});
 ```
 
-(The relative import path to `types` depends on where the package ends up on disk — see
-the worked example in section 11 for the exact path from an installed plugin.)
+```bash
+npm install --save-dev @big-yahu/plugin-sdk
+```
+
+A **devDependency**. Everything in the SDK except `PLUGIN_API_VERSION`, `HOOK_NAMES` and
+`definePlugin` is a type, so nothing of it exists at runtime and a production install
+never fetches it. `definePlugin` is identity at runtime — it exists so a mistyped hook or
+a handler with the wrong argument is a red squiggle rather than a plugin the bot silently
+declines to register because the structural check recognised nothing.
+
+Earlier versions of this guide told you to `import type { BigYahuPlugin } from
+'../../types'`. That was right for a bundled plugin and wrong for an installed one: from
+`<plugins dir>/<id>/index.ts` it resolves to `<plugins dir>/types`, which does not exist.
+It appeared to work only because `import type` is erased before Node sees it, so the
+plugin ran while `tsc` and your editor both broke.
 
 `defaultConfig` seeds the plugin's saved state row the first time it is discovered
 (`INSERT ... ON CONFLICT DO NOTHING`). Once seeded, whatever an operator has since changed
@@ -166,20 +199,44 @@ response says whether it was an install or an update.
 
 ### Dependencies
 
-A plugin may depend on libraries the bot does not ship. If its `package.json` declares
-any `dependencies`, they are `npm install`ed into the plugin's own `node_modules`
-right after copying it into place — `--omit=dev --ignore-scripts --no-audit --no-fund`,
-with a 5-minute timeout. Node resolves a plugin's own `node_modules` before anything
-above it, so the plugin gets exactly the versions it asked for without touching the
-bot's. Lifecycle scripts are skipped deliberately: a plugin that has been installed but
-never enabled should not have executed anything (its own code still runs once enabled —
-this only bounds *when* installation-time scripts could run, which is never).
+**A plugin is installed as production.** Everything it needs at runtime goes in
+`dependencies`; the SDK, `typescript` and `@types/*` go in `devDependencies`. That is the
+whole rule.
 
-Separately, the bot's own `node_modules` is symlinked in beside the plugins directory
-once at load time. That means a plugin can `import` anything the bot already ships —
-`drizzle-orm`, `better-sqlite3`, `discord.js` — without declaring it as a dependency at
-all. Without that link, resolution would only work when the data directory happened to
-sit inside the project tree.
+If `dependencies` is non-empty they are installed into the plugin's own `node_modules`
+right after it is copied into place — `--omit=dev --ignore-scripts --no-audit --no-fund`,
+with a 5-minute timeout. `npm ci` is used when you committed a `package-lock.json`, so two
+operators installing on different days get the same tree, and `npm install` when you did
+not. Lifecycle scripts are skipped deliberately: a plugin that has been installed but
+never enabled should not have executed anything (its own code still runs once enabled —
+this only bounds *when* installation-time scripts could run, which is never). Most native
+modules are unaffected, since anything shipping prebuilds does not need a script; one that
+genuinely has to compile will fail, and will now say so in the panel rather than
+disappearing.
+
+If you ship an archive rather than a repository, its `node_modules` is stripped before
+install. Otherwise the plugin would run on whatever was on your laptop, devDependencies
+and all, and its declared dependencies would never be installed at all.
+
+**You may depend on a library the bot also uses, and get your own copy.** That is safe
+here, and the reason is worth stating because it constrains the API rather than your
+plugin: *nothing on the plugin boundary uses `instanceof`, and no host function is ever
+handed a library object your plugin constructed.* Everything you are given is a
+host-built object you read from or call methods on, and everything you return is checked
+structurally. So your own `drizzle-orm` builds a self-contained graph over the
+`ctx.database` handle by duck-typing, and your own `discord.js` reads `message.content`
+and calls `message.reply()` on the host's object perfectly happily. The cost of a second
+copy is disk and memory, not correctness.
+
+The same applies to a *transitive* copy you never asked for — a dependency of a dependency
+pulling in its own version of something the bot also has. It is not policed, because it
+does not need to be.
+
+Separately, the bot's own `node_modules` is symlinked in beside the plugins directory at
+load time, so a plugin **may** import what the bot already ships — `drizzle-orm`,
+`better-sqlite3`, `discord.js` — without declaring it. That is a convenience, not the
+mechanism: prefer declaring what you use, and take the shared copy only when you
+deliberately want the bot's exact version.
 
 ### Other management operations
 
@@ -190,7 +247,9 @@ All under `/api/plugins`:
 - `DELETE /` — uninstall everything installed (not the bundled ones), cleaning up the
   same per-plugin state for each.
 - `POST /reload` — re-run discovery without installing or removing anything — useful
-  after editing a plugin's files on disk directly.
+  after editing a plugin's files on disk directly. A plugin that throws while being
+  imported — a missing dependency, a native binding that never built, a syntax error — is
+  listed in the panel with the error rather than vanishing.
 - `PATCH /:id` — flip `enabled`, or save `config`. With a `configSchema` the values are
   coerced against it and a required field left empty is rejected with a message; without
   one the object replaces what is stored, wholesale rather than merged.
@@ -1039,19 +1098,23 @@ Directory, once installed:
   "main": "index.ts",
   "type": "module",
   "bigYahu": {
-    "displayName": "Quote Book",
-    "apiVersion": 1
+    "displayName": "Quote Book"
+  },
+  "devDependencies": {
+    "@big-yahu/plugin-sdk": "^2"
   }
 }
 ```
 
-`apiVersion` is not optional. Leave it out and the plugin installs, is listed, and never
-runs — see section 1.
+The SDK dependency is not optional — its major is what declares the contract version.
+Without it, and without a `bigYahu.apiVersion` to stand in, the plugin installs, is
+listed, and never runs. See section 1.
 
 `index.ts`:
 
 ```ts
-import type { BigYahuPlugin, PanelElement, PluginContext } from '../../types';
+import { definePlugin } from '@big-yahu/plugin-sdk';
+import type { PanelElement, PluginContext } from '@big-yahu/plugin-sdk';
 
 interface QuoteBookConfig {
   /** Oldest quotes are dropped once the table holds more than this. */
@@ -1086,7 +1149,7 @@ function trimToLimit(ctx: PluginContext, limit: number): void {
     .run(limit);
 }
 
-const plugin: BigYahuPlugin = {
+const plugin = definePlugin({
   id: 'quote-book',
   name: 'Quote Book',
   description: 'Lets the bot save memorable lines and recall them later, browsable from the admin panel.',
@@ -1192,7 +1255,7 @@ const plugin: BigYahuPlugin = {
       },
     },
   ],
-};
+});
 
 export default plugin;
 ```

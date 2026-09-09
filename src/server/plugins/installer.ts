@@ -49,9 +49,15 @@ async function installDependencies(directory: string): Promise<void> {
   if (!declaresDependencies(directory)) return;
   if (fs.existsSync(path.join(directory, 'node_modules'))) return;
 
-  console.log(`[plugins] installing dependencies for ${path.basename(directory)}`);
+  // `npm ci` when the author committed a lockfile, so two operators installing
+  // the same plugin on different days get the same tree. Without one there is
+  // nothing to be reproducible against, and `ci` refuses to run at all.
+  const locked = fs.existsSync(path.join(directory, 'package-lock.json'));
+  const command = locked ? 'ci' : 'install';
+
+  console.log(`[plugins] installing dependencies for ${path.basename(directory)} (npm ${command})`);
   try {
-    await run('npm', ['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], {
+    await run('npm', [command, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], {
       cwd: directory,
       timeout: NPM_TIMEOUT_MS,
       maxBuffer: 10 * 1024 * 1024,
@@ -88,6 +94,11 @@ function install(source: string): InstallResult {
   fs.mkdirSync(PLUGINS_DIR, { recursive: true });
   fs.cpSync(root, target, { recursive: true });
   fs.rmSync(path.join(target, '.git'), { recursive: true, force: true });
+  // An archive zipped from somebody's working tree carries their node_modules,
+  // and `installDependencies` skips a plugin that already has one — so without
+  // this the plugin runs on whatever was on the author's laptop, devDependencies
+  // and all, and its declared dependencies are never installed at all.
+  fs.rmSync(path.join(target, 'node_modules'), { recursive: true, force: true });
   return { manifest, updated };
 }
 
@@ -107,6 +118,11 @@ export async function installFromGit(url: string): Promise<InstallResult> {
     return result;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    // A missing git binary arrives as "spawn git ENOENT", which says nothing
+    // about what an operator should do next.
+    if (detail.includes('ENOENT')) {
+      throw new Error('git is not installed, so plugins cannot be installed from a repository. Upload a .zip instead.');
+    }
     throw new Error(detail.includes('clone') ? `Could not clone ${url}` : detail);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });

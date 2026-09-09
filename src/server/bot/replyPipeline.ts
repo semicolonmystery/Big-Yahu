@@ -25,7 +25,7 @@ import { admitReply } from './replyAdmission';
 import { createTextAttachmentBudget, type TextAttachmentBudget } from './textAttachments';
 import { getSettings } from '../db/repositories/settingsRepo';
 import { collectAnnotations, collectInstructions, runBeforeReply } from '../plugins/engine';
-import type { ContextUser, DraftPrompt } from '../plugins/types';
+import type { ContextUser, DraftPrompt } from '@big-yahu/plugin-sdk';
 import { formatNow, languageName } from '@shared/constants';
 import type { Fact, SourceMessage } from '@shared/types';
 import { mentionedUserIds } from '@shared/discord';

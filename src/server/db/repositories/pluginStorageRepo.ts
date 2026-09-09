@@ -1,19 +1,13 @@
 import { and, eq } from 'drizzle-orm';
+import type { PluginStorage } from '@big-yahu/plugin-sdk';
 import { db } from '../client';
 import { pluginStorage } from '../schema';
 
 /**
- * A plugin's own scratch space. Every call is scoped to one plugin id, which is
- * supplied by the engine and never by the plugin, so one plugin cannot read
- * another's rows.
+ * Defined by the plugin SDK, since it is handed to plugins as `ctx.storage`.
+ * Re-exported so the rest of the bot keeps importing it from here.
  */
-export interface PluginStorage {
-  get<T = unknown>(key: string): T | undefined;
-  set(key: string, value: unknown): void;
-  delete(key: string): boolean;
-  keys(): string[];
-  clear(): void;
-}
+export type { PluginStorage } from '@big-yahu/plugin-sdk';
 
 export function storageFor(pluginId: string): PluginStorage {
   return {

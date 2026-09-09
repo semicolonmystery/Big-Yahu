@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message } from 'discord.js';
-import type { DraftPrompt } from '../../src/server/plugins/types';
+import type { DraftPrompt } from '@big-yahu/plugin-sdk';
 import type { ReplyContext } from '../../src/server/ai/replyGeneration';
 import { DEFAULT_SETTINGS } from '../../src/shared/constants';
 

@@ -5,7 +5,9 @@
   "main": "index.ts",
   "type": "module",
   "bigYahu": {
-    "displayName": "Rolling Memory",
-    "apiVersion": 1
+    "displayName": "Rolling Memory"
+  },
+  "devDependencies": {
+    "@big-yahu/plugin-sdk": "^2.0.0"
   }
 }

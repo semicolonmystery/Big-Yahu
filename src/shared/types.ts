@@ -65,36 +65,31 @@ export interface PluginPanelSummary {
 
 export type PluginPageSummary = PluginPanelSummary;
 
-/** Mirrors `PluginField` on the server; the panel renders a control per type. */
-export type PluginFieldType = 'string' | 'text' | 'number' | 'boolean' | 'select' | 'list';
+/**
+ * Most of the panel vocabulary is the plugin contract verbatim, so it comes
+ * from the SDK rather than being kept in step by hand. Re-exported here so the
+ * client keeps importing everything it renders from one place.
+ */
+export type {
+  PanelActionResult,
+  PanelElement,
+  PanelView,
+  PluginField,
+  PluginFieldType,
+  PluginPageColumn,
+  PluginSecretField,
+} from '@big-yahu/plugin-sdk';
 
-export interface PluginField {
-  name: string;
-  label: string;
-  type: PluginFieldType;
-  description?: string;
-  placeholder?: string;
-  min?: number;
-  max?: number;
-  step?: number;
-  options?: Array<{ value: string; label: string }>;
-  itemType?: 'string' | 'number';
-  required?: boolean;
-}
-
-export interface PluginSecretField {
-  name: string;
-  label: string;
-  description?: string;
-  placeholder?: string;
-  required?: boolean;
-  default?: string;
-}
+import type { PanelElement, PluginField, PluginSecretField } from '@big-yahu/plugin-sdk';
 
 /**
- * A page's cell as it reaches the browser. `user` and `channel` arrive carrying
- * both the id and the name the server resolved for it — the id is what the
- * plugin stores, the name is what an operator can actually read.
+ * The three below are deliberately **not** the plugin's versions.
+ *
+ * A plugin holds ids, because an id survives somebody renaming themselves. The
+ * browser needs something a person can read, so the server resolves names on
+ * the way out and the wire shape carries both. Keeping the two apart is what
+ * lets the plugin side stay honest about storing ids while the panel still
+ * shows names — collapsing them would force one side to lie.
  */
 export type PluginCell =
   | {
@@ -114,13 +109,7 @@ export type PluginCell =
   | { kind: 'time'; at: number }
   | { kind: 'badge'; text: string; tone?: 'ok' | 'warn' | 'error' };
 
-export interface PluginPageColumn {
-  key: string;
-  label: string;
-  align?: 'left' | 'right';
-  secondary?: boolean;
-}
-
+/** Carries the wire `PluginCell` above, so it cannot be the SDK's. */
 export interface PluginPageRow {
   id: string;
   cells: Record<string, PluginCell>;
@@ -128,7 +117,7 @@ export interface PluginPageRow {
 }
 
 export interface PluginPageData {
-  columns: PluginPageColumn[];
+  columns: import('@big-yahu/plugin-sdk').PluginPageColumn[];
   rows: PluginPageRow[];
   total: number;
   header?: PanelElement[];
@@ -137,34 +126,6 @@ export interface PluginPageData {
   /** Echoed back so the table knows which page it is looking at. */
   page: number;
   pageSize: number;
-}
-
-export type PanelElement =
-  | { type: 'text'; text: string; tone?: 'body' | 'muted' | 'success' | 'error' }
-  | { type: 'heading'; text: string }
-  | { type: 'status'; label: string; value: string; tone?: 'ok' | 'warn' | 'error' }
-  | { type: 'image'; src: string; alt?: string; caption?: string }
-  | {
-      type: 'field';
-      name: string;
-      label: string;
-      inputType?: 'text' | 'password' | 'number';
-      placeholder?: string;
-      value?: string;
-      help?: string;
-    }
-  | { type: 'button'; actionId: string; label: string; tone?: 'default' | 'destructive'; confirm?: string }
-  | { type: 'divider' };
-
-export interface PanelView {
-  elements: PanelElement[];
-  pollSeconds?: number;
-}
-
-export interface PanelActionResult {
-  message?: string;
-  tone?: 'success' | 'error';
-  view?: PanelView;
 }
 
 export interface ChannelPermission {

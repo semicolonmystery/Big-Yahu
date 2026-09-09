@@ -5,7 +5,9 @@
   "main": "index.ts",
   "type": "module",
   "bigYahu": {
-    "displayName": "Reputation",
-    "apiVersion": 1
+    "displayName": "Reputation"
+  },
+  "devDependencies": {
+    "@big-yahu/plugin-sdk": "^2.0.0"
   }
 }

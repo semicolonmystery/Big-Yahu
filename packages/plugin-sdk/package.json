@@ -1,0 +1,52 @@
+{
+  "name": "@big-yahu/plugin-sdk",
+  "version": "2.0.0",
+  "description": "The plugin contract for Big Yahu \u2014 types, hook names, and the plugin API version.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/semicolonmystery/Big-Yahu.git",
+    "directory": "packages/plugin-sdk"
+  },
+  "keywords": [
+    "big-yahu",
+    "discord",
+    "plugin",
+    "sdk"
+  ],
+  "peerDependencies": {
+    "@google/genai": ">=2",
+    "better-sqlite3": ">=13",
+    "chromadb": ">=3",
+    "discord.js": ">=14"
+  },
+  "peerDependenciesMeta": {
+    "@google/genai": {
+      "optional": true
+    },
+    "better-sqlite3": {
+      "optional": true
+    },
+    "chromadb": {
+      "optional": true
+    },
+    "discord.js": {
+      "optional": true
+    }
+  }
+}
