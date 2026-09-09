@@ -7,18 +7,14 @@ import { rewriteForFactSearch } from '../../ai/queryRewrite';
 import { hasUnresolvedRelativeDate, resolveRelativeDates } from '../../ai/dateEnforcement';
 
 import type { Fact, FactMetadata } from '@shared/types';
+import type { FactCandidate } from '@big-yahu/plugin-sdk';
 
-export interface FactCandidate {
-  text: string;
-  messageIds: string[];
-  authorIds?: string[];
-  guildId: string;
-  channelId: string;
-  referencedFactIds?: string[];
-  source: 'auto' | 'reply';
-  timePeriodStart: number;
-  timePeriodEnd: number;
-}
+/**
+ * Defined by the plugin SDK, because `saveFacts` on the plugin context takes
+ * one and a plugin cannot import from in here. Re-exported so everything in the
+ * bot keeps importing it from the repository that writes them.
+ */
+export type { FactCandidate } from '@big-yahu/plugin-sdk';
 
 function toFact(id: string, document: string | null | undefined, metadata: Metadata | null | undefined): Fact {
   const meta = (metadata ?? {}) as unknown as FactMetadata;

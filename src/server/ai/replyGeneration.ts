@@ -36,7 +36,7 @@ import {
   stripUnknownMentions,
 } from '@shared/discord';
 import type { Fact } from '@shared/types';
-import type { DraftPrompt } from '../plugins/types';
+import type { DraftPrompt } from '@big-yahu/plugin-sdk';
 import { collectTools, runTool } from '../plugins/engine';
 import type { ResolvedTool } from '../plugins/engine';
 

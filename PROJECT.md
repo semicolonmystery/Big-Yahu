@@ -281,6 +281,68 @@ teaches a distinction rather than a rudeness dial: short term sets tone, long
 term sets effort, so someone pleasant today with a bad history gets a civil
 answer that is quietly less generous.
 
+### The contract is a package
+
+`@big-yahu/plugin-sdk` (`packages/plugin-sdk/`, MIT, an npm workspace in this
+repo) is the plugin contract: every type, `HOOK_NAMES`, `PLUGIN_API_VERSION` and
+a `definePlugin` helper. The bot imports it by name like anyone else, so there is
+exactly one definition of the thing plugins are written against.
+
+Before it, `PLUGINS.md` told authors to `import type { BigYahuPlugin } from
+'../../types'`. Right for a bundled plugin, wrong for an installed one — from
+`<plugins dir>/<id>/index.ts` that resolves to `<plugins dir>/types`, which does
+not exist. It appeared to work only because `import type` is erased before Node
+sees it, so the plugin ran while `tsc` and the editor both broke. Every author's
+answer was to hand-copy the contract, and the copy in `steam-key-activate`
+carried a comment promising to keep it "in step" — a promise, not a mechanism,
+and one that had already been broken by `apiVersion`, `PluginField` and
+`enabledByDefault`.
+
+It lives in this repo rather than its own, because `PLUGIN_API_VERSION` exists to
+catch a plugin built against a contract the host no longer speaks. Split across
+two repositories, the host could change and the SDK not be bumped — creating by
+accident the exact skew the mechanism is for. Here, the contract, the version, the
+docs and both bundled plugins move in one commit. The host imports the version
+constant from the SDK rather than declaring its own, so the two cannot disagree.
+
+It is **MIT even though the bot need not be**, and it is a plugin's
+`devDependency`: everything but three constants and an identity function is a
+type, so a production install never fetches it and nothing of it exists at
+runtime. It is the first project here that actually emits — everything else sets
+`noEmit` and runs from TypeScript under `tsx` — and its emitted JavaScript is
+free of Node built-ins, because the admin panel imports it too.
+
+`src/shared/types.ts` held a second, partly divergent copy of the panel
+vocabulary. It now imports the identical shapes from the SDK and keeps only the
+two that differ **on purpose**: the wire `PluginCell` carries names the server
+resolved for the ids a plugin stores, and the wire `PluginPageData` echoes back
+`page`/`pageSize` for the pager.
+
+### Why a plugin may carry its own copy of a shared library
+
+A plugin installs as production: everything it needs at runtime in
+`dependencies`, the SDK and typings in `devDependencies`. It may depend on
+`discord.js` or `drizzle-orm` and get a second copy in the process, and that is
+safe.
+
+The reason is an invariant, not luck: **nothing on the plugin boundary uses
+`instanceof`, and no host library function is ever handed an object a plugin
+constructed.** A plugin reads properties off host-built objects and calls methods
+on them; what it returns is checked structurally. So its own `drizzle-orm` builds
+a self-contained graph over the `ctx.database` handle by duck-typing, and its own
+`discord.js` reads `message.content` and calls `message.reply()` on the host's
+object. A second copy costs disk and memory, not correctness — which is why a
+transitive copy nobody declared is not policed either.
+
+That invariant is now stated on `baseContext` and in `PLUGINS.md`, because it was
+true by accident and one `instanceof` would break every plugin carrying its own
+copy of that library, in a way that reads as the plugin's fault.
+
+The old arrangement — hide shared libraries in `devDependencies` so `--omit=dev`
+skips them and they resolve through the symlink to the bot's copy — was
+undocumented tribal knowledge. The symlink stays as a convenience for a plugin
+that deliberately wants the bot's exact version.
+
 ### Reaching the extraction pass
 
 `annotateContext` is reply-only, and that is load-bearing: nothing a plugin says through
@@ -707,6 +769,10 @@ Before any Gemini call, the bot counts that user's replies in the trailing hour 
 | Install over an existing id updates it | IMPL | code replaced, config, secrets, storage and database kept |
 | Typed plugin config and declared secrets | IMPL | schema-driven form with server-side coercion; JSON editor kept as the fallback |
 | Plugin pages | IMPL | own route, paginated table, search, row actions; ids resolved to names by the host |
+| `@big-yahu/plugin-sdk` | IMPL | the contract as a published package; the bot imports it by name, no more hand-mirroring |
+| Plugin load failures surfaced | IMPL | a plugin that throws on import is listed with the error instead of vanishing |
+| Reproducible plugin installs | IMPL | `npm ci` when the plugin ships a lockfile; an archive's `node_modules` is stripped |
+| Host paths resolved from the module | IMPL | `BUNDLED_DIR` and the `node_modules` symlink no longer depend on the working directory |
 | Rolling memory plugin | IMPL | bundled; message-based lifespans, scores, inline compaction, expiry promoted to facts |
 | Prompt notation stripped from outgoing replies | IMPL | `[id=...]`, `[replying to id=...]`, `[factId=...]` and friends never reach Discord |
 | `reply_to` — answering a message other than the ping | IMPL | defaults to the tagging message; same-channel ids only, falls back rather than failing |

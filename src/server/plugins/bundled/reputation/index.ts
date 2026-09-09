@@ -1,4 +1,4 @@
-import type { BigYahuPlugin, ContextAnnotations, PluginField, PluginPageRow } from '../../types';
+import type { BigYahuPlugin, ContextAnnotations, PluginField, PluginPageRow } from '@big-yahu/plugin-sdk';
 import { applyAssessment, ASSESSMENTS, DEFAULT_CONFIG, withDefaults } from './scores';
 import type { Assessment, ReputationConfig } from './scores';
 import { getRow, getRows, listRows, open, resetEveryone, resetUser, saveRow } from './store';

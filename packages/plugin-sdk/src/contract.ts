@@ -1,11 +1,14 @@
 import type { Client, Message } from 'discord.js';
-import type { ContentListUnion, GenerateContentConfig, GenerateContentResponse, GoogleGenAI } from '@google/genai';
+import type {
+  Content,
+  ContentListUnion,
+  GenerateContentConfig,
+  GenerateContentResponse,
+  GoogleGenAI,
+} from '@google/genai';
 import type { Collection } from 'chromadb';
-import type { Content } from '@google/genai';
-import type { Fact, SourceMessage } from '@shared/types';
-import type { FactCandidate } from '../db/repositories/factsRepo';
 import type { Database } from 'better-sqlite3';
-import type { PluginStorage } from '../db/repositories/pluginStorageRepo';
+import type { Fact, FactCandidate, PluginStorage, SourceMessage } from './data';
 
 /**
  * What a plugin is handed. Everything here is either shared on purpose (the
@@ -70,6 +73,10 @@ export interface PluginContext {
    * This plugin's own SQLite database — its own file, its own tables, its own
    * migrations. Opened on first access. Create tables with
    * `CREATE TABLE IF NOT EXISTS` on startup; the bot does not manage the schema.
+   *
+   * **Never cache the handle.** Reloading closes every plugin database before
+   * re-importing, so a copy kept at module scope is closed underneath you and
+   * fails on the next call. Read it off the context each time.
    */
   readonly database: Database;
 }
@@ -263,7 +270,10 @@ export interface PluginSecretField {
 
 export interface PanelView {
   elements: PanelElement[];
-  /** Re-fetch the panel automatically every N seconds — for a QR code being scanned. */
+  /**
+   * Re-fetch the panel automatically every N seconds — for a QR code being
+   * scanned. Clamped by the engine to 2–300; anything outside that is dropped.
+   */
   pollSeconds?: number;
 }
 

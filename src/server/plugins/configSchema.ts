@@ -1,4 +1,4 @@
-import type { PluginField, PluginSecretField } from './types';
+import type { PluginField, PluginSecretField } from '@big-yahu/plugin-sdk';
 
 /**
  * Coercing what the admin panel sends against what a plugin says it wants.

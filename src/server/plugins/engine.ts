@@ -11,7 +11,7 @@ import { getState, listStates, seedPlugin, setState } from '../db/repositories/p
 import { listEnvKeys, readEnv, setEnv } from '../db/repositories/pluginEnvRepo';
 import { storageFor } from '../db/repositories/pluginStorageRepo';
 import { closeAllDatabases, databaseFor } from './database';
-import { HOOK_NAMES } from './types';
+import { HOOK_NAMES } from '@big-yahu/plugin-sdk';
 import {
   BUNDLED_DIR,
   PLUGINS_DIR,
@@ -44,7 +44,7 @@ import type {
   OnHourlyCheckContext,
   OnMessageContext,
   PluginContext,
-} from './types';
+} from '@big-yahu/plugin-sdk';
 import type { FunctionDeclaration } from '@google/genai';
 import type {
   PluginSummary,
@@ -63,6 +63,14 @@ const bundledIds = new Set<string>();
  * Never being in the registry means none of them can find it.
  */
 const incompatible = new Map<string, { manifest: PluginManifest; reason: string }>();
+/**
+ * Plugins that could not be loaded at all — a missing dependency, a native
+ * binding that never built, a syntax error. Kept because without it they existed
+ * nowhere: not in the registry, not in `incompatible`, just a line on stdout,
+ * so the panel showed nothing and an operator had no way to tell an
+ * installed-but-broken plugin from one that was never installed.
+ */
+const failed = new Map<string, { manifest: PluginManifest; reason: string }>();
 let discordClient: Client | null = null;
 
 /**
@@ -93,6 +101,7 @@ export async function loadPlugins(): Promise<void> {
   manifests.clear();
   bundledIds.clear();
   incompatible.clear();
+  failed.clear();
   fs.mkdirSync(PLUGINS_DIR, { recursive: true });
   linkNodeModules();
 
@@ -109,7 +118,8 @@ export async function loadPlugins(): Promise<void> {
   }
   console.log(
     `[plugins] loaded ${registry.size} plugin(s)`
-    + (incompatible.size > 0 ? `, ${incompatible.size} refused for the wrong API version` : ''),
+    + (incompatible.size > 0 ? `, ${incompatible.size} refused for the wrong API version` : '')
+    + (failed.size > 0 ? `, ${failed.size} failed to load` : ''),
   );
 }
 
@@ -141,9 +151,10 @@ async function loadOne(directory: string, bundled: boolean): Promise<void> {
     const exported = (module as { default?: unknown }).default;
     const plugin = isPlugin(exported) ? exported : undefined;
     if (!plugin) {
-      console.error(
-        `[plugins] ${manifest.id}: default export has no hooks, tools, panels or instructions, skipping`,
-      );
+      const reason = 'Its default export has no hooks, tools, panels, pages or instructions.';
+      failed.set(manifest.id, { manifest, reason });
+      if (bundled) bundledIds.add(manifest.id);
+      console.error(`[plugins] ${manifest.id}: ${reason}`);
       return;
     }
 
@@ -164,6 +175,12 @@ async function loadOne(directory: string, bundled: boolean): Promise<void> {
     seedPlugin(manifest.id, false, resolved.defaultConfig ?? {});
     seedSecrets(manifest.id, resolved);
   } catch (error) {
+    // Usually a dependency: a package that was never installed, or a native
+    // module whose binding did not build. The message is what an operator needs
+    // to act on, so it goes to the panel rather than only to stdout.
+    const reason = error instanceof Error ? error.message : String(error);
+    failed.set(manifest.id, { manifest, reason });
+    if (bundled) bundledIds.add(manifest.id);
     console.error(`[plugins] failed to load ${manifest.id}:`, error);
   }
 }
@@ -201,6 +218,17 @@ function enabledPlugins(): BigYahuPlugin[] {
   return [...registry.values()].filter((plugin) => states[plugin.id]?.enabled);
 }
 
+/**
+ * Everything a plugin is handed.
+ *
+ * **Nothing on this boundary may use `instanceof`, and no host library function
+ * may be handed an object a plugin constructed.** That is what lets a plugin
+ * install its own copy of `discord.js` or `drizzle-orm` and still work: it reads
+ * properties off host-built objects and calls methods on them, all duck-typed,
+ * and what it returns is checked structurally (see `isDraftPrompt`). Introduce
+ * one `instanceof` here and every plugin carrying its own copy of that library
+ * breaks, in a way that looks like the plugin's fault.
+ */
 async function baseContext(pluginId: string): Promise<PluginContext> {
   const factsCollection = await getFactsCollection();
   // Frozen so one plugin cannot swap a function in and have another call it.
@@ -439,7 +467,9 @@ export function listPluginSummaries(): PluginSummary[] {
 
   // Listed rather than hidden. A plugin that silently vanished from the panel
   // after an update reads as the panel being broken, not the plugin.
-  const refused: PluginSummary[] = [...incompatible.values()].map(({ manifest, reason }) => ({
+  const unusable = (
+    entries: Iterable<{ manifest: PluginManifest; reason: string }>,
+  ): PluginSummary[] => [...entries].map(({ manifest, reason }) => ({
     id: manifest.id,
     name: manifest.name,
     description: manifest.description,
@@ -455,11 +485,11 @@ export function listPluginSummaries(): PluginSummary[] {
     pages: [],
   }));
 
-  return [...running, ...refused];
+  return [...running, ...unusable(incompatible.values()), ...unusable(failed.values())];
 }
 
 export function updatePluginState(id: string, patch: { enabled?: boolean; config?: Record<string, unknown> }): void {
-  const refused = incompatible.get(id);
+  const refused = incompatible.get(id) ?? failed.get(id);
   if (refused) throw new Error(`${id} cannot run: ${refused.reason}`);
   const plugin = registry.get(id);
   if (!plugin) throw new Error(`Unknown plugin: ${id}`);
@@ -482,7 +512,7 @@ export function isBundled(id: string): boolean {
 }
 
 export function knownPluginIds(): string[] {
-  return [...registry.keys(), ...incompatible.keys()];
+  return [...registry.keys(), ...incompatible.keys(), ...failed.keys()];
 }
 
 const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{0,48}$/;

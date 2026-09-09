@@ -6,3 +6,4 @@ chroma_data
 .git
 *.sqlite3
 *.sqlite3-*
+packages/*/dist

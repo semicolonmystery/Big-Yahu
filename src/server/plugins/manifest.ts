@@ -1,37 +1,36 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { PLUGIN_API_VERSION } from '@big-yahu/plugin-sdk';
+import type { PluginManifest } from '@big-yahu/plugin-sdk';
 import { env } from '../env';
 
 /** Plugins live beside the database, not in the source tree, so they survive a rebuild. */
 export const PLUGINS_DIR = path.resolve(path.dirname(path.resolve(env.sqlitePath)), 'plugins');
 
-/** Kept for the plugin that ships with the bot. */
-export const BUNDLED_DIR = path.resolve('src/server/plugins/bundled');
+/**
+ * Resolved from this module, not from `process.cwd()`. Both of these used to be
+ * cwd-relative, so starting the bot from anywhere but the project root pointed
+ * them at directories that do not exist — and `linkNodeModules` below fails
+ * *silently* in that case, after which every plugin importing a shared library
+ * dies with no explanation.
+ */
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+/** Where the plugins that ship with the bot live: this directory's `bundled/`. */
+export const BUNDLED_DIR = path.join(HERE, 'bundled');
+
+/** The bot's own node_modules — three levels up from `src/server/plugins`. */
+const BOT_NODE_MODULES = path.resolve(HERE, '..', '..', '..', 'node_modules');
 
 /**
- * The plugin contract's own version, bumped whenever anything a plugin depends
- * on changes shape — a hook's arguments, what a tool handler is handed, what a
- * page must return. A plugin declares the version it was written against and
- * must match exactly.
- *
- * Exact, not "same major", because the failure being prevented is a plugin
- * running against a contract it does not understand, and a partial match is
- * precisely the fuzzy version of that. A mismatch loads the plugin as
- * incompatible rather than crashing the bot: it is listed in the panel with the
- * reason, and none of its hooks, tools or pages are reachable.
+ * The contract version and the manifest shape live in the plugin SDK, so a
+ * plugin author imports the same number the bot checks against rather than
+ * copying it. Everything else in this file resolves host paths and stays here.
  */
-export const PLUGIN_API_VERSION = 1;
+export { PLUGIN_API_VERSION } from '@big-yahu/plugin-sdk';
+export type { PluginManifest } from '@big-yahu/plugin-sdk';
 
-export interface PluginManifest {
-  id: string;
-  name: string;
-  description: string;
-  version: string;
-  /** Entry file relative to the plugin directory. */
-  main: string;
-  /** The contract version this plugin declares, or null when it declares none. */
-  apiVersion: number | null;
-}
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,63}$/;
 
@@ -121,9 +120,12 @@ export function incompatibilityReason(manifest: PluginManifest): string | null {
  * and use the same libraries the bot already ships.
  */
 export function linkNodeModules(): void {
-  const target = path.resolve('node_modules');
+  const target = BOT_NODE_MODULES;
   const link = path.join(PLUGINS_DIR, 'node_modules');
-  if (!fs.existsSync(target)) return;
+  if (!fs.existsSync(target)) {
+    console.warn(`[plugins] no node_modules at ${target}; plugins cannot import the bot's libraries`);
+    return;
+  }
 
   try {
     if (fs.existsSync(link) || fs.lstatSync(link, { throwIfNoEntry: false })) {

@@ -64,18 +64,8 @@ Two plugins ship with it, both off until you turn them on:
 
 ## Licence
 
-[PolyForm Noncommercial 1.0.0](LICENSE). Use it, change it, run it for your
-server, build on it and share what you build — all of that is fine, for any
-noncommercial purpose. Charities, schools and public institutions count as
-noncommercial whatever their funding.
-
-What it does not allow is making money from it. If you want to run it
-commercially, sell it, or build a paid service on top, ask me and we can agree
-terms.
-
-Note that this is deliberately **not** an open source licence in the OSI sense,
-since it discriminates against commercial use. If that matters for what you are
-doing, it is better to know now than after you have written a plugin.
+[MIT](LICENSE). Use it, change it, run it, sell it — just keep the copyright
+notice.
 
 ## Requirements
 
@@ -159,6 +149,46 @@ this directory's location on the host before running Compose. And published
 ports land on the host rather than in your dev environment, so when using the
 dev overlay above, set `CHROMA_HOST=172.17.0.1` (the Docker gateway) instead of
 `localhost`. Running everything through Compose needs neither.
+
+## Contributing
+
+Contributions are welcome, on these terms. They are not negotiable in a pull
+request, but they are all negotiable in an issue.
+
+**Small changes, one concern each.** Open a pull request that does one thing. A
+PR with thousands of changed lines gets closed without review — not because the
+work is bad, but because nobody can review it honestly, and "looks fine" on a
+diff that size means nobody actually read it. If a change is genuinely large,
+open an issue first and we will work out how to split it.
+
+**Explain it properly.** Say what the problem was, why you solved it this way,
+and what you considered and rejected. The commit history in this repository is
+written that way on purpose — the reasoning is the part that is expensive to
+recover a year later, and the diff is the part that is not.
+
+**Read `CLAUDE.md` first.** It is how work is done here: verify APIs against the
+installed version rather than from memory, `npm run build` and `npm run lint`
+both pass before anything is called finished, use shadcn rather than
+hand-writing components it provides, keep `PROJECT.md`'s feature register
+current in the same change.
+
+**Do not change `CLAUDE.md` in a pull request.** If something in it is wrong,
+outdated or getting in your way, open an issue and say so. It governs how
+everything else gets written, so it changes deliberately and on its own, never
+as a side effect of a feature.
+
+**AI is fine.** I use it here and you may too. What is not fine is code that
+does not match what is already here — the wrong patterns, invented APIs, or
+comments that restate what the line does instead of why it is there. Whatever
+wrote it, you are the one submitting it, so read it first. Anything that looks
+generated rather than written for this codebase gets sent back.
+
+**Match the surrounding code.** Comments explain *why*, sparingly. Prefer the
+built-in mechanism over a hand-rolled one. If you find yourself fighting a
+convention, that is a signal to stop and ask in an issue.
+
+Bug reports are worth as much as patches, especially with the relevant lines
+from `docker compose logs bot`.
 
 ## Architecture
 

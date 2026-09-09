@@ -20,7 +20,7 @@ import { getMessages, cacheMessages } from '../db/repositories/cachedMessagesRep
 import { countRepliesForUserSince, logReply } from '../db/repositories/replyLogRepo';
 import { getSettings } from '../db/repositories/settingsRepo';
 import { collectAnnotations, collectInstructions, runBeforeReply } from '../plugins/engine';
-import type { ContextUser, DraftPrompt } from '../plugins/types';
+import type { ContextUser, DraftPrompt } from '@big-yahu/plugin-sdk';
 import { formatNow, languageName, RATE_LIMIT_WINDOW_MS } from '@shared/constants';
 import type { Fact, SourceMessage } from '@shared/types';
 import { mentionedUserIds } from '@shared/discord';
