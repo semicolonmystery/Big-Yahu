@@ -456,9 +456,20 @@ six".
 
 ### The plugin contract is versioned
 
-A plugin declares `bigYahu.apiVersion` and it must match the bot's exactly — not "the same
-major", because what is being prevented is a plugin running against a contract it does not
-understand, and a partial match is precisely the fuzzy version of that.
+A plugin declares the contract version **by depending on the SDK**: the package's major
+version is the contract version, so the range an author already maintains says it and
+there is no second field to drift. `npm update` is the whole of keeping the declaration
+current. A plugin that does not use the SDK at all can still set `bigYahu.apiVersion`
+directly; declaring both and disagreeing is refused rather than resolved, since silently
+picking a winner would hide exactly the drift the SDK removes.
+
+It is read out of `package.json` rather than from the plugin's own imports, because the
+check has to happen *before* the entry file is imported — a plugin written against another
+contract may do anything at import time.
+
+It must match exactly — not "the same major", because what is being prevented is a plugin
+running against a contract it does not understand, and a partial match is precisely the
+fuzzy version of that.
 
 A plugin that declares nothing, or the wrong number, installs and is listed in the panel
 marked incompatible with the reason, but never runs. Its entry file is not even imported:
@@ -770,6 +781,7 @@ Before any Gemini call, the bot counts that user's replies in the trailing hour 
 | Typed plugin config and declared secrets | IMPL | schema-driven form with server-side coercion; JSON editor kept as the fallback |
 | Plugin pages | IMPL | own route, paginated table, search, row actions; ids resolved to names by the host |
 | `@big-yahu/plugin-sdk` | IMPL | the contract as a published package; the bot imports it by name, no more hand-mirroring |
+| Contract version derived from the SDK dependency | IMPL | plugin API v2; the SDK's major declares it, `bigYahu.apiVersion` is the fallback for SDK-less plugins |
 | Plugin load failures surfaced | IMPL | a plugin that throws on import is listed with the error instead of vanishing |
 | Reproducible plugin installs | IMPL | `npm ci` when the plugin ships a lockfile; an archive's `node_modules` is stripped |
 | Host paths resolved from the module | IMPL | `BUNDLED_DIR` and the `node_modules` symlink no longer depend on the working directory |

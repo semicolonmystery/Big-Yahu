@@ -10,10 +10,17 @@
  * incompatible rather than crashing the bot: it is listed in the panel with the
  * reason, and none of its hooks, tools or pages are reachable.
  *
- * This package's major version tracks it, so `"@big-yahu/plugin-sdk": "^1"`
- * says exactly which contract a plugin speaks and npm enforces it for you.
+ * **This package's major version is the contract version.** Depend on
+ * `"@big-yahu/plugin-sdk": "^2"` and you have declared which contract you
+ * speak — there is no second field to keep in step, and updating the SDK is
+ * the whole of updating your declaration.
+ *
+ * It is read from your package.json rather than from this constant, because the
+ * bot checks compatibility *before* importing your entry file: a plugin written
+ * against a contract the host does not speak may do anything at import time, and
+ * running its top level to find out it should not have run is the wrong order.
  */
-export const PLUGIN_API_VERSION = 1;
+export const PLUGIN_API_VERSION = 2;
 
 /** What the bot reads out of a plugin's package.json. */
 export interface PluginManifest {
@@ -25,4 +32,8 @@ export interface PluginManifest {
   main: string;
   /** The contract version this plugin declares, or null when it declares none. */
   apiVersion: number | null;
+  /** Where that number came from, so a mismatch can say what to change. */
+  apiVersionSource: 'sdk-dependency' | 'manifest-field' | null;
+  /** Set when the SDK dependency and the explicit field disagree with each other. */
+  apiVersionConflict: string | null;
 }

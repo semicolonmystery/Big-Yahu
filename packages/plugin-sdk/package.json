@@ -1,6 +1,6 @@
 {
   "name": "@big-yahu/plugin-sdk",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "The plugin contract for Big Yahu \u2014 types, hook names, and the plugin API version.",
   "license": "MIT",
   "type": "module",

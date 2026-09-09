@@ -48,19 +48,39 @@ without disturbing anything npm itself cares about:
 | `description` | `bigYahu.description` → `description`. |
 | `version` | `bigYahu.version` → `version` → `'0.0.0'`. |
 | `main` | `bigYahu.main` → `main` → `'index.js'`. Must exist inside the package and must not resolve outside it. |
-| `apiVersion` | `bigYahu.apiVersion`. **Required.** See below. |
+| `apiVersion` | The major of your `@big-yahu/plugin-sdk` dependency, falling back to `bigYahu.apiVersion`. **Required.** See below. |
 
 ### The API version
 
 ```json
-{ "bigYahu": { "displayName": "My Plugin", "apiVersion": 1 } }
+{ "devDependencies": { "@big-yahu/plugin-sdk": "^2" } }
 ```
 
-The contract is versioned, and a plugin must declare the version it was written
-against. It has to match **exactly**: not "the same major", because the thing being
-prevented is a plugin running against a contract it does not understand, and a partial
-match is precisely the fuzzy version of that. The current version is `PLUGIN_API_VERSION`
-in `src/server/plugins/manifest.ts`.
+**Depending on the SDK is how you declare the contract version.** Its major version *is*
+the contract version, so the range you already maintain says it and there is no second
+field to keep in step — `npm update` is the whole of keeping your declaration current.
+
+It is read out of your `package.json` rather than from your imports, because the check
+happens *before* your entry file is imported: a plugin written against a contract the host
+does not speak may do anything at import time, and running its top level to find out it
+should not have run is the wrong order.
+
+A plugin that does not use the SDK — plain JavaScript, no build step, nothing to typecheck
+— says it directly instead:
+
+```json
+{ "bigYahu": { "displayName": "My Plugin", "apiVersion": 2 } }
+```
+
+Do not do both. When the two disagree the plugin is refused rather than one being quietly
+preferred: silently picking a winner would hide exactly the drift this is here to prevent.
+A `github:` or tag dependency carries no version number and cannot be read, so pair that
+with the explicit field.
+
+It has to match **exactly**: not "the same major", because the thing being prevented is a
+plugin running against a contract it does not understand, and a partial match is precisely
+the fuzzy version of that. The current version is `PLUGIN_API_VERSION`, exported by the
+SDK and imported by the bot, so the two cannot disagree.
 
 A plugin that declares nothing, or declares the wrong number, is **not an error and not
 hidden**. It installs, it is listed in the panel, and it is marked incompatible with the
@@ -1078,14 +1098,17 @@ Directory, once installed:
   "main": "index.ts",
   "type": "module",
   "bigYahu": {
-    "displayName": "Quote Book",
-    "apiVersion": 1
+    "displayName": "Quote Book"
+  },
+  "devDependencies": {
+    "@big-yahu/plugin-sdk": "^2"
   }
 }
 ```
 
-`apiVersion` is not optional. Leave it out and the plugin installs, is listed, and never
-runs — see section 1.
+The SDK dependency is not optional — its major is what declares the contract version.
+Without it, and without a `bigYahu.apiVersion` to stand in, the plugin installs, is
+listed, and never runs. See section 1.
 
 `index.ts`:
 
