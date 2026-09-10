@@ -371,6 +371,7 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
   const reply = await generateReply(draftPrompt, {
     guildId,
     channelId: message.channelId,
+    requesterIsController: controller,
     taggedMessage: message,
     windowMessages,
     foreignMessages: foreign,

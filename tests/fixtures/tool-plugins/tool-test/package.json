@@ -1,0 +1,10 @@
+{
+  "name": "tool-test",
+  "version": "1.0.0",
+  "description": "Fixture for plugin tool authorization tests.",
+  "main": "index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@big-yahu/plugin-sdk": "^3.0.0"
+  }
+}

@@ -38,7 +38,7 @@ import {
   stripUnknownMentions,
 } from '@shared/discord';
 import type { Fact } from '@shared/types';
-import type { DraftPrompt } from '@big-yahu/plugin-sdk';
+import type { DraftPrompt, PluginToolInvocation } from '@big-yahu/plugin-sdk';
 import { collectTools, runTool } from '../plugins/engine';
 import type { ResolvedTool } from '../plugins/engine';
 
@@ -67,6 +67,8 @@ export interface ForeignChannelMessages {
 export interface ReplyContext {
   guildId: string;
   channelId: string;
+  /** Read from the bot's controller store for the author of taggedMessage. */
+  requesterIsController: boolean;
   taggedMessage: Message;
   windowMessages: WindowMessage[];
   /** Read automatically because the tagging message mentioned those channels. */
@@ -168,6 +170,14 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
   const settings = getSettings();
   const maxDepth = effectiveMaxDepth();
   const lookbackMs = settings.escalationLookbackHours * 60 * 60 * 1000;
+  const invocation: PluginToolInvocation = Object.freeze({
+    guildId: context.guildId,
+    channelId: context.channelId,
+    messageId: context.taggedMessage.id,
+    requesterId: context.taggedMessage.author.id,
+    requesterIsController: context.requesterIsController,
+    requestContent: context.taggedMessage.content,
+  });
 
   const conversation: Content[] = [...draft.conversation];
   // Everything already read out of another channel counts as seen, or the
@@ -233,7 +243,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
   };
 
   // Plugin tools are resolved once per reply, not per turn.
-  const pluginTools = collectTools();
+  const pluginTools = collectTools(invocation);
   const pluginByName = new Map<string, ResolvedTool>(
     pluginTools.map((resolved) => [resolved.declaration.name ?? '', resolved]),
   );
@@ -271,7 +281,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
       }
       toolCalls += 1;
 
-      const result = await runTool(resolved, (call.args ?? {}) as Record<string, unknown>);
+      const result = await runTool(resolved, (call.args ?? {}) as Record<string, unknown>, invocation);
       // Everything crosses the boundary as JSON, so the model always gets a shape it can read.
       const payload =
         typeof result === 'object' && result !== null && !Array.isArray(result)

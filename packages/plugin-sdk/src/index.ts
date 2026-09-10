@@ -18,9 +18,9 @@
  * });
  * ```
  *
- * The bot resolves identity from your package.json rather than from the export,
- * and refuses to run a plugin whose `bigYahu.apiVersion` is missing or does not
- * match `PLUGIN_API_VERSION` exactly.
+ * The bot resolves identity and contract compatibility from your package.json
+ * rather than from the export, and refuses to run a plugin whose declared SDK
+ * major does not match `PLUGIN_API_VERSION` exactly.
  */
 
 export { PLUGIN_API_VERSION } from './version';
@@ -65,6 +65,8 @@ export type {
   PluginPanel,
   PluginSecretField,
   PluginTool,
+  PluginToolContext,
+  PluginToolInvocation,
 } from './contract';
 
 import type { BigYahuPlugin } from './contract';

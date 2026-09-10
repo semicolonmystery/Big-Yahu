@@ -1,8 +1,10 @@
 /**
  * The plugin contract's own version, bumped whenever anything a plugin depends
  * on changes shape — a hook's arguments, what a tool handler is handed, what a
- * page must return. A plugin declares the version it was written against, in
- * `bigYahu.apiVersion` in its package.json, and it must match exactly.
+ * page must return. Normally a plugin declares the version it was written
+ * against through the major of its `@big-yahu/plugin-sdk` dependency, and it
+ * must match exactly. `bigYahu.apiVersion` remains a fallback for JavaScript
+ * plugins that do not depend on the SDK package.
  *
  * Exact, not "same major", because the failure being prevented is a plugin
  * running against a contract it does not understand, and a partial match is
@@ -11,7 +13,7 @@
  * reason, and none of its hooks, tools or pages are reachable.
  *
  * **This package's major version is the contract version.** Depend on
- * `"@big-yahu/plugin-sdk": "^2"` and you have declared which contract you
+ * `"@big-yahu/plugin-sdk": "^3"` and you have declared which contract you
  * speak — there is no second field to keep in step, and updating the SDK is
  * the whole of updating your declaration.
  *
@@ -20,7 +22,7 @@
  * against a contract the host does not speak may do anything at import time, and
  * running its top level to find out it should not have run is the wrong order.
  */
-export const PLUGIN_API_VERSION = 2;
+export const PLUGIN_API_VERSION = 3;
 
 /** What the bot reads out of a plugin's package.json. */
 export interface PluginManifest {

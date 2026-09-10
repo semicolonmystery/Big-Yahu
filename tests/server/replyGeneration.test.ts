@@ -7,6 +7,7 @@ import { DEFAULT_SETTINGS } from '../../src/shared/constants';
 const m = vi.hoisted(() => ({
   generate: vi.fn(), addFacts: vi.fn(), deleteFact: vi.fn(), searchFacts: vi.fn(),
   canExtract: vi.fn(), runTool: vi.fn(), fetchOlder: vi.fn(), readChannel: vi.fn(),
+  collectTools: vi.fn(),
 }));
 vi.mock('../../src/server/ai/generate', () => ({ generate: m.generate }));
 vi.mock('../../src/server/db/repositories/settingsRepo', () => ({ getSettings: () => DEFAULT_SETTINGS }));
@@ -14,7 +15,7 @@ vi.mock('../../src/server/db/repositories/channelSettingsRepo', () => ({ canExtr
 vi.mock('../../src/server/db/repositories/factsRepo', () => ({ addFacts: m.addFacts, deleteFact: m.deleteFact, searchFacts: m.searchFacts }));
 vi.mock('../../src/server/db/repositories/cachedMessagesRepo', () => ({ cacheMessages: vi.fn(), getMessages: () => [] }));
 vi.mock('../../src/server/plugins/engine', () => ({
-  collectTools: () => [{ pluginId: 'example', tool: { name: 'assess' }, declaration: { name: 'example__assess' } }],
+  collectTools: m.collectTools,
   runTool: m.runTool,
 }));
 vi.mock('../../src/server/bot/channelAccess', () => ({ resolveReadableChannel: m.readChannel }));
@@ -28,8 +29,8 @@ const messageId = '22222222222222222';
 const userId = '12345678901234567';
 const windowMessage = { id: messageId, authorId: userId, authorUsername: 'Alice', displayName: 'Alice', content: 'question', createdAt: 1, isSelf: false };
 const draft = (): DraftPrompt => ({ conversation: [{ role: 'user', parts: [{ text: 'question' }] }], systemInstruction: 'Reply', retrievedFacts: [], sourceMessages: [] });
-const context = (): ReplyContext => ({ guildId: 'g', channelId: 'c', windowMessages: [windowMessage], taggedMessage: {
-  id: messageId, author: { id: userId }, channel: {}, guild: { channels: { cache: new Map() } },
+const context = (): ReplyContext => ({ guildId: 'g', channelId: 'c', requesterIsController: false, windowMessages: [windowMessage], taggedMessage: {
+  id: messageId, content: 'raw request', author: { id: userId }, channel: {}, guild: { channels: { cache: new Map() } },
 } as unknown as Message });
 const reply = (text = 'odpověď', calls: Array<{ name: string; id?: string; args?: Record<string, unknown> }> = []) => ({
   functionCalls: calls,
@@ -42,6 +43,7 @@ describe('Gemini reply protocol', () => {
   beforeEach(() => {
     m.canExtract.mockReturnValue(true); m.searchFacts.mockResolvedValue([]); m.fetchOlder.mockResolvedValue([]);
     m.addFacts.mockResolvedValue(['saved']); m.deleteFact.mockResolvedValue(true); m.runTool.mockResolvedValue({ ok: true });
+    m.collectTools.mockReturnValue([{ pluginId: 'example', tool: { name: 'assess' }, declaration: { name: 'example__assess' } }]);
     m.generate.mockReset(); m.generate.mockResolvedValue(reply());
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -56,6 +58,19 @@ describe('Gemini reply protocol', () => {
       expect.objectContaining({ id: 'people', name: 'list_people', response: expect.objectContaining({ people: expect.any(String) }) }),
       expect.objectContaining({ id: 'score', name: 'example__assess', response: expect.objectContaining({ ok: true }) }),
     ]);
+  });
+  it('passes one frozen authoritative invocation through discovery and execution', async () => {
+    const ctx = context(); ctx.requesterIsController = true;
+    m.generate.mockResolvedValueOnce(reply('', [{ name: 'example__assess', args: { score: 5 } }]));
+    await generateReply(draft(), ctx);
+
+    const invocation = m.collectTools.mock.calls[0][0];
+    expect(invocation).toEqual({
+      guildId: 'g', channelId: 'c', messageId, requesterId: userId,
+      requesterIsController: true, requestContent: 'raw request',
+    });
+    expect(Object.isFrozen(invocation)).toBe(true);
+    expect(m.runTool).toHaveBeenCalledWith(expect.any(Object), { score: 5 }, invocation);
   });
   it('executes two saves and pairs repeated plugin calls with their own results', async () => {
     m.runTool.mockResolvedValueOnce({ value: 'first' }).mockResolvedValueOnce({ value: 'second' });

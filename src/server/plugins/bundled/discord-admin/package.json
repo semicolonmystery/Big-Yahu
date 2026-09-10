@@ -1,0 +1,13 @@
+{
+  "name": "discord-admin",
+  "version": "1.0.0",
+  "description": "Lets controllers manage Discord members, roles and channel permission overwrites through the bot.",
+  "main": "index.ts",
+  "type": "module",
+  "bigYahu": {
+    "displayName": "Discord Admin"
+  },
+  "devDependencies": {
+    "@big-yahu/plugin-sdk": "^3.0.0"
+  }
+}

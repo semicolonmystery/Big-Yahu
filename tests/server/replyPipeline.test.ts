@@ -59,6 +59,12 @@ describe('complete reply pipeline boundaries', () => {
     expect(m.log).toHaveBeenCalledWith(expect.objectContaining({ replyMessageId: 'sent', taggedMessageId: '22' }));
     expect(m.release).toHaveBeenCalledTimes(1); expect(m.stopTyping).toHaveBeenCalledTimes(1);
   });
+  it('propagates the controller result as authoritative reply context', async () => {
+    m.controller.mockReturnValueOnce(true);
+    const msg = message(); await handleMention(msg as unknown as Message);
+    expect(m.controller).toHaveBeenCalledWith(window.authorId);
+    expect(m.generate.mock.calls[0][1]).toMatchObject({ requesterIsController: true });
+  });
   it('rejects excess work before context/attachments/AI', async () => {
     m.admit.mockReturnValue(null);
     const msg = message(); await handleMention(msg as unknown as Message);

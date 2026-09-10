@@ -10,13 +10,16 @@
 | Admin error states, permissions and regression tests | IMPL | Correct defaults, recoverable auth, pagination, validated settings and browser coverage |
 | Strict single-guild runtime and deployment checks | IMPL | Required guild in bot mode; health checks, graceful shutdown, Docker/Chroma smoke and CI |
 
-Plugin implementation is outside this change: it is maintained separately. Existing plugin APIs and unfinished features are retained.
+The plugin system and its bundled plugins are maintained in this repository. Existing
+capabilities and unfinished features remain; the tool-handler contract deliberately
+advances to plugin API v3.
 
-The reliability changes are integrated with upstream's SDK workspace and MIT
-license changes through `879f454`. Plugin sources and the SDK package remain
-identical to that upstream version. Docker copies the compiled SDK and excludes
-nested TypeScript build caches so a local build cannot suppress compilation in
-a clean image.
+The reliability changes were integrated with upstream's SDK workspace and MIT
+license changes through `879f454`. This tree now intentionally diverges with plugin
+API v3 and the bundled Discord Admin plugin; its plugin sources and SDK package are no
+longer identical to that upstream revision. Docker copies the compiled SDK and excludes
+nested TypeScript build caches so a local build cannot suppress compilation in a clean
+image.
 
 New admin controls reuse the existing shadcn `base-nova` components. Generated
 Button, Badge and Tabs stay unchanged; their standard variant exports are allowed
@@ -289,13 +292,13 @@ plugins annotating the same person both appear.
 
 ### Reputation
 
-One of the two bundled plugins, and the older of them. Every Discord user carries two scores out of 10: a short
-term that swings on a few messages, and a long term that chases it far more
-slowly and is dragged down harder the longer someone keeps behaving badly, so a
-bad fortnight is not erased by a good afternoon. The model judges behaviour on
-an ordinal scale through a tool call on the reply it is already making — no
-extra Gemini request — and the plugin owns the arithmetic, because letting the
-model pick numbers made the scale mean whatever it felt like that turn.
+One of the three bundled plugins, and the oldest of them. Every Discord user carries
+two scores out of 10: a short term that swings on a few messages, and a long term that
+chases it far more slowly and is dragged down harder the longer someone keeps behaving
+badly, so a bad fortnight is not erased by a good afternoon. The model judges behaviour
+on an ordinal scale through a tool call on the reply it is already making — no extra
+Gemini request — and the plugin owns the arithmetic, because letting the model pick
+numbers made the scale mean whatever it felt like that turn.
 
 Scores are injected through `annotateContext` rather than fetched with a tool,
 so the bot never has to decide to look someone up. The skill that reads them
@@ -324,7 +327,7 @@ It lives in this repo rather than its own, because `PLUGIN_API_VERSION` exists t
 catch a plugin built against a contract the host no longer speaks. Split across
 two repositories, the host could change and the SDK not be bumped — creating by
 accident the exact skew the mechanism is for. Here, the contract, the version, the
-docs and both bundled plugins move in one commit. The host imports the version
+docs and all three bundled plugins move in one commit. The host imports the version
 constant from the SDK rather than declaring its own, so the two cannot disagree.
 
 It is **MIT even though the bot need not be**, and it is a plugin's
@@ -386,7 +389,7 @@ so anything a plugin means to keep goes through the same door the bot's own fact
 
 ### Rolling memory
 
-The second bundled plugin, and the counterpart to facts. A fact stays true; a rolling
+Another bundled plugin, and the counterpart to facts. A fact stays true; a rolling
 memory is what is happening at the moment — someone is mid-argument, someone said they
 would be back in an hour, everyone is calling something "the incident". Worth nothing next
 month, worth everything right now.
@@ -476,6 +479,37 @@ tell anyone what it says", which is right for a private score and exactly wrong 
 whole value of a rolling memory is that the bot can say "yeah, you said you'd be back by
 six".
 
+### Discord Admin
+
+The third bundled plugin gives the model Discord administration tools, but only on a
+request from a controller id configured in Settings. It can inspect members, roles and
+channel overwrites; change nicknames; apply and remove timeouts; kick; ban and unban;
+add and remove member roles; create, edit and delete roles; set role or member channel
+overwrites; and mute, deafen, move or disconnect members in voice.
+
+That surface is split into independent `enable*` switches for inspection, nicknames,
+timeouts, kicks, bans, member roles, role management, channel permissions and voice
+moderation. The plugin is disabled as a whole until an operator enables it, and every
+capability starts behind its own setting. Granting the Discord `Administrator`
+permission is blocked unless `allowAdministratorPermission` is deliberately enabled;
+`requireMutationConfirmation` defaults to true, so every mutation requires an exact
+payload-bound confirmation phrase in a new controller message. If an operator disables
+that setting, kicks, bans, role or overwrite deletion, and Administrator grants still
+require confirmation unconditionally.
+
+The security check does not rely on the model repeating who asked. Plugin API v3 gives
+each tool a frozen, host-built invocation record from the Discord message, including the
+requester id and whether that id is a controller. Every Discord Admin tool declares
+`requiresController` and its matching `enabledByConfig` key. The host filters failed
+gates out before the model sees its tool list and checks them again immediately before
+the handler. That second check reads both current raw config and `controllersRepo`, so
+turning a capability off or removing the requester from Controllers mid-reply prevents
+an action the model was already offered.
+
+Discord still has the last word. The bot needs the specific permission for an operation,
+and its highest role must be above the target member or role wherever Discord applies
+role hierarchy. The plugin reports those refusals; it does not try to bypass them.
+
 ### The plugin contract is versioned
 
 A plugin declares the contract version **by depending on the SDK**: the package's major
@@ -492,6 +526,15 @@ contract may do anything at import time.
 It must match exactly — not "the same major", because what is being prevented is a plugin
 running against a contract it does not understand, and a partial match is precisely the
 fuzzy version of that.
+
+Version 3 adds the per-turn `PluginToolContext` and declarative tool gates. A tool can
+require a controller and a boolean plugin-config key without trusting model arguments;
+the host owns both the invocation metadata and enforcement.
+
+That handler-context change is intentionally a breaking boundary. External API v2
+plugins stay installed and visible but are marked incompatible and never imported. Their
+authors must move the SDK dependency to `^3` (or declare `bigYahu.apiVersion: 3` without
+the SDK) and accept `PluginToolContext` in tool handlers before the host will run them.
 
 A plugin that declares nothing, or the wrong number, installs and is listed in the panel
 marked incompatible with the reason, but never runs. Its entry file is not even imported:
@@ -753,13 +796,15 @@ does not queue or invoke AI.
 | Admin auth (setup, login, logout, sessions) | IMPL | scrypt + opaque session cookie; constant-time and rate-limited |
 | Gemini embedding function for Chroma | IMPL | taskType-aware, unit-normalised |
 | Facts repository + duplicate prevention | IMPL | stable-ID updates, serialized writes, same-subject similarity merge |
-| Plugin engine + hooks + example plugin | IMPL | `onMessage`, `onHourlyCheck`, `onBotTagged`, `annotateContext`, `annotateExtraction`, `beforeReply` |
+| Plugin engine + hooks + bundled plugins | IMPL | `onMessage`, `onHourlyCheck`, `onBotTagged`, `annotateContext`, `annotateExtraction`, `beforeReply` |
 | Periodic fact extraction + scheduler | IMPL | per-channel, checkpointed, escalation-capable |
 | Bot reply pipeline | IMPL | two-stage, jump links, `save_fact` tool, reply logging |
 | Per-user rate limiting | IMPL | configurable cap and message |
 | Choosing not to reply | IMPL | `stay_silent` tool; nothing sent, nothing logged |
 | Controller accounts | IMPL | Discord IDs in Settings; may add and delete facts |
 | Plugin tools + panels | IMPL | JSON-schema tools, declarative admin screens |
+| Plugin tool invocation and access gates | IMPL | API v3 host-owned turn metadata; `requiresController` and `enabledByConfig`, with live config/controller rechecks before execution |
+| Discord Admin plugin | IMPL | bundled and controller-only; per-capability switches plus payload-bound mutation confirmation, with an unconditional high-risk floor |
 | Plugin isolation | IMPL | scoped context, own storage and SQLite file; not a sandbox |
 | Plugin dependencies | IMPL | npm install per plugin, plus the bot's shared modules |
 | Per-channel reply/read permissions | IMPL | reply defaults on, read defaults **off**; enforced in the handler and the scheduler |
@@ -799,13 +844,13 @@ does not queue or invoke AI.
 | `crossChannelMessages` setting | IMPL | caps the history pulled; 0 disables cross-channel reading entirely |
 | Plugin `annotateExtraction` hook | IMPL | opt-in reach into the periodic pass; `annotateContext` stays reply-only |
 | Plugin `saveFacts` in the context | IMPL | plugins write facts through the dedupe path rather than the raw collection |
-| Versioned plugin API | IMPL | exact match on `bigYahu.apiVersion`; a mismatch is listed, never imported, never runnable |
+| Versioned plugin API | IMPL | exact API v3 match from the SDK major or `bigYahu.apiVersion`; a mismatch is listed, never imported, never runnable |
 | Plugins always start disabled | IMPL | `enabledByDefault` removed; a plugin cannot switch itself on |
 | Install over an existing id updates it | IMPL | code replaced, config, secrets, storage and database kept |
 | Typed plugin config and declared secrets | IMPL | schema-driven form with server-side coercion; JSON editor kept as the fallback |
 | Plugin pages | IMPL | own route, paginated table, search, row actions; ids resolved to names by the host |
 | `@big-yahu/plugin-sdk` | IMPL | the contract as a published package; the bot imports it by name, no more hand-mirroring |
-| Contract version derived from the SDK dependency | IMPL | plugin API v2; the SDK's major declares it, `bigYahu.apiVersion` is the fallback for SDK-less plugins |
+| Contract version derived from the SDK dependency | IMPL | plugin API v3; the SDK's major declares it, `bigYahu.apiVersion` is the fallback for SDK-less plugins |
 | Plugin load failures surfaced | IMPL | a plugin that throws on import is listed with the error instead of vanishing |
 | Reproducible plugin installs | IMPL | `npm ci` when the plugin ships a lockfile; an archive's `node_modules` is stripped |
 | Host paths resolved from the module | IMPL | `BUNDLED_DIR` and the `node_modules` symlink no longer depend on the working directory |
@@ -821,7 +866,7 @@ server, typechecks tests, runs lint and reports Vitest coverage. Regression suit
 cover real migrated SQLite, auth HTTP routes and UI states, extraction/checkpoints,
 fact writes, admission, tool dispatch, channel permissions, attachment limits and
 the real Gemini SDK with mocked HTTP transport. They make no paid AI calls.
-The final local run passed 348 tests across 26 suites, with 61.8% line coverage in
+The final local run passed 397 tests across 29 suites, with 62% line coverage in
 the configured coverage scope; both Chromium browser scenarios also passed.
 
 Playwright runs a real isolated admin server and Chromium through setup, login,
@@ -839,9 +884,10 @@ dynamic transport hook, so this uses a guarded, narrowly scoped SDK adapter whos
 contract is covered by tests. Retry delays and queued mutations honor cancellation;
 an expired queued deletion cannot execute later.
 
-Live Discord/Gemini behavior and plugin functionality were not revalidated for
-this change. Coverage reports show remaining gaps rather than claiming complete
-coverage. The records below describe verification from earlier development.
+Live Discord/Gemini behavior was not revalidated for this change. Discord Admin
+behavior and the plugin-tool authorization boundary were exercised with isolated
+tests; coverage reports still show remaining gaps rather than claiming complete
+coverage. The records below also describe verification from earlier development.
 
 Exercised against a running server: migrations apply on boot; the whole auth flow
 (first-run state, setup, login, wrong-password rejection, logout invalidating the session,
@@ -854,7 +900,7 @@ mention and on a reply, in Czech and in English; fact extraction and recall; the
 tool loop with a plugin enabled alongside it. That is what surfaced the silent non-replies
 and the English meta-replies, neither of which any amount of local reasoning had found.
 
-Exercised through the real plugin engine, without the panel: both bundled plugins loading
+Exercised through the real plugin engine, without the panel: the two original bundled plugins loading
 with the right hooks and seeded config; an installed third-party plugin loading the same
 way; a deliberately wrong `apiVersion` being refused, listed with its reason and left with
 no reachable hooks; typed config coercion on save; page rendering with ids resolved to
@@ -862,6 +908,14 @@ names, search matching on a name rather than an id, paging splitting correctly, 
 row action and a header action doing what they say. The plugin store was driven directly
 against a real SQLite file — migrations, ticking, expiry, refresh, orphaned link cleanup
 and config clamping.
+
+Discord Admin's focused suite covers every controller/config gate, exact payload-bound
+mutation confirmations, ban message-deletion binding, nickname and hierarchy handling, timeout
+bounds, Administrator opt-in, member and role changes, unknown permission-bit
+preservation, channel overwrite tri-state updates, voice movement prerequisites, audit
+reason limits and malformed input. Separate engine and reply-pipeline tests verify that
+host-owned invocation metadata is frozen and that current controller, plugin-enabled and
+config state are rechecked before a previously exposed tool can execute.
 
 Unit-checked in isolation, because the interesting cases are the ones nobody types on
 purpose: the relative-date detector over 35 cases including missing diacritics and typos,
