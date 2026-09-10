@@ -53,10 +53,11 @@ how it behaves.
 - **Plugins.** Hook into `onMessage`, `onHourlyCheck`, `onBotTagged`,
   `annotateContext`, `annotateExtraction` and `beforeReply`, lend the bot new
   tools, describe your settings so the panel renders real controls, and add
-  your own paginated screens to the admin panel. The contract is versioned, and
-  plugins keep their data across an update. See [PLUGINS.md](PLUGINS.md).
+  your own paginated screens to the admin panel. API v3 supports host-enforced
+  controller and config gates for tools; plugins keep their data across an
+  update. See [PLUGINS.md](PLUGINS.md).
 
-Two plugins ship with it, both off until you turn them on:
+Three plugins ship with it, all off until you turn them on:
 
 - **Reputation** — tracks how each person treats the bot over time on two
   scores, one that swings quickly and one that barely moves, and quietly shapes
@@ -65,6 +66,20 @@ Two plugins ship with it, both off until you turn them on:
   now, measured in messages rather than minutes, so a quiet channel does not
   forget where it was. Anything still worth keeping when it runs out is
   promoted into permanent memory.
+- **Discord Admin** — controller-only tools to inspect and manage members,
+  nicknames, timeouts, kicks, bans, roles, channel permission overwrites and
+  voice moderation. Every capability group has its own switch; granting the
+  Administrator permission is separately opt-in. `requireMutationConfirmation`
+  defaults on and binds every state change to an exact confirmation phrase for
+  that payload. Even with it off, kicks, bans, role/overwrite deletion and
+  Administrator grants still require confirmation. Capability switches and the
+  current Controllers list are checked again immediately before execution, so
+  disabling a capability or removing the requester mid-reply cancels the action.
+
+External API v2 plugins remain installed and visible after this upgrade, but are
+marked incompatible and are not loaded. Update them to
+`@big-yahu/plugin-sdk` `^3` and use `PluginToolContext` in tool handlers (or set
+`bigYahu.apiVersion` to `3` for an SDK-less JavaScript plugin).
 
 ## Licence
 
@@ -76,6 +91,16 @@ notice.
 - Docker and Docker Compose
 - A Discord bot token, with **Message Content** and **Presence** intents enabled
 - A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
+
+For Discord Admin, give the bot only the Discord permissions for the switches
+you enable: **Manage Nicknames**, **Timeout Members**, **Kick Members**, **Ban
+Members**, **Manage Roles**, and the relevant **Mute**, **Deafen**, or **Move
+Members** voice permissions; moving someone also requires **Connect** in the
+destination channel. Its highest role must be above any member or role it will
+manage, and it cannot grant permissions the bot itself lacks. See
+[Discord's permission table and role hierarchy](https://docs.discord.com/developers/topics/permissions).
+The plugin addresses explicit Discord ids, so it does not add a Guild Members
+privileged-intent requirement.
 
 ## Getting started
 

@@ -8,6 +8,7 @@ import { addFacts } from '../db/repositories/factsRepo';
 import { ai } from '../ai/client';
 import { generate } from '../ai/generate';
 import { getState, listStates, seedPlugin, setState } from '../db/repositories/pluginStateRepo';
+import { isController } from '../db/repositories/controllersRepo';
 import { listEnvKeys, readEnv, setEnv } from '../db/repositories/pluginEnvRepo';
 import { storageFor } from '../db/repositories/pluginStorageRepo';
 import { closeAllDatabases, databaseFor } from './database';
@@ -44,6 +45,8 @@ import type {
   OnHourlyCheckContext,
   OnMessageContext,
   PluginContext,
+  PluginToolContext,
+  PluginToolInvocation,
 } from '@big-yahu/plugin-sdk';
 import type { FunctionDeclaration } from '@google/genai';
 import type {
@@ -229,7 +232,16 @@ function enabledPlugins(): BigYahuPlugin[] {
  * one `instanceof` here and every plugin carrying its own copy of that library
  * breaks, in a way that looks like the plugin's fault.
  */
-async function baseContext(pluginId: string): Promise<PluginContext> {
+async function baseContext(pluginId: string): Promise<PluginContext>;
+async function baseContext(pluginId: string, invocation: PluginToolInvocation): Promise<PluginToolContext>;
+async function baseContext(
+  pluginId: string,
+  invocation?: PluginToolInvocation,
+): Promise<PluginContext | PluginToolContext> {
+  // Capture before the first await and clone rather than freezing the caller's
+  // object. A handler can trust these primitives and cannot rewrite them for a
+  // later check or another plugin tool in the same reply.
+  const trustedInvocation = invocation ? Object.freeze({ ...invocation }) : undefined;
   const factsCollection = await getFactsCollection();
   // Frozen so one plugin cannot swap a function in and have another call it.
   // `database` is a getter so no file is created for a plugin that never uses it.
@@ -243,6 +255,7 @@ async function baseContext(pluginId: string): Promise<PluginContext> {
     getConfig: <T = Record<string, unknown>>() => (getState(pluginId)?.config ?? {}) as T,
     getEnv: () => readEnv(pluginId),
     storage: storageFor(pluginId),
+    ...(trustedInvocation ? { invocation: trustedInvocation } : {}),
     get database() {
       return databaseFor(pluginId);
     },
@@ -528,11 +541,42 @@ export interface ResolvedTool {
   tool: PluginTool;
 }
 
-/** Tools from every enabled plugin, ready to hand to the model. */
-export function collectTools(): ResolvedTool[] {
+function toolDenial(
+  pluginId: string,
+  tool: PluginTool,
+  requesterStillController: boolean,
+): string | null {
+  const state = getState(pluginId);
+  if (!state?.enabled) return 'This plugin was disabled before the tool could run.';
+  if (tool.requiresController && !requesterStillController) {
+    return 'This tool is restricted to bot controllers.';
+  }
+  if (
+    tool.enabledByConfig !== undefined
+    && state.config[tool.enabledByConfig] !== true
+  ) {
+    return `This tool is disabled by the "${tool.enabledByConfig}" plugin setting.`;
+  }
+  return null;
+}
+
+function requesterStillController(invocation: PluginToolInvocation): boolean {
+  if (!invocation.requesterIsController) return false;
+  try {
+    return isController(invocation.requesterId);
+  } catch (error) {
+    console.error('[plugins] could not revalidate the requesting controller:', error);
+    return false;
+  }
+}
+
+/** Tools from every enabled plugin that this invocation may use, ready for the model. */
+export function collectTools(invocation: PluginToolInvocation): ResolvedTool[] {
   const resolved: ResolvedTool[] = [];
+  const controller = requesterStillController(invocation);
   for (const plugin of enabledPlugins()) {
     for (const tool of plugin.tools ?? []) {
+      if (toolDenial(plugin.id, tool, controller)) continue;
       if (!TOOL_NAME_PATTERN.test(tool.name)) {
         console.error(`[plugins] ${plugin.id}: tool "${tool.name}" has an unusable name, skipping`);
         continue;
@@ -556,9 +600,17 @@ export function collectTools(): ResolvedTool[] {
  * handler becomes an error payload rather than killing the reply — the model
  * can then say it could not look something up.
  */
-export async function runTool(resolved: ResolvedTool, args: Record<string, unknown>): Promise<unknown> {
+export async function runTool(
+  resolved: ResolvedTool,
+  args: Record<string, unknown>,
+  invocation: PluginToolInvocation,
+): Promise<unknown> {
   try {
-    const ctx = await baseContext(resolved.pluginId);
+    const ctx = await baseContext(resolved.pluginId, invocation);
+    // The model saw an earlier snapshot. Re-read configuration and re-apply
+    // controller authorization immediately before plugin code executes.
+    const denial = toolDenial(resolved.pluginId, resolved.tool, requesterStillController(ctx.invocation));
+    if (denial) return { error: denial };
     const result = await resolved.tool.handler(args, ctx);
     return result ?? { ok: true };
   } catch (error) {

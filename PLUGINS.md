@@ -8,10 +8,10 @@ plugin API as it exists today. Read it alongside the source, which is the actual
 authority:
 
 - `packages/plugin-sdk/src/` — the contract itself, published as
-  `@big-yahu/plugin-sdk`: `BigYahuPlugin`, `PluginContext`, `PluginTool`, `PluginPanel`,
-  `PluginPage`, `PanelElement`, the hook contexts, `DraftPrompt`, and
-  `PLUGIN_API_VERSION`. This is the package you depend on, so it is also the thing to
-  read.
+  `@big-yahu/plugin-sdk`: `BigYahuPlugin`, `PluginContext`, `PluginTool`,
+  `PluginToolContext`, `PluginToolInvocation`, `PluginPanel`, `PluginPage`,
+  `PanelElement`, the hook contexts, `DraftPrompt`, and `PLUGIN_API_VERSION`. This is
+  the package you depend on, so it is also the thing to read.
 - `src/server/plugins/manifest.ts` — what a package must contain, how identity is
   resolved, and `linkNodeModules`.
 - `src/server/plugins/installer.ts` — git and zip install, subfolder detection,
@@ -23,8 +23,8 @@ authority:
   secret encryption and validation.
 - `src/server/db/repositories/pluginStorageRepo.ts` — the scoped key/value store.
 - `src/server/api/routes/plugins.ts` — the management endpoints behind the admin panel.
-- `src/server/plugins/bundled/reputation/` — a shipped example (`instructions`, a tool,
-  `annotateContext`, a panel, and its own database).
+- `src/server/plugins/bundled/` — the three shipped plugins: `reputation`,
+  `rolling-memory`, and the controller-only `discord-admin` tool suite.
 
 ---
 
@@ -53,7 +53,7 @@ without disturbing anything npm itself cares about:
 ### The API version
 
 ```json
-{ "devDependencies": { "@big-yahu/plugin-sdk": "^2" } }
+{ "devDependencies": { "@big-yahu/plugin-sdk": "^3" } }
 ```
 
 **Depending on the SDK is how you declare the contract version.** Its major version *is*
@@ -69,7 +69,7 @@ A plugin that does not use the SDK — plain JavaScript, no build step, nothing 
 — says it directly instead:
 
 ```json
-{ "bigYahu": { "displayName": "My Plugin", "apiVersion": 2 } }
+{ "bigYahu": { "displayName": "My Plugin", "apiVersion": 3 } }
 ```
 
 Do not do both. When the two disagree the plugin is refused rather than one being quietly
@@ -81,6 +81,13 @@ It has to match **exactly**: not "the same major", because the thing being preve
 plugin running against a contract it does not understand, and a partial match is precisely
 the fuzzy version of that. The current version is `PLUGIN_API_VERSION`, exported by the
 SDK and imported by the bot, so the two cannot disagree.
+
+**API v3 is intentionally incompatible with external v2 plugins.** They remain installed
+and visible but are marked incompatible and are not imported. To migrate, update the
+dependency to `@big-yahu/plugin-sdk` `^3` (or the explicit `bigYahu.apiVersion` to `3` for
+SDK-less JavaScript) and update every tool handler's second parameter from
+`PluginContext` to `PluginToolContext`. The ordinary plugin services are still there;
+tool handlers now also receive the authoritative `ctx.invocation` described in section 5.
 
 A plugin that declares nothing, or declares the wrong number, is **not an error and not
 hidden**. It installs, it is listed in the panel, and it is marked incompatible with the
@@ -111,6 +118,9 @@ Minimal complete `package.json`:
   "type": "module",
   "bigYahu": {
     "displayName": "My Plugin"
+  },
+  "devDependencies": {
+    "@big-yahu/plugin-sdk": "^3"
   }
 }
 ```
@@ -182,8 +192,8 @@ whole repo whose plugin lives in `packages/my-plugin/`.
 Installed plugins are copied into the plugins directory — resolved as `<directory of the
 SQLite file>/plugins`, **beside the database, not inside the source tree**, so they
 survive an image rebuild or a fresh `git pull` of the bot itself. (`.git`, if present, is
-stripped from the copy.) The bundled `reputation` lives separately, under
-`src/server/plugins/bundled/`, and ships with the bot's own source.
+stripped from the copy.) The three bundled plugins live separately under
+`src/server/plugins/bundled/` and ship with the bot's own source.
 
 **Installing over an id that already exists is an update, not a clash.** The old
 directory is replaced and nothing else is touched, because the directory holds only the
@@ -243,7 +253,7 @@ deliberately want the bot's exact version.
 All under `/api/plugins`:
 
 - `DELETE /:id` — uninstall one plugin, and delete its secrets, storage, and SQLite
-  database. A bundled plugin (`reputation`) cannot be uninstalled this way.
+  database. Bundled plugins cannot be uninstalled this way.
 - `DELETE /` — uninstall everything installed (not the bundled ones), cleaning up the
   same per-plugin state for each.
 - `POST /reload` — re-run discovery without installing or removing anything — useful
@@ -293,8 +303,8 @@ reply follows.
 Good for lightweight, per-message logic that does not need the reply pipeline — keyword
 watching, canned replies, logging, moderation signals. A plugin in this shape would scan
 `message.content` for trigger phrases and reply directly with `message.reply(...)`,
-without spending a Gemini call. Neither bundled plugin currently takes this shape —
-`reputation` does its work through `annotateContext` and a tool instead, below.
+without spending a Gemini call. Rolling memory uses this hook to age its records;
+reputation and Discord Admin do not.
 
 ### `onHourlyCheck`
 
@@ -512,6 +522,19 @@ beforeReply({ draftPrompt, getConfig }) {
 ## 5. Tools
 
 ```ts
+export interface PluginToolInvocation {
+  readonly guildId: string;
+  readonly channelId: string;
+  readonly messageId: string;
+  readonly requesterId: string;
+  readonly requesterIsController: boolean;
+  readonly requestContent: string;
+}
+
+export interface PluginToolContext extends PluginContext {
+  readonly invocation: PluginToolInvocation;
+}
+
 export interface PluginTool {
   /** Lowercase with underscores, unique across plugins. Prefixed with the plugin id when registered. */
   name: string;
@@ -519,7 +542,11 @@ export interface PluginTool {
   description: string;
   /** JSON Schema for the arguments. Use an empty properties object for none. */
   parameters: Record<string, unknown>;
-  handler(args: Record<string, unknown>, ctx: PluginContext): Promise<unknown> | unknown;
+  /** Offer and run this tool only for a requester configured as a controller. */
+  requiresController?: boolean;
+  /** Offer and run this tool only while this top-level config key is exactly true. */
+  enabledByConfig?: string;
+  handler(args: Record<string, unknown>, ctx: PluginToolContext): Promise<unknown> | unknown;
 }
 ```
 
@@ -529,9 +556,37 @@ has to be unique *within* your plugin — the engine namespaces it for the model
 `weather-context` becomes the function `weather_context__weather`; two plugins can both
 ship a tool called `lookup` without clashing.
 
-The handler receives the **full `PluginContext`** (section 9) — the same thing a hook
-gets — so a tool can read or write facts, query its own database, call an external API,
-or read its own config and secrets, exactly like a hook would.
+The handler receives a `PluginToolContext`: the full `PluginContext` (section 9), plus
+the host-built `invocation` for this reply. These fields are authoritative. They come
+from the Discord message that started the turn, not from model-written tool arguments,
+and the host hands the handler a frozen copy. Declare `requiresController` for the live
+authorization gate; use `requesterId` and `requesterIsController` as authenticated turn
+metadata and for any additional policy. Never accept an actor id or an "is admin" flag
+from `args`. `guildId`, `channelId`, `messageId`, and `requestContent` tie the call to its
+original Discord request.
+
+Two declarative access gates cover the common cases:
+
+- `requiresController: true` keeps the tool out of the model's tool list unless the
+  requester's Discord id is configured as a controller.
+- `enabledByConfig: 'enableSomething'` keeps it out unless that top-level key in the
+  plugin's **raw saved config** is exactly `true`. Missing, false, and truthy non-boolean
+  values all disable it. Declare the key as a boolean in `configSchema` so the admin panel
+  renders a switch.
+
+The host filters tools before the model sees them, then evaluates both gates again
+immediately before calling the handler. A controller-only tool requires both the
+controller result authenticated at the start of the turn and a fresh lookup of the
+requester id in `controllersRepo`; removing someone from Controllers while a reply is in
+progress therefore cancels an already offered tool. The config gate likewise reads the
+current raw config, so turning a switch off mid-reply prevents execution. On either
+denial, the handler is not invoked and the model receives an error payload. These repeat
+checks are the security boundary; hiding the declaration from the model is only the
+first layer.
+
+A tool without either property keeps the normal behavior and is offered to every reply
+while its plugin is enabled. The handler can otherwise read or write facts, query its own
+database, call an external API, or read its own config and secrets exactly like a hook.
 
 Whatever the handler returns crosses back to the model as JSON. Return a plain object;
 anything else is wrapped as `{ result: <value> }` so the model always gets a
@@ -539,8 +594,8 @@ predictable shape. **A handler that throws does not kill the reply** — the eng
 catches it and hands the model `{ error: "<message>" }` instead, so it can say plainly
 that the lookup failed rather than the whole turn erroring out.
 
-Tools from every enabled plugin are collected once per reply, but a **call budget**
-(currently 6 calls total, shared across all plugin tools) bounds how many times the
+Eligible tools from every enabled plugin are collected once per reply, but a **call budget**
+(currently 10 calls total, shared across all plugin tools) bounds how many times the
 model may invoke *any* plugin tool during that one reply — past the budget, plugin tools
 are simply no longer offered to the model for the rest of that turn, so a tool that
 answers with something that invites another call cannot loop forever.
@@ -1014,14 +1069,19 @@ export interface PluginContext {
 - `getConfig` / `getEnv` / `storage` / `database` — scoped to this plugin alone, as
   covered in section 8.
 
+Tool handlers receive `PluginToolContext`, which extends this interface with the
+read-only `invocation` described in section 5. Hooks, instructions, panels, and pages do
+not receive it: the metadata belongs to one model tool turn, not to a plugin globally.
+
 The **raw bot database is deliberately absent**. An earlier version of this context
 handed plugins the shared Drizzle instance directly, which meant any plugin could read
 every other plugin's secrets by querying the tables behind their backs. The context you
 get instead only ever reaches your own rows.
 
-The object handed to a hook, tool, or panel is **frozen** (`Object.freeze`), so one
-plugin cannot patch a function onto it and have that stick for another plugin — it is
-rebuilt fresh, per plugin, on every single invocation.
+The object handed to a hook, tool, or panel is **frozen** (`Object.freeze`), and a tool's
+`invocation` is frozen separately, so one plugin cannot rewrite the requester or patch a
+function onto the context and have that stick for another plugin. Both are rebuilt fresh,
+per plugin, on every invocation.
 
 None of this is a sandbox. A plugin runs **in the bot process**, with full Node
 privileges, and can `import` anything it likes — nothing stops it from reaching past
@@ -1061,8 +1121,8 @@ code as the bot.** Treat the ability to install one as equivalent to admin login
 
 ## 11. A complete worked example
 
-Two bundled plugins already exercise most of the surface, and both are worth reading
-alongside this document rather than treated as toys.
+Three bundled plugins exercise most of the surface, and all are worth reading alongside
+this document rather than treated as toys.
 
 `reputation` (`src/server/plugins/bundled/reputation/`) — `instructions`, a tool,
 `annotateContext`, a typed `configSchema`, a page with a search box and per-row actions,
@@ -1072,7 +1132,16 @@ and its own drizzle database with generated migrations.
 `beforeReply`, `annotateExtraction`, four tools, its own page, and `saveFacts` for
 promoting something into permanent memory.
 
-Here is a third, smaller example covering the same ground from a different angle: two
+`discord-admin` (`src/server/plugins/bundled/discord-admin/`) — controller-only tools for
+inspection, nicknames, timeouts, kicks, bans, member roles, role and channel-permission
+management, and voice moderation. Each group has its own typed `enable*` config switch;
+Discord's permissions and role hierarchy remain the final authority.
+`requireMutationConfirmation` defaults to true, making every state change require an
+exact, payload-bound phrase in a new controller message. Turning it off does not weaken
+the hard floor: kicks, bans, role or overwrite deletion, and Administrator grants always
+require confirmation.
+
+Here is a fourth, smaller example covering the same ground from a different angle: two
 tools trading data through one SQLite table, a config field, and a panel, but no
 `annotateContext`.
 
@@ -1101,7 +1170,7 @@ Directory, once installed:
     "displayName": "Quote Book"
   },
   "devDependencies": {
-    "@big-yahu/plugin-sdk": "^2"
+    "@big-yahu/plugin-sdk": "^3"
   }
 }
 ```
@@ -1267,7 +1336,6 @@ these are quotes, not facts, and do not go through ChromaDB at all. The admin pa
 a "Quote Book" screen listing the 20 most recent, with a confirm-guarded button to wipe
 the table. `maxQuotes` in its config caps how many rows are kept, trimmed on every save.
 
-Note the import path: `../../types` resolves from `<plugins dir>/quote-book/index.ts` up
-to `src/server/plugins/types.ts`, exactly as it does for `reputation` under
-`src/server/plugins/bundled/`. An installed plugin sits at the same depth relative to
-that file as a bundled one.
+Note that the example imports its contract from `@big-yahu/plugin-sdk`, not from a
+relative path into the bot source. That package is the supported boundary for installed
+and bundled plugins alike; their positions on disk are deliberately irrelevant.

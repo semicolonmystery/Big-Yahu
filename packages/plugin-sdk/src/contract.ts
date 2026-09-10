@@ -188,10 +188,31 @@ export interface AnnotateExtractionContext extends PluginContext {
 }
 
 /**
+ * Host-authenticated details about the Discord message that caused a tool call.
+ *
+ * These values come from the gateway message and the bot's controller store,
+ * never from model-generated tool arguments. Plugins may therefore use them as
+ * an authorization boundary for actions aimed at Discord.
+ */
+export interface PluginToolInvocation {
+  readonly guildId: string;
+  readonly channelId: string;
+  readonly messageId: string;
+  readonly requesterId: string;
+  readonly requesterIsController: boolean;
+  readonly requestContent: string;
+}
+
+/** What a tool handler receives, including its authoritative invocation. */
+export interface PluginToolContext extends PluginContext {
+  readonly invocation: PluginToolInvocation;
+}
+
+/**
  * A capability a plugin lends the bot. The model decides when to call it; the
  * handler answers with JSON, which goes straight back into the conversation.
- * A handler has the full PluginContext, so a tool can read or write facts, hit
- * an external API, or anything else the bot itself could do.
+ * A handler has the full PluginToolContext, so a tool can read or write facts,
+ * hit an external API, or anything else the bot itself could do.
  */
 export interface PluginTool {
   /** Lowercase with underscores, unique across plugins. Prefixed with the plugin id when registered. */
@@ -200,7 +221,11 @@ export interface PluginTool {
   description: string;
   /** JSON Schema for the arguments. Use an empty properties object for none. */
   parameters: Record<string, unknown>;
-  handler(args: Record<string, unknown>, ctx: PluginContext): Promise<unknown> | unknown;
+  /** Offered and executed only when the requesting Discord user is a bot controller. */
+  requiresController?: boolean;
+  /** Offered and executed only when this raw plugin config value is exactly `true`. */
+  enabledByConfig?: string;
+  handler(args: Record<string, unknown>, ctx: PluginToolContext): Promise<unknown> | unknown;
 }
 
 /** One piece of a plugin's panel. Rendered by the admin app with its own components. */
