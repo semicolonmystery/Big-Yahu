@@ -1,5 +1,6 @@
 import type { Message } from 'discord.js';
-import { runEscalatableExtraction, toWindowMessage } from './context';
+import { runEscalatableExtraction, windowMessagesWithAttachments } from './context';
+import type { TextAttachmentBudget } from '../bot/textAttachments';
 import type { WindowMessage } from './context';
 import { topicSchema } from './schemas';
 import type { TopicResult } from './schemas';
@@ -13,6 +14,7 @@ export async function extractTopic(
   taggedMessage: Message,
   guildId: string,
   contextSize: number,
+  attachmentBudget?: TextAttachmentBudget,
 ): Promise<{ topic: TopicResult; windowMessages: WindowMessage[]; discordMessages: Message[] }> {
   const preceding = await taggedMessage.channel.messages.fetch({
     before: taggedMessage.id,
@@ -25,7 +27,7 @@ export async function extractTopic(
     .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
     .concat(taggedMessage);
 
-  const windowMessages = discordMessages.map(toWindowMessage);
+  const windowMessages = await windowMessagesWithAttachments(discordMessages, attachmentBudget);
 
   const topic = await runEscalatableExtraction<TopicResult>({
     schema: topicSchema,
@@ -34,6 +36,7 @@ export async function extractTopic(
     windowMessages,
     anchorMessage: taggedMessage,
     guildId,
+    attachmentBudget,
   });
 
   return { topic, windowMessages, discordMessages };

@@ -3,9 +3,11 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { apiRouter } from './api/routes/index';
 import { env } from './env';
+import { healthStatus } from './api/health';
 
 export function createApp(): express.Express {
   const app = express();
+  app.disable('x-powered-by');
 
   // A hop count, not `true`. It lets req.secure reflect X-Forwarded-Proto when a
   // TLS proxy sits in front, so the session cookie is marked Secure exactly when
@@ -17,6 +19,10 @@ export function createApp(): express.Express {
 
   app.use(express.json());
   app.use(cookieParser());
+  app.get('/api/health', async (_req, res) => {
+    const health = await healthStatus();
+    res.set('Cache-Control', 'no-store').status(health.ok ? 200 : 503).json(health);
+  });
   app.use('/api', apiRouter);
 
   const distPath = path.resolve('dist');
@@ -29,7 +35,9 @@ export function createApp(): express.Express {
 
   app.use((error: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('[api]', error);
-    res.status(500).json({ success: false, error: error.message });
+    const status = 'status' in error && typeof error.status === 'number' && error.status >= 400 && error.status < 500
+      ? error.status : 500;
+    res.status(status).json({ success: false, error: status < 500 ? error.message : 'Internal server error' });
   });
 
   return app;

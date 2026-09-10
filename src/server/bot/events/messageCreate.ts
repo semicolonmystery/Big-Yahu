@@ -5,9 +5,23 @@ import { canExtractFrom, canReplyIn } from '../../db/repositories/channelSetting
 import { runOnBotTagged, runOnMessage } from '../../plugins/engine';
 import { handleMention } from '../replyPipeline';
 
+let draining = false;
+const active = new Set<Promise<void>>();
+
+export async function drainMessageHandlers(): Promise<void> {
+  draining = true;
+  await Promise.allSettled([...active]);
+}
+
 export function registerMessageCreate(client: Client): void {
+  draining = false;
   client.on(Events.MessageCreate, (message: Message) => {
-    void handleMessage(client, message);
+    if (draining) return;
+    const work = handleMessage(client, message).catch((error: unknown) => {
+      console.error('[bot] message handling failed:', error);
+    });
+    active.add(work);
+    void work.finally(() => active.delete(work));
   });
 }
 

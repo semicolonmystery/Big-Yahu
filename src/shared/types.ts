@@ -161,6 +161,8 @@ export interface AppSettings {
   visionEnabled: boolean;
   /** Ceiling on pictures sent in one model call, newest first. Vision is the expensive part. */
   maxImages: number;
+  /** Maximum message.txt file size in KiB; 0 disables reading. Hard cap 64. */
+  textAttachmentMaxKb: number;
   /** Messages pulled from another channel the bot was pointed at. 0 turns cross-channel reading off. */
   crossChannelMessages: number;
   overloadMessage: string;

@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }}, Node 24)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install the lockfile
+        run: npm ci
+      - name: Build, lint and test with coverage
+        run: npm run check
+      - name: Install test browser
+        run: npx playwright install --with-deps chromium
+      - name: Test the real admin browser flow
+        run: npm run test:e2e
+
+  docker:
+    name: Docker and Chroma integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CHROMA_CONTAINER: big-yahu-review-chroma-${{ github.run_id }}-${{ github.run_attempt }}
+      ADMIN_CONTAINER: big-yahu-review-admin-${{ github.run_id }}-${{ github.run_attempt }}
+      CHROMA_HOST: 127.0.0.1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install integration client
+        run: npm ci
+      - name: Build the production image
+        run: docker build --tag big-yahu:ci .
+      - name: Start isolated Chroma and admin containers
+        run: |
+          docker run --detach --rm --name "$CHROMA_CONTAINER" --publish 127.0.0.1::8000 --mount type=volume,destination=/data chromadb/chroma:1.5.9@sha256:1e0b73a187a28757c572acba508c46f48c9e8b0acaf5c20e6d95cdedce1acdf6
+          chroma_port=$(docker inspect --format '{{(index (index .NetworkSettings.Ports "8000/tcp") 0).HostPort}}' "$CHROMA_CONTAINER")
+          printf 'CHROMA_PORT=%s\n' "$chroma_port" >> "$GITHUB_ENV"
+          docker run --detach --init --name "$ADMIN_CONTAINER" --publish 127.0.0.1::3000 --mount type=volume,destination=/app/data big-yahu:ci
+          admin_port=$(docker inspect --format '{{(index (index .NetworkSettings.Ports "3000/tcp") 0).HostPort}}' "$ADMIN_CONTAINER")
+          printf 'ADMIN_PORT=%s\n' "$admin_port" >> "$GITHUB_ENV"
+      - name: Verify real Chroma operations without an AI service
+        run: node scripts/chroma-smoke.mjs
+      - name: Verify admin-only startup and health without credentials
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { setTimeout as delay } from 'node:timers/promises';
+          const deadline = Date.now() + 30_000;
+          let health;
+          while (Date.now() < deadline) {
+            try {
+              const response = await fetch(`http://127.0.0.1:${process.env.ADMIN_PORT}/api/health`, { signal: AbortSignal.timeout(2_000) });
+              health = await response.json();
+              if (response.ok && health.ok) break;
+            } catch {}
+            await delay(500);
+          }
+          assert.equal(health?.ok, true);
+          assert.equal(health.mode, 'admin-only');
+          const page = await fetch(`http://127.0.0.1:${process.env.ADMIN_PORT}/`, { signal: AbortSignal.timeout(2_000) });
+          assert.equal(page.status, 200);
+          assert((await page.text()).includes('<html'));
+          console.log('Production image starts and serves healthy admin-only API without credentials.');
+          NODE
+      - name: Verify graceful container shutdown
+        run: |
+          docker stop --timeout 40 "$ADMIN_CONTAINER"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$ADMIN_CONTAINER")" = 0
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          docker logs "$CHROMA_CONTAINER" || true
+          docker logs "$ADMIN_CONTAINER" || true
+      - name: Remove only this job's disposable containers and anonymous volumes
+        if: always()
+        run: |
+          for container in "$CHROMA_CONTAINER" "$ADMIN_CONTAINER"; do
+            if docker container inspect "$container" > /dev/null 2>&1; then
+              docker rm --force --volumes "$container"
+            fi
+          done

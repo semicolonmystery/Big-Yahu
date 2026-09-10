@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.server.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.tests.tsbuildinfo",
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node", "@testing-library/jest-dom"],
+    "paths": { "@/*": ["./src/client/*"], "@shared/*": ["./src/shared/*"] }
+  },
+  "include": ["tests", "vitest.config.ts", "playwright.config.ts"]
+}

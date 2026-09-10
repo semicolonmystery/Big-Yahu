@@ -16,11 +16,21 @@ import type {
   PanelActionResult,
 } from '@shared/types';
 
+export const AUTH_REQUIRED_EVENT = 'big-yahu:auth-required';
+
+function checkAuthentication(response: Response, path: string): void {
+  // An incorrect login/elevation password is a form error, not session expiry.
+  if (response.status === 401 && !path.startsWith('/auth/')) {
+    window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...init?.headers },
   });
+  checkAuthentication(response, path);
 
   let payload: ApiResponse<T>;
   try {
@@ -91,6 +101,7 @@ export const api = {
     const form = new FormData();
     form.append('archive', file);
     const response = await fetch('/api/plugins/upload', { method: 'POST', body: form });
+    checkAuthentication(response, '/plugins/upload');
     const payload = (await response.json()) as ApiResponse<{ plugin: PluginSummary | null; updated: boolean }>;
     if (!payload.success) throw new Error(payload.error);
     return payload.data;

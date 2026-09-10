@@ -26,12 +26,13 @@ export const DEFAULT_SETTINGS = {
   modelRestMinutes: 120,
   visionEnabled: true,
   maxImages: 4,
+  textAttachmentMaxKb: 16,
   crossChannelMessages: 30,
   overloadMessage: "Gemini's getting hammered right now and won't talk to me. Try again in a minute.",
 } as const;
 
 /** HTTP statuses from Gemini that mean "try again shortly" rather than "you did something wrong". */
-export const RETRYABLE_STATUSES = new Set([429, 500, 503, 504]);
+export const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 /** Window the per-user reply cap is measured over. */
 export const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;

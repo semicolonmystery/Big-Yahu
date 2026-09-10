@@ -3,7 +3,8 @@ import type { GenerateContentConfig, ContentListUnion, GenerateContentResponse }
 import { ai } from './client';
 import { getSettings } from '../db/repositories/settingsRepo';
 import { recordFailure, recordSuccess, selectCandidates } from '../db/repositories/chatModelsRepo';
-import { RETRYABLE_STATUSES } from '@shared/constants';
+import { isRetryable, retryDelay } from './retry';
+import { claimAIRequest } from './requestBudget';
 
 /** Thrown once every model has been tried and none answered. */
 export class OverloadedError extends Error {
@@ -18,19 +19,10 @@ export class OverloadedError extends Error {
   }
 }
 
-function isRetryable(error: unknown): boolean {
-  if (error instanceof ApiError) return RETRYABLE_STATUSES.has(error.status);
-  // The SDK sometimes surfaces transport failures as plain errors with the status in the text.
-  const text = error instanceof Error ? error.message : String(error);
-  return /\b(429|503|504)\b|overloaded|UNAVAILABLE|RESOURCE_EXHAUSTED/i.test(text);
-}
-
 function describe(error: unknown): string {
   if (error instanceof ApiError) return `${error.status}: ${error.message}`;
   return error instanceof Error ? error.message : String(error);
 }
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
  * Runs a request against the model pool, best-weighted first, moving to the
@@ -42,6 +34,7 @@ export async function generate(
   contents: ContentListUnion,
   config: GenerateContentConfig,
 ): Promise<GenerateContentResponse> {
+  config.abortSignal?.throwIfAborted();
   const { retryAttempts, retryDelayMs } = getSettings();
   const passes = retryAttempts + 1;
   const tried: string[] = [];
@@ -55,10 +48,19 @@ export async function generate(
 
     for (const candidate of candidates) {
       try {
-        const response = await ai.models.generateContent({ model: candidate.model, contents, config });
+        config.abortSignal?.throwIfAborted();
+        const signal = claimAIRequest();
+        const response = await ai.models.generateContent({ model: candidate.model, contents, config: {
+          ...config,
+          maxOutputTokens: Math.min(config.maxOutputTokens ?? 4096, 4096),
+          abortSignal: config.abortSignal ? AbortSignal.any([signal, config.abortSignal]) : signal,
+        } });
         recordSuccess(candidate.model);
         return response;
       } catch (error) {
+        // The SDK can replace a caller's cancellation reason with AbortError.
+        // Cancellation is not a model failure and must not trigger fallback.
+        config.abortSignal?.throwIfAborted();
         if (!isRetryable(error)) throw error;
 
         lastError = error;
@@ -73,7 +75,7 @@ export async function generate(
 
     if (pass < passes) {
       console.warn(`[ai] every model failed on pass ${pass}/${passes}, waiting ${retryDelayMs}ms`);
-      await sleep(retryDelayMs);
+      await retryDelay(retryDelayMs, pass - 1, config.abortSignal);
     }
   }
 

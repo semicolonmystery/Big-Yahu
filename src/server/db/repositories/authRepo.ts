@@ -1,12 +1,18 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { eq, lt } from 'drizzle-orm';
+import { eq, lte } from 'drizzle-orm';
 import { db } from '../client';
 import { adminUser, sessions } from '../schema';
 import { SESSION_TTL_MS } from '@shared/constants';
 
 const KEY_LENGTH = 64;
 const ROW_ID = 1;
+
+export class AdminAlreadyExistsError extends Error {
+  constructor() {
+    super('An admin account already exists');
+  }
+}
 
 /**
  * Async, not scryptSync. The Express API and the Discord bot share one thread,
@@ -53,10 +59,10 @@ export function hasAdmin(): boolean {
 }
 
 export async function createAdmin(username: string, password: string): Promise<void> {
-  if (hasAdmin()) throw new Error('An admin account already exists');
+  if (hasAdmin()) throw new AdminAlreadyExistsError();
   const salt = randomBytes(16).toString('hex');
   const hash = await hashPassword(password, salt);
-  db.insert(adminUser)
+  const result = db.insert(adminUser)
     .values({
       id: ROW_ID,
       username,
@@ -64,7 +70,10 @@ export async function createAdmin(username: string, password: string): Promise<v
       passwordSalt: salt,
       createdAt: Date.now(),
     })
+    .onConflictDoNothing()
     .run();
+  // Another setup request may have completed its asynchronous hash first.
+  if (result.changes === 0) throw new AdminAlreadyExistsError();
 }
 
 /**
@@ -94,7 +103,7 @@ export function createSession(): string {
   const token = randomBytes(32).toString('hex');
   const now = Date.now();
   db.insert(sessions).values({ token, createdAt: now, expiresAt: now + SESSION_TTL_MS }).run();
-  db.delete(sessions).where(lt(sessions.expiresAt, now)).run();
+  db.delete(sessions).where(lte(sessions.expiresAt, now)).run();
   return token;
 }
 
@@ -102,7 +111,7 @@ export function isSessionValid(token: string | undefined): boolean {
   if (!token) return false;
   const session = db.select().from(sessions).where(eq(sessions.token, token)).get();
   if (!session) return false;
-  if (session.expiresAt < Date.now()) {
+  if (session.expiresAt <= Date.now()) {
     db.delete(sessions).where(eq(sessions.token, token)).run();
     return false;
   }
@@ -121,7 +130,7 @@ export async function elevateSession(token: string | undefined, password: string
   // Hashed even with no session and no admin, so a caller cannot tell the
   // difference between a wrong password and a missing prerequisite by timing.
   const matches = await verifyPassword(admin?.username ?? '', password);
-  if (!token || !admin || !matches) return false;
+  if (!token || !admin || !matches || !isSessionValid(token)) return false;
   db.update(sessions).set({ elevatedUntil: Date.now() + ELEVATION_TTL_MS }).where(eq(sessions.token, token)).run();
   return true;
 }
@@ -129,5 +138,6 @@ export async function elevateSession(token: string | undefined, password: string
 export function isSessionElevated(token: string | undefined): boolean {
   if (!token) return false;
   const session = db.select().from(sessions).where(eq(sessions.token, token)).get();
-  return (session?.elevatedUntil ?? 0) > Date.now();
+  const now = Date.now();
+  return !!session && session.expiresAt > now && (session.elevatedUntil ?? 0) > now;
 }

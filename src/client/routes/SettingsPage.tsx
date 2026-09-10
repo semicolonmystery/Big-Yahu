@@ -69,6 +69,14 @@ const FIELDS: FieldSpec[] = [
     max: 100,
   },
   {
+    key: 'textAttachmentMaxKb',
+    label: 'Maximum message.txt size (KiB)',
+    help: 'Largest message.txt attachment the bot reads. 0 disables text attachments; up to 64 KiB per file and 64 KiB total per conversation context.',
+    type: 'number',
+    min: 0,
+    max: 64,
+  },
+  {
     key: 'factSearchTopK',
     label: 'Fact search top K',
     help: 'How many remembered facts it retrieves.',

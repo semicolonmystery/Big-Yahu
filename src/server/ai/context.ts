@@ -7,6 +7,8 @@ import { getSettings } from '../db/repositories/settingsRepo';
 import { MAX_ESCALATION_DEPTH_HARD_CAP } from '@shared/constants';
 import type { Fact } from '@shared/types';
 import type { ExtractionResult } from './schemas';
+import { readTextAttachments, type TextAttachmentBudget } from '../bot/textAttachments';
+import { canExtractFrom } from '../db/repositories/channelSettingsRepo';
 
 export interface WindowMessage {
   id: string;
@@ -65,6 +67,15 @@ export function toWindowMessage(message: Message): WindowMessage {
     replyToId: replyTo,
     replyToAuthorId: replyTo ? message.mentions.repliedUser?.id : undefined,
   };
+}
+
+export async function windowMessagesWithAttachments(messages: Message[], budget?: TextAttachmentBudget): Promise<WindowMessage[]> {
+  const attachments = await readTextAttachments(messages, budget);
+  return messages.map((message) => {
+    const window = toWindowMessage(message);
+    const text = attachments.get(message.id);
+    return text ? { ...window, content: `${window.content}\n${text}`.trim() } : window;
+  });
 }
 
 function describeAuthor(message: WindowMessage): string {
@@ -287,13 +298,14 @@ export async function fetchOlderMessages(
   channel: TextBasedChannel,
   beforeMessageId: string,
   notOlderThan: number,
+  attachmentBudget?: TextAttachmentBudget,
 ): Promise<WindowMessage[]> {
   if (!isReadable(channel)) return [];
   const batch = await channel.messages.fetch({ before: beforeMessageId, limit: FETCH_LIMIT });
-  return [...batch.values()]
+  const messages = [...batch.values()]
     .filter((older) => !older.author.bot && older.createdTimestamp >= notOlderThan)
-    .map(toWindowMessage)
-    .sort((a, b) => a.createdAt - b.createdAt);
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+  return windowMessagesWithAttachments(messages, attachmentBudget);
 }
 
 /**
@@ -301,13 +313,12 @@ export async function fetchOlderMessages(
  * out for the same reason as above: the bot reading its own chatter back is not
  * history, it is an echo.
  */
-export async function fetchRecentMessages(channel: TextBasedChannel, limit: number): Promise<WindowMessage[]> {
+export async function fetchRecentMessages(channel: TextBasedChannel, limit: number, attachmentBudget?: TextAttachmentBudget): Promise<WindowMessage[]> {
   if (!isReadable(channel) || limit <= 0) return [];
   const batch = await channel.messages.fetch({ limit: Math.min(limit, FETCH_LIMIT) });
-  return [...batch.values()]
-    .filter((message) => !message.author.bot && message.content.trim().length > 0)
-    .map(toWindowMessage)
-    .sort((a, b) => a.createdAt - b.createdAt);
+  const messages = [...batch.values()].filter((message) => !message.author.bot)
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+  return windowMessagesWithAttachments(messages, attachmentBudget);
 }
 
 export function effectiveMaxDepth(): number {
@@ -325,6 +336,7 @@ export interface EscalationOptions {
   guildId: string;
   /** Pictures from the window, attached after the text. */
   imageParts?: Part[];
+  attachmentBudget?: TextAttachmentBudget;
 }
 
 function parseResponse<T>(raw: string | undefined): T {
@@ -381,12 +393,14 @@ export async function runEscalatableExtraction<T extends ExtractionResult>(
       options.anchorMessage.channel,
       earliest.id,
       earliest.createdAt - lookbackMs,
+      options.attachmentBudget,
     );
     olderMessages = [...fetched, ...olderMessages];
 
     const hint = result.contextHint?.trim() || result.facts.map((fact) => fact.text).join(' ');
     if (hint) {
-      relatedFacts = await searchFacts(hint, settings.factSearchTopK, { guildId: options.guildId });
+      relatedFacts = (await searchFacts(hint, settings.factSearchTopK, { guildId: options.guildId }))
+        .filter((fact) => canExtractFrom(fact.metadata.channelId));
     }
   }
 }

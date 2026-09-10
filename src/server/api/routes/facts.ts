@@ -28,7 +28,8 @@ function parseIntParam(value: unknown, fallback: number): number | null {
   if (value === undefined) return fallback;
   const raw = Array.isArray(value) ? value[0] : value;
   if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return null;
-  return Number.parseInt(raw, 10);
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function readAuthorId(value: unknown): string | undefined {
@@ -120,10 +121,6 @@ factsRouter.get('/', async (req, res) => {
 factsRouter.get('/authors', async (_req, res) => {
   const facts = await listAllFacts();
 
-  const allMessageIds = [...new Set(facts.flatMap((fact) => fact.metadata.messageIds))];
-  const messages = getMessages(allMessageIds);
-  const usernameByAuthorId = new Map(messages.map((message) => [message.authorId, message.authorUsername]));
-
   const counts = new Map<string, number>();
   for (const fact of facts) {
     for (const authorId of fact.metadata.authorIds) {
@@ -131,10 +128,16 @@ factsRouter.get('/authors', async (_req, res) => {
     }
   }
 
+  // A fact can be about someone who did not write any of its source messages.
+  // Resolve all indexed people from the full cache and Discord, just as the
+  // mentions inside the fact text are resolved.
+  const authorIds = [...counts.keys()];
+  const names = { ...knownDisplayNames(authorIds), ...getUsernames(authorIds) };
+
   const data: FactAuthor[] = [...counts.entries()]
     .map(([authorId, factCount]) => ({
       authorId,
-      authorUsername: usernameByAuthorId.get(authorId) ?? authorId,
+      authorUsername: names[authorId] ?? authorId,
       factCount,
     }))
     .sort((a, b) => b.factCount - a.factCount);

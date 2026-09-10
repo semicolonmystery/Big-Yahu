@@ -225,6 +225,7 @@ type BrowseState =
 function BrowseTab() {
   const [browseState, setBrowseState] = useState<BrowseState>({ status: 'loading' });
   const [browsePage, setBrowsePage] = useState(1);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [selectedAuthorId, setSelectedAuthorId] = useState<string | null>(null);
   const [authors, setAuthors] = useState<FactAuthor[]>([]);
   const [authorPickerOpen, setAuthorPickerOpen] = useState(false);
@@ -250,6 +251,11 @@ function BrowseTab() {
       .listFacts({ page: browsePage, pageSize: BROWSE_PAGE_SIZE, authorId: selectedAuthorId ?? undefined })
       .then((data) => {
         if (cancelled) return;
+        const lastPage = Math.max(1, Math.ceil(data.total / data.pageSize));
+        if (browsePage > lastPage) {
+          setBrowsePage(lastPage);
+          return;
+        }
         setBrowseState({ status: 'done', facts: data.facts, total: data.total, page: data.page, pageSize: data.pageSize });
       })
       .catch((err: unknown) => {
@@ -258,12 +264,15 @@ function BrowseTab() {
     return () => {
       cancelled = true;
     };
-  }, [browsePage, selectedAuthorId]);
+  }, [browsePage, selectedAuthorId, refreshVersion]);
 
   const handleDeleted = (id: string) => {
     setBrowseState((prev) =>
       prev.status === 'done' ? { ...prev, facts: prev.facts.filter((f) => f.id !== id), total: prev.total - 1 } : prev,
     );
+    // Refill this page, or move back if its last fact was removed. The server's
+    // total also handles facts removed concurrently by another admin or the bot.
+    setRefreshVersion((version) => version + 1);
   };
 
   const selectFilter = (authorId: string | null) => {
@@ -336,15 +345,15 @@ function BrowseTab() {
         </Alert>
       )}
 
-      {browseState.status === 'done' && browseState.facts.length === 0 && selectedAuthorId === null && (
+      {browseState.status === 'done' && browseState.total === 0 && selectedAuthorId === null && (
         <p className="text-sm text-muted-foreground">No facts have been learned yet.</p>
       )}
 
-      {browseState.status === 'done' && browseState.facts.length === 0 && selectedAuthorId !== null && (
+      {browseState.status === 'done' && browseState.total === 0 && selectedAuthorId !== null && (
         <p className="text-sm text-muted-foreground">No facts from this person.</p>
       )}
 
-      {browseState.status === 'done' && browseState.facts.length > 0 && (
+      {browseState.status === 'done' && browseState.total > 0 && (
         <>
           <div className="flex items-center justify-between gap-4">
             <p className="text-sm text-muted-foreground">{browseState.total} facts</p>

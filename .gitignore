@@ -31,7 +31,9 @@ lerna-debug.log*
 
 # Test / tooling output
 coverage
+.vitest/
 playwright-report
+output/playwright/
 test-results
 .cache
 

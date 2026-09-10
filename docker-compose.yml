@@ -7,7 +7,9 @@ services:
   # No published port: only the bot talks to Chroma, and it does so over the
   # compose network by service name. Nothing is exposed to the host.
   chromadb:
-    image: chromadb/chroma:latest
+    # Stable release verified against the publisher's release and image digest.
+    # Existing deployments can keep their current image via CHROMA_IMAGE.
+    image: ${CHROMA_IMAGE:-chromadb/chroma:1.5.9@sha256:1e0b73a187a28757c572acba508c46f48c9e8b0acaf5c20e6d95cdedce1acdf6}
     restart: unless-stopped
     volumes:
       - ${HOST_WORKSPACE_FOLDER:-.}/chroma_data:/data
@@ -18,6 +20,8 @@ services:
   bot:
     build: .
     restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
     depends_on:
       - chromadb
     ports:

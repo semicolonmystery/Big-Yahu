@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, primaryKey, index } from 'drizzle-orm/sqlite-core';
 
 /** Mono-account system: this table holds at most one row, always id 1. */
 export const adminUser = sqliteTable('admin_user', {
@@ -39,6 +39,7 @@ export const settings = sqliteTable('settings', {
   modelRestMinutes: integer('model_rest_minutes').notNull().default(120),
   visionEnabled: integer('vision_enabled', { mode: 'boolean' }).notNull().default(true),
   maxImages: integer('max_images').notNull().default(4),
+  textAttachmentMaxKb: integer('text_attachment_max_kb').notNull().default(16),
   crossChannelMessages: integer('cross_channel_messages').notNull().default(30),
   overloadMessage: text('overload_message')
     .notNull()
@@ -64,6 +65,13 @@ export const replyLog = sqliteTable('reply_log', {
   factIdsUsed: text('fact_ids_used', { mode: 'json' }).$type<string[]>().notNull(),
   createdAt: integer('created_at').notNull(),
 });
+
+/** Admitted work counts even when the model fails or chooses silence. */
+export const replyAttempts = sqliteTable('reply_attempts', {
+  messageId: text('message_id').primaryKey(),
+  userId: text('user_id').notNull(),
+  createdAt: integer('created_at').notNull(),
+}, (table) => [index('reply_attempts_user_time').on(table.userId, table.createdAt)]);
 
 /** Tracks how far the hourly extraction has read in each channel. */
 export const channelCheckpoints = sqliteTable('channel_checkpoints', {
