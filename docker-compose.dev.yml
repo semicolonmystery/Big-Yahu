@@ -8,5 +8,6 @@
 # Never layer this file onto a deployment.
 services:
   chromadb:
+    # Same reasoning as HOST_PORT: settable from .env rather than by editing this.
     ports:
-      - "8000:8000"
+      - "${CHROMA_HOST_PORT:-8000}:8000"

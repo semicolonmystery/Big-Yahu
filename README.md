@@ -107,7 +107,8 @@ Discord Developer Portal before starting the bot.
 | `DISCORD_GUILD_ID` | The server the bot runs in |
 | `GEMINI_API_KEY` | Google AI Studio API key |
 | `SQLITE_PATH` | Optional. Where the SQLite file is written |
-| `PORT` | Optional. Port the admin panel and API listen on |
+| `HOST_PORT` | Optional. Where Compose publishes the panel — `8080`, or `127.0.0.1:8080` to keep it off the network. Set this rather than editing `docker-compose.yml` |
+| `PORT` | Optional. Port the server listens on. Fixed at 3000 under Compose, so this only applies when running it directly |
 
 Chroma needs no configuration. Under Compose the bot reaches it by service name
 on the project's private network, so it is never published to the host and its

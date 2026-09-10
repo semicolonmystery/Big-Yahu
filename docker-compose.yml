@@ -24,8 +24,14 @@ services:
     stop_grace_period: 45s
     depends_on:
       - chromadb
+    # Host side only. The container always listens on 3000, matching PORT below,
+    # so nothing inside has to change — and nobody has to edit this file to move
+    # the panel, which is a local edit that collides with every pull.
+    #
+    #   HOST_PORT=8080            reachable on every interface, port 8080
+    #   HOST_PORT=127.0.0.1:8080  reachable only from this machine
     ports:
-      - "3000:3000"
+      - "${HOST_PORT:-3000}:3000"
     # DISCORD_TOKEN, DISCORD_GUILD_ID and GEMINI_API_KEY come from here.
     env_file:
       - .env
