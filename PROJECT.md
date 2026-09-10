@@ -806,6 +806,8 @@ does not queue or invoke AI.
 | Plugin tools + panels | IMPL | JSON-schema tools, declarative admin screens |
 | Plugin tool invocation and access gates | IMPL | API v3 host-owned turn metadata; `requiresController` and `enabledByConfig`, with live config/controller rechecks before execution |
 | Discord Admin plugin | IMPL | bundled and controller-only; per-capability switches plus payload-bound mutation confirmation, with an unconditional high-risk floor |
+| Autonomous moderation | IMPL | `autonomousModeration`, off by default: the bot moderates on its own judgement, no controller and no confirmation. Discord's hierarchy is the only remaining bound; the audit log names the bot rather than a controller |
+| Live plugin gates | IMPL | config reads merge the operator's row over the plugin's `defaultConfig`, so a switch added by an update works without a reload or a re-save |
 | Plugin isolation | IMPL | scoped context, own storage and SQLite file; not a sandbox |
 | Plugin dependencies | IMPL | npm install per plugin, plus the bot's shared modules |
 | Per-channel reply/read permissions | IMPL | reply defaults on, read defaults **off**; enforced in the handler and the scheduler |
@@ -850,6 +852,7 @@ does not queue or invoke AI.
 | Install over an existing id updates it | IMPL | code replaced, config, secrets, storage and database kept |
 | Typed plugin config and declared secrets | IMPL | schema-driven form with server-side coercion; JSON editor kept as the fallback |
 | Plugin pages | IMPL | own route, paginated table, search, row actions; ids resolved to names by the host |
+| Long text cells | IMPL | optional `preview` on a `text` cell; table shows it, full text opens in a dialog with mentions resolved. Additive — no API bump |
 | `@big-yahu/plugin-sdk` | IMPL | the contract as a published package; the bot imports it by name, no more hand-mirroring |
 | Contract version derived from the SDK dependency | IMPL | plugin API v3; the SDK's major declares it, `bigYahu.apiVersion` is the fallback for SDK-less plugins |
 | Plugin load failures surfaced | IMPL | a plugin that throws on import is listed with the error instead of vanishing |

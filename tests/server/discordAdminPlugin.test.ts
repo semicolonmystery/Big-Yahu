@@ -847,3 +847,77 @@ describe('Discord Admin input validation', () => {
       .toThrow('reason must be at most 512 characters.');
   });
 });
+
+
+describe('moderating on its own judgement', () => {
+  function guildWith(target: Record<string, unknown>) {
+    return {
+      id: GUILD_ID,
+      ownerId: '900000000000000001',
+      members: {
+        me: botMember('KickMembers', 'ModerateMembers'),
+        fetch: vi.fn(async () => target),
+      },
+    };
+  }
+
+  const kickable = () => ({
+    id: USER_ID,
+    kickable: true,
+    moderatable: true,
+    kick: vi.fn(async () => undefined),
+    timeout: vi.fn(async () => ({ communicationDisabledUntil: new Date(1) })),
+  });
+
+  const ON = { autonomousModeration: true } as Partial<DiscordAdminConfig>;
+
+  it('refuses a non-controller while the switch is off', async () => {
+    await expect(tool('kick_member').handler(
+      { userId: USER_ID, reason: 'they were rude' },
+      context({ controller: false, guild: guildWith(kickable()) }),
+    )).resolves.toMatchObject({
+      success: false,
+      error: 'Discord administration is restricted to configured Big Yahu controllers.',
+    });
+  });
+
+  it('acts for anyone once the switch is on, without asking who they are', async () => {
+    await expect(tool('timeout_member').handler(
+      { userId: USER_ID, minutes: 10, reason: 'flooding the channel' },
+      context({ controller: false, config: ON, guild: guildWith(kickable()) }),
+    )).resolves.toMatchObject({ success: true, userId: USER_ID, timeoutMinutes: 10 });
+  });
+
+  it('needs no confirmation at all, even for a kick', async () => {
+    // Nobody is there to send a phrase back when the bot decided this itself.
+    await expect(tool('kick_member').handler(
+      { userId: USER_ID, reason: 'came back and kept spamming' },
+      context({ controller: false, config: ON, guild: guildWith(kickable()), requestContent: 'nothing like a confirmation' }),
+    )).resolves.toMatchObject({ success: true, kicked: USER_ID });
+  });
+
+  it('still obeys the per-capability switches', async () => {
+    await expect(tool('kick_member').handler(
+      { userId: USER_ID, reason: 'spam' },
+      context({ controller: false, config: { ...ON, enableKicks: false }, guild: guildWith(kickable()) }),
+    )).resolves.toMatchObject({
+      success: false,
+      error: 'That Discord Admin capability is disabled in the plugin settings.',
+    });
+  });
+
+  it('does not record a controller in the audit log for its own decision', () => {
+    const own = auditReason(context({ controller: false, config: ON }), 'flooding');
+    expect(own).toContain('Big Yahu, prompted by');
+    expect(own).not.toContain('Big Yahu controller');
+    expect(auditReason(context(), 'flooding')).toContain('Big Yahu controller');
+  });
+
+  it('leaves confirmation exactly as it was for a controller', async () => {
+    const result = await tool('kick_member').handler(
+      { userId: USER_ID, reason: 'spam' },
+      context({ guild: guildWith(kickable()), requestContent: 'kick them' }),
+    );
+    expect(confirmationPhrase(result)).toMatch(/^CONFIRM KICK /);
+  });
+});

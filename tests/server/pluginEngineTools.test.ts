@@ -83,15 +83,19 @@ describe('plugin tool authorization gates', () => {
   });
 
   it('filters controller and raw boolean config gates before tools reach the model', () => {
-    expect(names(false)).toEqual(['tool_test__open', 'tool_test__configured']);
+    // `defaulted` is on throughout: its key comes from the fixture's
+    // defaultConfig, which the stored row does not carry.
+    expect(names(false)).toEqual(['tool_test__open', 'tool_test__configured', 'tool_test__defaulted']);
     expect(names(true)).toEqual([
       'tool_test__open', 'tool_test__controller', 'tool_test__configured', 'tool_test__both',
+      'tool_test__bypassable', 'tool_test__defaulted',
     ]);
 
+    const gatedOnly = ['tool_test__open', 'tool_test__controller', 'tool_test__bypassable', 'tool_test__defaulted'];
     m.state.config = { configuredEnabled: 'true' };
-    expect(names(true)).toEqual(['tool_test__open', 'tool_test__controller']);
+    expect(names(true)).toEqual(gatedOnly);
     m.state.config = { configuredEnabled: 1 };
-    expect(names(true)).toEqual(['tool_test__open', 'tool_test__controller']);
+    expect(names(true)).toEqual(gatedOnly);
   });
 
   it('rechecks both gates immediately before executing a previously resolved tool', async () => {
@@ -170,5 +174,50 @@ describe('plugin tool authorization gates', () => {
     expect(received?.invocation.requesterId).toBe('requester');
     expect(Object.isFrozen(received)).toBe(true);
     expect(Object.isFrozen(received?.invocation)).toBe(true);
+  });
+});
+
+describe('gates that depend on configuration the row does not carry', () => {
+  beforeAll(async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await loadPlugins();
+  });
+
+  beforeEach(() => {
+    m.state.enabled = true;
+    // Exactly what an existing install looks like after an update: the row was
+    // written before these keys existed and nobody has re-saved the form.
+    m.state.config = { configuredEnabled: true };
+    m.currentController = true;
+  });
+
+  it('honours a switch the plugin only added in an update, without re-saving config', () => {
+    expect(names(true)).toContain('tool_test__defaulted');
+  });
+
+  it('lets a stored value still override the shipped default', () => {
+    m.state.config = { configuredEnabled: true, addedInAnUpdate: false };
+    expect(names(true)).not.toContain('tool_test__defaulted');
+  });
+
+  it('keeps the controller gate closed while the bypass switch is off', () => {
+    expect(names(false)).not.toContain('tool_test__bypassable');
+  });
+
+  it('stands the controller gate down when the plugin says it has its own test', () => {
+    m.state.config = { configuredEnabled: true, autonomyOn: true };
+    expect(names(false)).toContain('tool_test__bypassable');
+    // Only that tool — a plain controller tool is untouched by it.
+    expect(names(false)).not.toContain('tool_test__controller');
+  });
+
+  it('rechecks the bypass immediately before running, like the other gates', async () => {
+    m.state.config = { configuredEnabled: true, autonomyOn: true };
+    const resolved = collectTools(invocation(false))
+      .find((entry) => entry.declaration.name === 'tool_test__bypassable') as ResolvedTool;
+
+    m.state.config = { configuredEnabled: true, autonomyOn: false };
+    await expect(runTool(resolved, {}, invocation(false)))
+      .resolves.toEqual({ error: 'This tool is restricted to bot controllers.' });
   });
 });

@@ -23,6 +23,7 @@ import {
   DialogDescription,
   DialogFooter,
   DialogClose,
+  DialogTrigger,
 } from '@/components/ui/dialog';
 
 const PAGE_SIZE = 25;
@@ -82,9 +83,50 @@ function MentionedText({
   );
 }
 
-function PageCell({ cell }: { cell: PluginCell }) {
+/**
+ * A cell whose text is too long for a row: the preview stays in the table and
+ * the whole thing opens in a dialog.
+ *
+ * Both strings are already in the payload, so this never asks the server for
+ * anything — which is the reason it is not a row `action`, since those post and
+ * refetch. Mentions resolve from the one map, so a name reads the same in the
+ * table and in the dialog.
+ */
+function LongText({
+  cell,
+  label,
+}: {
+  cell: Extract<PluginCell, { kind: 'text' }>;
+  label: string;
+}) {
+  return (
+    <span className="flex items-start gap-2">
+      <MentionedText text={cell.preview ?? cell.text} names={cell.mentions} tone={cell.tone} />
+      <Dialog>
+        <DialogTrigger render={<Button variant="ghost" size="sm" className="h-6 shrink-0 px-2 text-xs" />}>
+          Show
+        </DialogTrigger>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{label}</DialogTitle>
+          </DialogHeader>
+          {/* A memory is a paragraph now, and can outgrow even the dialog. */}
+          <div className="max-h-[60vh] overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed">
+            <MentionedText text={cell.text} names={cell.mentions} tone={cell.tone} />
+          </div>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>Close</DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </span>
+  );
+}
+
+function PageCell({ cell, label }: { cell: PluginCell; label: string }) {
   switch (cell.kind) {
     case 'text':
+      if (cell.preview !== undefined) return <LongText cell={cell} label={label} />;
       return <MentionedText text={cell.text} names={cell.mentions} tone={cell.tone} />;
     case 'user':
       // Same mention-chip treatment as the facts browser: a resolved name, id on the tooltip.
@@ -336,7 +378,7 @@ function PluginPageView({ pluginId, pageId }: { pluginId?: string; pageId?: stri
                         key={column.key}
                         className={cn(column.align === 'right' && 'text-right', column.secondary && 'hidden md:table-cell')}
                       >
-                        {row.cells[column.key] ? <PageCell cell={row.cells[column.key]} /> : null}
+                        {row.cells[column.key] ? <PageCell cell={row.cells[column.key]} label={column.label} /> : null}
                       </TableCell>
                     ))}
                     {hasActions && (

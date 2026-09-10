@@ -10,11 +10,12 @@ export interface DiscordAdminConfig {
   enableVoiceModeration: boolean;
   allowAdministratorPermission: boolean;
   requireMutationConfirmation: boolean;
+  autonomousModeration: boolean;
 }
 
 export type DiscordAdminFeature = Exclude<
   keyof DiscordAdminConfig,
-  'allowAdministratorPermission' | 'requireMutationConfirmation'
+  'allowAdministratorPermission' | 'requireMutationConfirmation' | 'autonomousModeration'
 >;
 
 export const DEFAULT_CONFIG: DiscordAdminConfig = {
@@ -33,6 +34,9 @@ export const DEFAULT_CONFIG: DiscordAdminConfig = {
   // Ordinary mutations require an exact, payload-bound confirmation phrase by
   // default. Irreversible actions and Administrator grants always require one.
   requireMutationConfirmation: true,
+  // Off, so the plugin starts as controllers-only exactly as before. On, the
+  // bot moderates on its own judgement — see the field description.
+  autonomousModeration: false,
 };
 
 /** Saved config predates new fields after an update, so defaults are merged every time it is read. */
@@ -52,5 +56,6 @@ export function withDefaults(config: Partial<DiscordAdminConfig>): DiscordAdminC
     enableVoiceModeration: boolean('enableVoiceModeration'),
     allowAdministratorPermission: boolean('allowAdministratorPermission'),
     requireMutationConfirmation: boolean('requireMutationConfirmation'),
+    autonomousModeration: boolean('autonomousModeration'),
   };
 }

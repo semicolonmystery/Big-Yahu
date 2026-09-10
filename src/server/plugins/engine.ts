@@ -222,6 +222,23 @@ function enabledPlugins(): BigYahuPlugin[] {
 }
 
 /**
+ * A plugin's stored config over its shipped defaults.
+ *
+ * The row is written once, with `onConflictDoNothing`, so a key the plugin only
+ * added in a later version is simply absent from it. Reading the row raw meant
+ * a new switch was neither on nor off but missing — and since `enabledByConfig`
+ * demands exactly `true`, a tool added by an update stayed invisible until
+ * somebody happened to open the settings form and save it again. That reads
+ * exactly like "the config did not take effect until I reloaded".
+ *
+ * Merging here rather than backfilling the row keeps the operator's choices the
+ * only thing stored, so a default the bot later changes still reaches them.
+ */
+function configFor(pluginId: string): Record<string, unknown> {
+  return { ...(registry.get(pluginId)?.defaultConfig ?? {}), ...(getState(pluginId)?.config ?? {}) };
+}
+
+/**
  * Everything a plugin is handed.
  *
  * **Nothing on this boundary may use `instanceof`, and no host library function
@@ -252,7 +269,7 @@ async function baseContext(
     generate,
     ai,
     discordClient,
-    getConfig: <T = Record<string, unknown>>() => (getState(pluginId)?.config ?? {}) as T,
+    getConfig: <T = Record<string, unknown>>() => configFor(pluginId) as T,
     getEnv: () => readEnv(pluginId),
     storage: storageFor(pluginId),
     ...(trustedInvocation ? { invocation: trustedInvocation } : {}),
@@ -548,12 +565,18 @@ function toolDenial(
 ): string | null {
   const state = getState(pluginId);
   if (!state?.enabled) return 'This plugin was disabled before the tool could run.';
-  if (tool.requiresController && !requesterStillController) {
+  const config = configFor(pluginId);
+  // The plugin may have a sharper test than "is a controller" — Discord Admin
+  // asks whether the requester holds the Discord permission themselves — and
+  // says so by naming a config switch. Off, or unnamed, and the gate stands.
+  const controllerGateStandsDown =
+    tool.controllerBypassConfig !== undefined && config[tool.controllerBypassConfig] === true;
+  if (tool.requiresController && !requesterStillController && !controllerGateStandsDown) {
     return 'This tool is restricted to bot controllers.';
   }
   if (
     tool.enabledByConfig !== undefined
-    && state.config[tool.enabledByConfig] !== true
+    && config[tool.enabledByConfig] !== true
   ) {
     return `This tool is disabled by the "${tool.enabledByConfig}" plugin setting.`;
   }
@@ -736,7 +759,9 @@ function resolveCells(rows: PluginPageData['rows']): WirePluginPageData['rows'] 
     for (const cell of Object.values(row.cells)) {
       if (cell.kind === 'user') userIds.push(cell.id);
       if (cell.kind === 'text') {
-        for (const mention of mentionsIn(cell.text)) {
+        // Both, because the preview sits in the table and the full text opens
+        // in a dialog: a mention must read the same in either.
+        for (const mention of mentionsIn(`${cell.text}\n${cell.preview ?? ''}`)) {
           markup.add(mention);
           const { id, isChannel } = readMention(mention);
           if (!isChannel) userIds.push(id);
@@ -764,7 +789,7 @@ function resolveCells(rows: PluginPageData['rows']): WirePluginPageData['rows'] 
     if (cell.kind === 'user') return { ...cell, name: names[cell.id] ?? cell.id };
     if (cell.kind === 'channel') return { ...cell, name: channelName(cell.id) };
     if (cell.kind === 'text') {
-      const present = mentionsIn(cell.text);
+      const present = mentionsIn(`${cell.text}\n${cell.preview ?? ''}`);
       if (present.length === 0) return cell;
       return {
         ...cell,

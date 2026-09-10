@@ -95,17 +95,16 @@ export function permissionCatalogue(): Array<{ name: PermissionsString; bit: str
   return PERMISSION_NAMES.map((name) => ({ name, bit: PermissionFlagsBits[name].toString() }));
 }
 
-export function accessDenied(
+export async function accessDenied(
   ctx: PluginToolContext,
   feature: DiscordAdminFeature,
-): { success: false; error: string } | null {
-  if (!ctx.invocation.requesterIsController) {
-    return { success: false, error: 'Discord administration is restricted to configured Big Yahu controllers.' };
-  }
-  if (!withDefaults(ctx.getConfig())[feature]) {
+): Promise<{ success: false; error: string } | null> {
+  const config = withDefaults(ctx.getConfig());
+  if (!config[feature]) {
     return { success: false, error: 'That Discord Admin capability is disabled in the plugin settings.' };
   }
-  return null;
+  if (ctx.invocation.requesterIsController || config.autonomousModeration) return null;
+  return { success: false, error: 'Discord administration is restricted to configured Big Yahu controllers.' };
 }
 
 /** Only ever returns the guild which produced this tool invocation. Model arguments cannot select another one. */
@@ -136,7 +135,12 @@ export function requirePermissions(member: GuildMember, permissions: Permissions
 /** discord.js accepts the raw reason and URL-encodes it. Keep that encoded header within Discord's 512 limit. */
 export function auditReason(ctx: PluginToolContext, supplied: unknown): string {
   const reason = requiredText(supplied, 'reason', 512);
-  const source = `Big Yahu controller ${ctx.invocation.requesterId}: ${reason}`;
+  // The audit log is the only record of why this happened, so it must not claim
+  // a controller asked for something the bot decided by itself.
+  const who = ctx.invocation.requesterIsController
+    ? `Big Yahu controller ${ctx.invocation.requesterId}`
+    : `Big Yahu, prompted by ${ctx.invocation.requesterId}`;
+  const source = `${who}: ${reason}`;
   let fitted = '';
   for (const character of source) {
     if (encodeURIComponent(fitted + character).length > 512) break;
@@ -155,6 +159,11 @@ export function confirmationRequired(
   always = false,
 ): { success: false; error: string; confirmationRequired: string } | null {
   const config = withDefaults(ctx.getConfig());
+  // A confirmation is a phrase a controller has to send back, so it cannot
+  // survive the bot acting on its own: there is nobody to ask and no message to
+  // match. Autonomous moderation therefore carries no confirmation at all —
+  // that is the trade the switch makes, not an oversight.
+  if (config.autonomousModeration) return null;
   if (!always && !config.requireMutationConfirmation) return null;
   const botId = ctx.discordClient?.user?.id;
   const contentWithoutBotMention = botId
@@ -215,7 +224,7 @@ export function guarded(
   operation: PluginTool['handler'],
 ): PluginTool['handler'] {
   return async (args, ctx) => {
-    const denied = accessDenied(ctx, feature);
+    const denied = await accessDenied(ctx, feature);
     if (denied) return denied;
     try {
       return await operation(args, ctx);

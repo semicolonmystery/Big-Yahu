@@ -287,6 +287,30 @@ function stringIds(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === 'string' && /^\d{5,}$/.test(entry));
 }
 
+/** How much of a memory the table shows before the rest moves into the dialog. */
+const PREVIEW_CHARS = 120;
+
+/**
+ * The opening words of a memory, for the table cell.
+ *
+ * Memories are deliberately a paragraph — a phrase nobody can act on an hour
+ * later is worse than nothing — which is exactly what makes the whole text
+ * unreadable in a row. Undefined when it already fits, so short memories render
+ * as they always have.
+ */
+export function memoryPreview(text: string): string | undefined {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= PREVIEW_CHARS) return undefined;
+
+  // Cut on a space: a `<@id>` holds none, so a mention is either wholly in or
+  // wholly out and never lands in the table as broken markup.
+  const cut = flat.slice(0, PREVIEW_CHARS);
+  const lastSpace = cut.lastIndexOf(' ');
+  const kept = lastSpace > 0 ? cut.slice(0, lastSpace) : cut;
+  // Belt and braces for a memory with no space to cut on at all.
+  return `${kept.replace(/<[@#][!&]?\d*$/, '').trimEnd()}…`;
+}
+
 const plugin: BigYahuPlugin = {
   id: 'rolling-memory',
   name: 'Rolling Memory',
@@ -548,7 +572,13 @@ const plugin: BigYahuPlugin = {
       title: 'Memories',
       description: 'What the bot is holding in mind right now, freshest first.',
 
+      /**
+       * Memories are deliberately a paragraph — a phrase nobody can act on is
+       * worse than nothing — which makes the whole text unreadable in a table
+       * cell. The table gets the opening words and the dialog gets the rest.
+       */
       render({ database }, { page, pageSize, query }) {
+
         const memories = listMemories(open(database));
         const needle = query.trim().toLowerCase();
         const matched = needle ? memories.filter((memory) => memory.text.toLowerCase().includes(needle)) : memories;
@@ -557,7 +587,7 @@ const plugin: BigYahuPlugin = {
         const shown: PluginPageRow[] = matched.slice(start, start + pageSize).map((memory) => ({
           id: String(memory.id),
           cells: {
-            text: { kind: 'text', text: memory.text },
+            text: { kind: 'text', text: memory.text, preview: memoryPreview(memory.text) },
             // The channel a memory belongs to is the first it was linked to;
             // the rest are in the text where the model wrote them.
             channel: memory.channelIds[0]

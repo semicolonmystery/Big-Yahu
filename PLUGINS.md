@@ -705,6 +705,37 @@ A `text` cell gets the same treatment for free: any `<@id>` or `<#id>` inside it
 resolved and the panel renders it as a chip. You write the id, as you should, and the
 operator reads a name.
 
+**A tool's gates read live, and fall back to your `defaultConfig`.** `requiresController`
+and `enabledByConfig` are re-checked immediately before the handler runs, so flipping a
+switch in the panel takes effect on the next reply with no reload. The value is read from
+the operator's stored config *over* your `defaultConfig`, which matters on an update: the
+config row is written once, so a key you only added in a later version is simply absent
+from it, and without the fallback a tool gated on that key would stay invisible until
+somebody happened to re-save the settings form.
+
+`controllerBypassConfig` names a config switch that stands `requiresController` down, for
+a plugin that has a better test of its own than controller status. Discord Admin uses it
+for autonomous moderation. Reach for it only when you are replacing the check with
+another one — on its own it is just an off switch for the gate.
+
+**When the text is long, set `preview`.** A row is one line, and a cell holding a whole
+paragraph makes the table useless — which is what rolling memory's page did once memories
+grew to a paragraph each. Give `preview` the opening words and the panel shows those in the
+cell, with a **Show** button that opens the full `text` in a dialog:
+
+```ts
+text: { kind: 'text', text: memory.text, preview: memoryPreview(memory.text) },
+```
+
+Both strings travel in the same payload, so opening the dialog costs no request — which is
+why this is not a row `action`, since those post to the server and refetch. Mentions
+resolve in both, so a name reads the same in the table and in the dialog. Leave `preview`
+unset and the cell renders exactly as it always has, so nothing needs changing.
+
+Cut on a space if you write your own: a `<@id>` contains none, so cutting at a space
+boundary means a mention is either wholly in the preview or wholly out, and never lands in
+the table as a broken half-mention.
+
 **`user` and `channel` carry the id, and the host resolves the name.** You store ids
 because that is what survives somebody renaming themselves — the whole reason facts stopped
 storing display names — which leaves you holding the one thing a person cannot read. Put

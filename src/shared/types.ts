@@ -96,9 +96,11 @@ export type PluginCell =
       kind: 'text';
       text: string;
       tone?: 'body' | 'muted' | 'success' | 'error';
+      /** Short stand-in for the table; the full `text` opens in a dialog. Set by the plugin. */
+      preview?: string;
       /**
-       * Names for the `<@id>` and `<#id>` mentions inside `text`, keyed by the
-       * markup. Filled in by the server; a plugin never sets it.
+       * Names for the `<@id>` and `<#id>` mentions inside `text` and `preview`,
+       * keyed by the markup. Filled in by the server; a plugin never sets it.
        */
       mentions?: Record<string, string>;
     }

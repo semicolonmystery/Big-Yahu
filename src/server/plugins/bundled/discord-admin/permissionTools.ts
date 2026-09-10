@@ -24,7 +24,12 @@ import {
   snowflake,
 } from './support';
 
-const CONTROLLER_ONLY = { requiresController: true } as const;
+// Controllers always. Anyone else only once the operator turns on
+// autonomousModeration, which also lets the bot act on its own judgement.
+const CONTROLLER_ONLY = {
+  requiresController: true,
+  controllerBypassConfig: 'autonomousModeration',
+} as const;
 
 function roleColor(value: unknown): number | undefined {
   if (value === undefined) return undefined;
@@ -149,7 +154,7 @@ export const permissionTools: PluginTool[] = [
       }
 
       return serialise(`role:${ctx.invocation.guildId}:${roleId}`, async () => {
-        const denied = accessDenied(ctx, 'enableRoleManagement');
+        const denied = await accessDenied(ctx, 'enableRoleManagement');
         if (denied) return denied;
         if (grants.includes('Administrator') && !withDefaults(ctx.getConfig()).allowAdministratorPermission) {
           throw new Error('Granting Administrator is disabled in the plugin settings.');
@@ -277,7 +282,7 @@ export const permissionTools: PluginTool[] = [
       }
 
       return serialise(`overwrite:${channelId}:${targetId}`, async () => {
-        const denied = accessDenied(ctx, 'enableChannelPermissions');
+        const denied = await accessDenied(ctx, 'enableChannelPermissions');
         if (denied) return denied;
         const guild = invocationGuild(ctx);
         const channel = await guild.channels.fetch(channelId, { force: true });

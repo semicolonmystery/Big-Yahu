@@ -20,5 +20,22 @@ export default {
       enabledByConfig: 'configuredEnabled',
       handler,
     },
+    {
+      name: 'bypassable',
+      description: 'Controller tool the plugin may take over gating for',
+      parameters,
+      requiresController: true,
+      controllerBypassConfig: 'autonomyOn',
+      handler,
+    },
+    {
+      name: 'defaulted',
+      description: 'Gated on a key only the shipped defaults carry',
+      parameters,
+      enabledByConfig: 'addedInAnUpdate',
+      handler,
+    },
   ],
+  // The stored row predates `addedInAnUpdate`, so only this supplies it.
+  defaultConfig: { addedInAnUpdate: true },
 } satisfies BigYahuPlugin;

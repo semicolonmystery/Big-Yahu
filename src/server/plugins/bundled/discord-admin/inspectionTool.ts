@@ -44,6 +44,7 @@ function roleView(role: {
 
 export const inspectionTool: PluginTool = {
   requiresController: true,
+  controllerBypassConfig: 'autonomousModeration',
   enabledByConfig: 'enableInspection',
   name: 'inspect_discord',
   description:

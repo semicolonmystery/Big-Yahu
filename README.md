@@ -81,6 +81,19 @@ Three plugins ship with it, all off until you turn them on:
   anyone the *bot* outranks. Enable this plugin only if everyone on that list
   should have that reach.
 
+  **`autonomousModeration` is a different thing entirely, and it is off by
+  default.** Turn it on and the bot moderates on its own judgement: anyone can
+  ask it, nobody has to be a controller, and it can decide by itself that
+  somebody has earned a timeout. Confirmation cannot mean anything for a
+  decision nobody asked for, so it is skipped entirely while this is on —
+  a model deciding to ban somebody is one tool call away from it happening.
+  What still bounds it is Discord: the bot cannot touch anyone its own role
+  does not outrank, and cannot grant permissions it does not hold. The prompt
+  tells it to go in steps and that being insulted is not a reason, but that is
+  guidance to a model, not a guarantee. The audit log records that the bot
+  decided rather than a controller, so `Big Yahu, prompted by <id>` in the
+  reason is how you tell the two apart afterwards.
+
 External API v2 plugins remain installed and visible after this upgrade, but are
 marked incompatible and are not loaded. Update them to
 `@big-yahu/plugin-sdk` `^3` and use `PluginToolContext` in tool handlers (or set

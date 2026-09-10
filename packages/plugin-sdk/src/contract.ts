@@ -223,6 +223,18 @@ export interface PluginTool {
   parameters: Record<string, unknown>;
   /** Offered and executed only when the requesting Discord user is a bot controller. */
   requiresController?: boolean;
+  /**
+   * Lets `requiresController` stand down when this raw plugin config value is
+   * exactly `true`, so the tool is offered to everyone and the plugin decides
+   * for itself who may use it.
+   *
+   * Only reach for this when the plugin has a *better* test than controller
+   * status — Discord Admin uses it to ask whether the requester holds the
+   * Discord permission for the action themselves, which is a real authority the
+   * host cannot see. Without a check of your own this is simply an off switch
+   * for the controller gate, which is not what it is for.
+   */
+  controllerBypassConfig?: string;
   /** Offered and executed only when this raw plugin config value is exactly `true`. */
   enabledByConfig?: string;
   handler(args: Record<string, unknown>, ctx: PluginToolContext): Promise<unknown> | unknown;
@@ -341,7 +353,21 @@ export interface PluginPageRequest {
  * renaming themselves, but an operator reading a table wants the name.
  */
 export type PluginCell =
-  | { kind: 'text'; text: string; tone?: 'body' | 'muted' | 'success' | 'error' }
+  | {
+      kind: 'text';
+      text: string;
+      tone?: 'body' | 'muted' | 'success' | 'error';
+      /**
+       * A short stand-in shown in the table when `text` is long enough to make
+       * a row unreadable — a paragraph-length memory, say. The panel renders
+       * this in the cell and puts the full `text` behind a button that opens a
+       * dialog. Both travel in the same payload, so opening one costs no
+       * request, and mentions resolve in both.
+       *
+       * Leave it unset and the cell renders `text` as it always has.
+       */
+      preview?: string;
+    }
   | { kind: 'user'; id: string }
   | { kind: 'channel'; id: string }
   | { kind: 'number'; value: number; suffix?: string }

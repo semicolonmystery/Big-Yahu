@@ -13,7 +13,12 @@ import {
   snowflake,
 } from './support';
 
-const CONTROLLER_ONLY = { requiresController: true } as const;
+// Controllers always. Anyone else only once the operator turns on
+// autonomousModeration, which also lets the bot act on its own judgement.
+const CONTROLLER_ONLY = {
+  requiresController: true,
+  controllerBypassConfig: 'autonomousModeration',
+} as const;
 
 export const memberTools: PluginTool[] = [
   {
