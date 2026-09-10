@@ -75,6 +75,11 @@ Three plugins ship with it, all off until you turn them on:
   Administrator grants still require confirmation. Capability switches and the
   current Controllers list are checked again immediately before execution, so
   disabling a capability or removing the requester mid-reply cancels the action.
+  Note what this does to the Controllers list: authorization is controller
+  status alone, and the requester's own Discord permissions and role position
+  are never consulted. A controller with no Discord powers at all can ban
+  anyone the *bot* outranks. Enable this plugin only if everyone on that list
+  should have that reach.
 
 External API v2 plugins remain installed and visible after this upgrade, but are
 marked incompatible and are not loaded. Update them to

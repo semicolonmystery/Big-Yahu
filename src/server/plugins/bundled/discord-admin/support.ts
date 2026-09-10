@@ -22,8 +22,14 @@ function normalisePermissionName(name: string): string {
   return name.replace(/[^a-z0-9]/gi, '').toLowerCase();
 }
 
+/**
+ * A snowflake is the milliseconds since Discord's 2015 epoch shifted left 22
+ * bits, so anything created after January 2015 is at least 17 digits. Rejecting
+ * shorter ones here turns a model that invented a number into a clear error
+ * rather than a request Discord refuses for reasons the model then guesses at.
+ */
 export function snowflake(value: unknown, label: string): string {
-  if (typeof value !== 'string' || !/^\d{5,20}$/.test(value)) {
+  if (typeof value !== 'string' || !/^\d{17,20}$/.test(value)) {
     throw new Error(`${label} must be a Discord id.`);
   }
   const parsed = BigInt(value);

@@ -14,14 +14,14 @@ import {
 } from '../../src/server/plugins/bundled/discord-admin/config';
 import { auditReason } from '../../src/server/plugins/bundled/discord-admin/support';
 
-const GUILD_ID = '10001';
-const CHANNEL_ID = '20001';
-const SOURCE_VOICE_CHANNEL_ID = '20002';
-const REQUESTER_ID = '30001';
-const BOT_ID = '40001';
-const USER_ID = '50001';
-const SECOND_USER_ID = '50002';
-const ROLE_ID = '60001';
+const GUILD_ID = '100000000000000001';
+const CHANNEL_ID = '200000000000000001';
+const SOURCE_VOICE_CHANNEL_ID = '200000000000000002';
+const REQUESTER_ID = '300000000000000001';
+const BOT_ID = '400000000000000001';
+const USER_ID = '500000000000000001';
+const SECOND_USER_ID = '500000000000000002';
+const ROLE_ID = '600000000000000001';
 
 const EXPECTED_GATES = {
   inspect_discord: 'enableInspection',
@@ -75,7 +75,7 @@ function context(options: ContextOptions = {}): PluginToolContext {
     invocation: {
       guildId: GUILD_ID,
       channelId: CHANNEL_ID,
-      messageId: '70001',
+      messageId: '700000000000000001',
       requesterId: REQUESTER_ID,
       requesterIsController: options.controller ?? true,
       requestContent: options.requestContent ?? 'please do it',
