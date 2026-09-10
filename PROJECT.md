@@ -9,6 +9,7 @@
 | Bounded message.txt attachments | IMPL | Configurable 0–64 KiB per file (default 16); shared 64 KiB/eight-file budget; five-second downloads |
 | Admin error states, permissions and regression tests | IMPL | Correct defaults, recoverable auth, pagination, validated settings and browser coverage |
 | Strict single-guild runtime and deployment checks | IMPL | Required guild in bot mode; health checks, graceful shutdown, Docker/Chroma smoke and CI |
+| Readable structured extraction | IMPL | `maxOutputTokens` is a caller's budget under a 64K runaway bound, not a 4K ceiling; unparsable answers log `finishReason` and retry on the newest half of the window |
 
 The plugin system and its bundled plugins are maintained in this repository. Existing
 capabilities and unfinished features remain; the tool-handler contract deliberately

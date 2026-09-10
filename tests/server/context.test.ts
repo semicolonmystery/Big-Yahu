@@ -6,7 +6,10 @@ import type { TextAttachmentBudget } from '../../src/server/bot/textAttachments'
 
 const state = vi.hoisted(() => ({
   settings: { maxEscalationDepth: 1, escalationLookbackHours: 24, factSearchTopK: 5 },
-  generate: vi.fn(async (_contents: unknown, _options: unknown): Promise<{ text: string | undefined }> => ({ text: '{"facts":[],"needsMoreContext":false}' })),
+  generate: vi.fn(async (_contents: unknown, _options: unknown): Promise<{
+    text: string | undefined;
+    candidates?: Array<{ finishReason?: string }>;
+  }> => ({ text: '{"facts":[],"needsMoreContext":false}' })),
   search: vi.fn(async (_query: string, _count: number, _where: unknown): Promise<Fact[]> => []),
   attachments: vi.fn(async (_messages: Message[], _budget?: TextAttachmentBudget) => new Map<string, string>()),
   allowed: new Set(['open']),
@@ -226,6 +229,12 @@ describe('bounded context escalation', () => {
     expect(state.attachments.mock.calls[0][1]).toBe(value.attachmentBudget);
   });
 
+  it('asks for more output budget than a chat reply, because thinking is paid from it', async () => {
+    const { value } = options();
+    await runEscalatableExtraction(value);
+    expect(state.generate.mock.calls[0][1]).toMatchObject({ maxOutputTokens: 32_768 });
+  });
+
   it('keeps supplied image parts attached to structured extraction calls', async () => {
     const { value } = options();
     const part = { inlineData: { mimeType: 'image/png', data: 'data' } };
@@ -236,6 +245,53 @@ describe('bounded context escalation', () => {
   it.each([undefined, '', 'not-json'])('fails visibly on empty or malformed structured output %#', async (text) => {
     state.generate.mockResolvedValueOnce({ text });
     await expect(runEscalatableExtraction(options().value)).rejects.toThrow();
+  });
+
+  describe('answers that cannot be read', () => {
+    /** A window wide enough that dropping its older half is observable. */
+    function wideOptions() {
+      const { object } = channel([message(1)]);
+      const anchor = message(10, { channel: object });
+      const window = [1, 2, 3, 4].map((id) => toWindowMessage(message(id, { content: `Line ${id}` })));
+      return {
+        schema: extractionSchema, systemInstruction: 'Extract facts', task: 'Read this channel',
+        windowMessages: window, anchorMessage: anchor, guildId: 'guild',
+      };
+    }
+
+    const good = '{"facts":[],"needsMoreContext":false}';
+
+    it('retries a truncated answer on the newest half of the window', async () => {
+      state.generate.mockResolvedValueOnce({ text: '{"facts":[{"tex', candidates: [{ finishReason: 'MAX_TOKENS' }] });
+      expect(await runEscalatableExtraction(wideOptions())).toMatchObject({ needsMoreContext: false });
+      expect(state.generate).toHaveBeenCalledTimes(2);
+
+      // The oldest half goes; the newest messages are the ones kept.
+      const retry = String(state.generate.mock.calls[1][0]);
+      expect(retry).not.toContain('Line 1');
+      expect(retry).not.toContain('Line 2');
+      expect(retry).toContain('Line 3');
+      expect(retry).toContain('Line 4');
+    });
+
+    it('retries a complete but malformed answer the same way', async () => {
+      state.generate.mockResolvedValueOnce({ text: '{"facts":[{"text":"he said "hi""}]}' });
+      expect(await runEscalatableExtraction(wideOptions())).toMatchObject({ needsMoreContext: false });
+      expect(state.generate).toHaveBeenCalledTimes(2);
+    });
+
+    it('gives up rather than narrowing forever', async () => {
+      state.generate.mockResolvedValue({ text: 'cut off', candidates: [{ finishReason: 'MAX_TOKENS' }] });
+      await expect(runEscalatableExtraction(wideOptions())).rejects.toThrow('ran out of output budget');
+      // The first attempt plus its two retries, and no escalation past them.
+      expect(state.generate).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not mistake a truncated answer for one that needs more context', async () => {
+      state.generate.mockResolvedValueOnce({ text: good, candidates: [{ finishReason: 'STOP' }] });
+      await runEscalatableExtraction(wideOptions());
+      expect(state.generate).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

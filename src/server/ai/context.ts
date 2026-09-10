@@ -1,6 +1,7 @@
 import { ActivityType, MessageType } from 'discord.js';
 import type { Message, TextBasedChannel } from 'discord.js';
-import type { Part, Schema } from '@google/genai';
+import { FinishReason } from '@google/genai';
+import type { GenerateContentResponse, Part, Schema } from '@google/genai';
 import { generate } from './generate';
 import { searchFacts } from '../db/repositories/factsRepo';
 import { getSettings } from '../db/repositories/settingsRepo';
@@ -339,9 +340,66 @@ export interface EscalationOptions {
   attachmentBudget?: TextAttachmentBudget;
 }
 
-function parseResponse<T>(raw: string | undefined): T {
-  if (!raw) throw new Error('Gemini returned an empty response');
-  return JSON.parse(raw) as T;
+/**
+ * Extraction answers a schema over a whole page of messages, so it needs far
+ * more room than a chat reply. On thinking models the budget is shared with
+ * thinking, which is what made the default cut answers off mid-document.
+ */
+const EXTRACTION_MAX_OUTPUT_TOKENS = 32_768;
+
+/**
+ * How many times a structured answer that could not be read is asked for again
+ * on a narrower window. Each retry drops the oldest half of the messages, so a
+ * page that cannot be answered whole still yields its most recent part instead
+ * of being lost entirely.
+ */
+const UNREADABLE_ANSWER_RETRIES = 2;
+
+/** A structured answer that could not be read, and whether a shorter one might be. */
+class UnreadableAnswerError extends Error {
+  readonly truncated: boolean;
+
+  constructor(message: string, truncated: boolean, cause?: unknown) {
+    super(message, { cause });
+    this.name = 'UnreadableAnswerError';
+    this.truncated = truncated;
+  }
+}
+
+/**
+ * The response, not just its text: when JSON will not parse, the reason is
+ * almost always in `finishReason`, and throwing the string away meant nobody
+ * could tell a truncated answer from a malformed one.
+ */
+function parseResponse<T>(response: GenerateContentResponse): T {
+  const raw = response.text;
+  const finishReason = response.candidates?.[0]?.finishReason;
+
+  if (finishReason === FinishReason.MAX_TOKENS) {
+    throw new UnreadableAnswerError(
+      `Gemini ran out of output budget after ${raw?.length ?? 0} characters`,
+      true,
+    );
+  }
+  if (!raw) {
+    throw new UnreadableAnswerError(
+      `Gemini returned an empty response (finishReason ${finishReason ?? 'unknown'})`,
+      false,
+    );
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    // Complete but malformed — the prompts quote verbatim text in double
+    // quotes, and one the model failed to escape lands here.
+    console.error(
+      `[ai] could not parse a structured answer: finishReason ${finishReason ?? 'unknown'}, `
+        + `${raw.length} characters, ${error instanceof Error ? error.message : String(error)}`,
+    );
+    console.error(`[ai] it began: ${raw.slice(0, 300)}`);
+    throw new UnreadableAnswerError('Gemini returned JSON that could not be parsed', false, error);
+  }
 }
 
 /**
@@ -361,30 +419,58 @@ export async function runEscalatableExtraction<T extends ExtractionResult>(
   for (let depth = 0; ; depth += 1) {
     const isFinalAttempt = depth >= maxDepth;
 
-    const sections = [options.task];
-    if (relatedFacts.length > 0) {
-      sections.push(`Facts already known about this server:\n${formatFacts(relatedFacts)}`);
-    }
-    if (olderMessages.length > 0) {
-      sections.push(`Earlier messages, for background:\n${formatTranscript(olderMessages)}`);
-    }
-    sections.push(`Messages to work from:\n${formatTranscript(options.windowMessages)}`);
-    if (isFinalAttempt) {
-      sections.push('No further context is available. Give your best answer using only what is above.');
-    }
+    const buildPrompt = (windowMessages: WindowMessage[]): string => {
+      const sections = [options.task];
+      if (relatedFacts.length > 0) {
+        sections.push(`Facts already known about this server:\n${formatFacts(relatedFacts)}`);
+      }
+      if (olderMessages.length > 0) {
+        sections.push(`Earlier messages, for background:\n${formatTranscript(olderMessages)}`);
+      }
+      sections.push(`Messages to work from:\n${formatTranscript(windowMessages)}`);
+      if (isFinalAttempt) {
+        sections.push('No further context is available. Give your best answer using only what is above.');
+      }
+      return sections.join('\n\n');
+    };
 
-    const prompt = sections.join('\n\n');
     const imageParts = options.imageParts ?? [];
-    const response = await generate(
-      imageParts.length > 0 ? [{ role: 'user', parts: [{ text: prompt }, ...imageParts] }] : prompt,
-      {
-        systemInstruction: options.systemInstruction,
-        responseMimeType: 'application/json',
-        responseSchema: options.schema,
-      },
-    );
+    const ask = async (windowMessages: WindowMessage[]): Promise<T> => {
+      const prompt = buildPrompt(windowMessages);
+      const response = await generate(
+        imageParts.length > 0 ? [{ role: 'user', parts: [{ text: prompt }, ...imageParts] }] : prompt,
+        {
+          systemInstruction: options.systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: options.schema,
+          maxOutputTokens: EXTRACTION_MAX_OUTPUT_TOKENS,
+        },
+      );
+      return parseResponse<T>(response);
+    };
 
-    const result = parseResponse<T>(response.text);
+    // A page that cannot be answered whole is worth asking about in part. Only
+    // the oldest messages are dropped, so what survives is the most recent and
+    // the escalation state above is untouched.
+    const askNarrowing = async (): Promise<T> => {
+      let window = options.windowMessages;
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          return await ask(window);
+        } catch (error) {
+          if (!(error instanceof UnreadableAnswerError)) throw error;
+          if (attempt >= UNREADABLE_ANSWER_RETRIES || window.length <= 1) throw error;
+          const kept = window.slice(Math.ceil(window.length / 2));
+          console.warn(
+            `[ai] ${error.truncated ? 'truncated' : 'unreadable'} answer (${error.message}) — `
+              + `retrying on the newest ${kept.length} of ${window.length} messages`,
+          );
+          window = kept;
+        }
+      }
+    };
+
+    const result = await askNarrowing();
     if (!result.needsMoreContext || isFinalAttempt) return result;
 
     const earliest = olderMessages[0] ?? options.windowMessages[0] ?? toWindowMessage(options.anchorMessage);

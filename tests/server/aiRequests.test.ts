@@ -88,11 +88,17 @@ describe('Gemini requests through the real SDK', () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
-  it.each([[undefined, 4096], [10000, 4096], [512, 512]])('bounds output tokens (%s → %s)', async (requested, expected) => {
-    await generate('Question', { maxOutputTokens: requested });
-    expect(payload().generationConfig.maxOutputTokens).toBe(expected);
-    expect(transport.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
-  });
+  // 4096 is the default, not a ceiling: extraction answers a schema over a
+  // whole page and needs more, and on thinking models the budget also pays for
+  // thinking. Only the runaway bound is fixed.
+  it.each([[undefined, 4096], [512, 512], [10_000, 10_000], [32_768, 32_768], [1_000_000, 65_536]])(
+    'bounds output tokens (%s → %s)',
+    async (requested, expected) => {
+      await generate('Question', { maxOutputTokens: requested });
+      expect(payload().generationConfig.maxOutputTokens).toBe(expected);
+      expect(transport.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+    },
+  );
 });
 
 describe('embedding requests and validation', () => {

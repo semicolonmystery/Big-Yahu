@@ -6,6 +6,21 @@ import { recordFailure, recordSuccess, selectCandidates } from '../db/repositori
 import { isRetryable, retryDelay } from './retry';
 import { claimAIRequest } from './requestBudget';
 
+/** What a caller gets when it asks for nothing in particular. */
+const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+
+/**
+ * The bound on any one generation, so a runaway answer cannot bill forever.
+ * It is deliberately far above the default: this is the ceiling, not the size.
+ * A caller whose answer is legitimately long — extracting facts from a full
+ * page of messages — raises its own budget beneath it.
+ *
+ * On Gemini 3 thinking models this budget covers thinking tokens as well as
+ * output, so a reasoning-heavy call can spend most of it before writing a
+ * character and return valid-looking JSON cut off mid-document.
+ */
+const MAX_OUTPUT_TOKENS_CEILING = 65_536;
+
 /** Thrown once every model has been tried and none answered. */
 export class OverloadedError extends Error {
   readonly attempts: number;
@@ -52,7 +67,7 @@ export async function generate(
         const signal = claimAIRequest();
         const response = await ai.models.generateContent({ model: candidate.model, contents, config: {
           ...config,
-          maxOutputTokens: Math.min(config.maxOutputTokens ?? 4096, 4096),
+          maxOutputTokens: Math.min(config.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS_CEILING),
           abortSignal: config.abortSignal ? AbortSignal.any([signal, config.abortSignal]) : signal,
         } });
         recordSuccess(candidate.model);
