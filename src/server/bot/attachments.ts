@@ -1,6 +1,6 @@
 import type { Message } from 'discord.js';
 import type { Part } from '@google/genai';
-import { readBoundedBody } from './boundedDownload';
+import { isDiscordImageUrl, readBoundedBody } from './boundedDownload';
 
 /** Gemini's inline image formats. Notably GIF is not among them. */
 const SUPPORTED = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif']);
@@ -55,9 +55,7 @@ async function download(candidate: Candidate, maxBytes: number): Promise<Part | 
   const needsReencoding = !candidate.mimeType || !SUPPORTED.has(candidate.mimeType);
   const url = needsReencoding ? asStillImage(candidate.url) : candidate.url;
 
-  const parsed = new URL(url);
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password
-    || !/^(?:cdn\.discordapp\.com|media\.discordapp\.net|images-ext-\d+\.discordapp\.net)$/.test(parsed.hostname)) return null;
+  if (!isDiscordImageUrl(url)) return null;
   const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }).catch(() => null);
   if (!response?.ok) return null;
 

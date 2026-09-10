@@ -307,3 +307,35 @@ describe('per-reply request admission and abort signals', () => {
     });
   });
 });
+
+describe('request budget refusals name their cause', () => {
+  it('separates running out of time from running out of attempts', async () => {
+    const { withAIRequestBudget, claimAIRequest, AIRequestBudgetError } =
+      await import('../../src/server/ai/requestBudget');
+    const controller = new AbortController();
+    const original = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 120_000 ? controller.signal : original(ms)));
+    try {
+      await withAIRequestBudget(async () => {
+        controller.abort(new Error('deadline'));
+        // Both refusals shared one message, so a reply killed by the deadline
+        // was logged as having exhausted its attempts.
+        expect(() => claimAIRequest()).toThrow(AIRequestBudgetError);
+        expect(() => claimAIRequest()).toThrow(/ran out of time/);
+      });
+    } finally {
+      vi.mocked(AbortSignal.timeout).mockImplementation(original);
+    }
+  });
+
+  it('does not spend an attempt on a refused claim', async () => {
+    const { withAIRequestBudget, claimAIRequest } = await import('../../src/server/ai/requestBudget');
+    await withAIRequestBudget(async () => {
+      for (let attempt = 0; attempt < 24; attempt += 1) expect(() => claimAIRequest()).not.toThrow();
+      // Every later refusal must report the same state rather than counting down
+      // past zero on an error path.
+      expect(() => claimAIRequest()).toThrow(/exhausted/);
+      expect(() => claimAIRequest()).toThrow(/exhausted/);
+    });
+  });
+});

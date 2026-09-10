@@ -50,3 +50,35 @@ describe('image attachment limits', () => {
     expect(result.images).toEqual([]); expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+describe('one rule decides what Discord URL is safe to fetch', () => {
+  it('rejects an explicit non-443 port on both download paths', async () => {
+    const { isDiscordImageUrl, isDiscordAttachmentUrl } = await import('../../src/server/bot/boundedDownload');
+    // The image path omitted this check while the attachment path had it, so a
+    // pinned hostname on a filtered port was still dialled and hung.
+    expect(isDiscordImageUrl('https://cdn.discordapp.com:444/x.png')).toBe(false);
+    expect(isDiscordAttachmentUrl('https://cdn.discordapp.com:444/attachments/1/2/message.txt')).toBe(false);
+    expect(isDiscordImageUrl('https://cdn.discordapp.com:443/x.png')).toBe(true);
+  });
+
+  it('rejects other hosts, other schemes and embedded credentials', async () => {
+    const { isDiscordImageUrl } = await import('../../src/server/bot/boundedDownload');
+    for (const url of [
+      'http://cdn.discordapp.com/x.png',
+      'https://evil.example.com/x.png',
+      'https://cdn.discordapp.com.evil.example.com/x.png',
+      'https://user:pass@cdn.discordapp.com/x.png',
+      'https://127.0.0.1/x.png',
+      'not a url at all',
+    ]) expect(isDiscordImageUrl(url)).toBe(false);
+  });
+
+  it('accepts the embed proxy hosts images actually arrive on', async () => {
+    const { isDiscordImageUrl } = await import('../../src/server/bot/boundedDownload');
+    expect(isDiscordImageUrl('https://media.discordapp.net/attachments/1/2/x.png')).toBe(true);
+    expect(isDiscordImageUrl('https://images-ext-1.discordapp.net/external/abc/x.png')).toBe(true);
+    // Only attachments proper are read as text, so the proxy is not one of them.
+    const { isDiscordAttachmentUrl } = await import('../../src/server/bot/boundedDownload');
+    expect(isDiscordAttachmentUrl('https://images-ext-1.discordapp.net/external/abc/x.txt')).toBe(false);
+  });
+});

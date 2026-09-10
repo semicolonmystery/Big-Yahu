@@ -152,6 +152,21 @@ describe('complete reply pipeline boundaries', () => {
     await handleMention(message() as unknown as Message);
     expect(m.release).toHaveBeenCalledTimes(2); expect(m.stopTyping).toHaveBeenCalledTimes(2);
   });
+  it('does not contradict a delivered answer when post-send bookkeeping fails', async () => {
+    // logReply runs after the reply is already in the channel, so a failing
+    // write used to produce a correct answer followed by the overload message.
+    m.log.mockImplementationOnce(() => { throw new Error('reply_log is unavailable'); });
+    const msg = message(); await handleMention(msg as unknown as Message);
+    expect(msg.reply).toHaveBeenCalledTimes(1);
+    expect(msg.reply).toHaveBeenCalledWith(expect.objectContaining({ content: 'answer' }));
+    expect(m.release).toHaveBeenCalledTimes(1); expect(m.stopTyping).toHaveBeenCalledTimes(1);
+  });
+  it('still answers when generation fails before anything is sent', async () => {
+    m.generate.mockRejectedValueOnce(new Error('unexpected'));
+    const msg = message(); await handleMention(msg as unknown as Message);
+    expect(msg.reply).toHaveBeenCalledTimes(1);
+    expect(msg.reply).toHaveBeenCalledWith(expect.objectContaining({ content: DEFAULT_SETTINGS.overloadMessage }));
+  });
   it('keeps allowed-mentions restrictions on alternative reply targets', async () => {
     m.generate.mockResolvedValueOnce({ text: 'answer', silent: false, savedFactIds: [], deletedFactIds: [], replyToMessageId: 'old' });
     const msg = message(); await handleMention(msg as unknown as Message);

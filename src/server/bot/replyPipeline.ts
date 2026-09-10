@@ -163,25 +163,37 @@ export async function handleMention(message: Message): Promise<void> {
   }
 
   const stopTyping = startTyping(message);
+  // Whether anything actually reached the channel. respond() sends the reply and
+  // then writes to reply_log, so a failing write — or any bug after the send —
+  // used to produce a correct answer followed by "Gemini is overloaded".
+  const outcome: ReplyOutcome = { replied: false };
   try {
-    await withAIRequestBudget(() => respond(message, guildId));
+    await withAIRequestBudget(() => respond(message, guildId, outcome));
   } catch (error) {
     if (error instanceof OverloadedError || error instanceof AIRequestBudgetError) {
-      console.warn('[bot] AI unavailable or request budget exhausted; sending the overload message');
-      await message
-        .reply({ content: settings.overloadMessage, allowedMentions: ALLOWED_MENTIONS })
-        .catch(() => {});
-      return;
+      console.warn(`[bot] not answering ${message.id}: ${error.message}`);
+    } else {
+      console.error('[bot] could not complete the reply:', error);
     }
-    console.error('[bot] could not complete the reply:', error);
-    await message.reply({ content: settings.overloadMessage, allowedMentions: ALLOWED_MENTIONS }).catch(() => {});
+    // Something did go out, so the failure is ours to read in the log rather
+    // than a second message contradicting the first. Staying quiet instead
+    // would be worse: going silent on somebody who asked a question is the
+    // symptom the reply logging exists to make visible.
+    if (!outcome.replied) {
+      await message.reply({ content: settings.overloadMessage, allowedMentions: ALLOWED_MENTIONS }).catch(() => {});
+    }
   } finally {
     stopTyping();
     release();
   }
 }
 
-async function respond(message: Message, guildId: string): Promise<void> {
+/** Tracks whether the channel has already seen something, across a thrown error. */
+interface ReplyOutcome {
+  replied: boolean;
+}
+
+async function respond(message: Message, guildId: string, outcome: ReplyOutcome): Promise<void> {
   const settings = getSettings();
   const attachmentBudget = createTextAttachmentBudget();
   const { topic, windowMessages, discordMessages } = await extractTopic(message, guildId, settings.replyContextMessages, attachmentBudget);
@@ -375,6 +387,7 @@ async function respond(message: Message, guildId: string): Promise<void> {
   if (!reply.text) {
     console.warn(`[bot] no reply produced for message ${message.id} in #${message.channelId}`);
     await message.reply({ content: settings.overloadMessage, allowedMentions: ALLOWED_MENTIONS });
+    outcome.replied = true;
     return;
   }
 
@@ -390,6 +403,7 @@ async function respond(message: Message, guildId: string): Promise<void> {
           allowedMentions: ALLOWED_MENTIONS,
         })
       : await message.reply({ content: reply.text, allowedMentions: ALLOWED_MENTIONS });
+  outcome.replied = true;
   logReply({
     guildId,
     channelId: message.channelId,
