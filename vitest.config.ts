@@ -8,6 +8,9 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.{ts,tsx}'],
     environment: 'node',
+    // Every test file gets a migrated database of its own, so nothing reads the
+    // developer's dev database and nothing depends on migrations having been run by hand.
+    setupFiles: ['tests/setup/database.ts'],
     clearMocks: true,
     restoreMocks: true,
     unstubGlobals: true,
