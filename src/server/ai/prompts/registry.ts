@@ -1,7 +1,6 @@
 import {
   FACT_EXTRACTION_DEFAULT,
   REPLY_DEFAULT,
-  SAFETY_FLOOR,
   TOPIC_EXTRACTION_DEFAULT,
 } from './systemInstructions';
 
@@ -24,8 +23,6 @@ export interface PromptDefinition {
   description: string;
   fallback: string;
   required: readonly string[];
-  /** Appended after the operator's text and not editable. Only the reply prompt has one. */
-  floor?: string;
 }
 
 export const PROMPTS: Record<PromptId, PromptDefinition> = {
@@ -51,7 +48,6 @@ export const PROMPTS: Record<PromptId, PromptDefinition> = {
     description: "The bot's voice and its rules for answering. The longest of the three by far.",
     fallback: REPLY_DEFAULT,
     required: ['now', 'language', 'guildId'],
-    floor: SAFETY_FLOOR,
   },
 };
 
@@ -93,14 +89,10 @@ export function promptRejection(id: PromptId, body: string): string | null {
 }
 
 /**
- * Substitute, then append the floor.
- *
- * The floor goes last and is not part of the editable body, so no amount of
- * rewriting — including uploading a file that simply omits it — removes it.
+ * Substitutes the call-time values and nothing else, so what an operator saves
+ * is exactly what the model is given. Nothing is appended behind their back.
  */
-export function renderPrompt(id: PromptId, body: string, values: Record<string, string>): string {
-  const substituted = body.replace(PLACEHOLDER, (whole, name: string) =>
+export function renderPrompt(body: string, values: Record<string, string>): string {
+  return body.replace(PLACEHOLDER, (whole, name: string) =>
     Object.hasOwn(values, name) ? values[name] : whole);
-  const floor = PROMPTS[id].floor;
-  return floor ? `${substituted}\n\n${floor}` : substituted;
 }

@@ -68,10 +68,10 @@ how it behaves.
   deletes it and hands the prompt back to the shipped text, improvements
   included. `{{now}}`, `{{language}}` and `{{guildId}}` are substituted at call
   time and a prompt that drops one is refused when you save it, rather than
-  quietly leaving the bot with no idea what day it is. One short paragraph is
-  appended to the reply prompt and cannot be edited away: no slurs about race,
-  religion, sexuality, gender or disability, and nothing sexual involving
-  minors. Everything else about how it behaves is yours to rewrite.
+  quietly leaving the bot with no idea what day it is. Nothing is appended
+  behind your back — what you save is exactly what the model is given. Gemini's
+  own safety filtering still applies to every call and is left at its defaults;
+  the bot sets no `safetySettings` of its own.
 - **One guild.** `DISCORD_GUILD_ID` is required in bot mode. Every other guild
   is ignored before any work, and an absent guild never enables a global mode.
 - **Per-channel control.** Reading for facts and replying are separate switches

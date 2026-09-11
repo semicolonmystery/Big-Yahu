@@ -7,7 +7,6 @@ import {
   promptRejection,
   renderPrompt,
 } from '../../src/server/ai/prompts/registry';
-import { SAFETY_FLOOR } from '../../src/server/ai/prompts/systemInstructions';
 
 describe('what a prompt may be replaced with', () => {
   it('ships defaults that satisfy their own rules', () => {
@@ -49,7 +48,7 @@ describe('what a prompt may be replaced with', () => {
 
 describe('rendering a prompt', () => {
   it('substitutes every value and leaves nothing behind', () => {
-    const rendered = renderPrompt('reply', PROMPTS.reply.fallback, {
+    const rendered = renderPrompt(PROMPTS.reply.fallback, {
       now: '10.9.2026 21:00', language: 'Czech', guildId: '100000000000000001',
     });
     expect(rendered).toContain('10.9.2026 21:00');
@@ -57,24 +56,13 @@ describe('rendering a prompt', () => {
     expect(placeholdersIn(rendered)).toEqual([]);
   });
 
-  it('appends the floor to whatever the operator wrote', () => {
-    const rendered = renderPrompt('reply', 'be nice {{now}} {{language}} {{guildId}}', {
-      now: 'n', language: 'l', guildId: 'g',
-    });
-    expect(rendered).toContain(SAFETY_FLOOR);
-    expect(rendered.endsWith(SAFETY_FLOOR)).toBe(true);
+  it('gives the model exactly what was saved, with nothing appended', () => {
+    const body = 'be nice {{now}} {{language}} {{guildId}}';
+    expect(renderPrompt(body, { now: 'n', language: 'l', guildId: 'g' })).toBe('be nice n l g');
+    expect(renderPrompt('Work it out.', {})).toBe('Work it out.');
   });
 
-  it('keeps the floor out of the editable body, so nothing can save over it', () => {
-    // Uploading a file that simply omits it is the case this covers.
-    expect(PROMPTS.reply.fallback).not.toContain(SAFETY_FLOOR);
-    expect(promptRejection('reply', 'anything {{now}} {{language}} {{guildId}}')).toBeNull();
-    expect(renderPrompt('reply', 'anything {{now}} {{language}} {{guildId}}', {
-      now: 'n', language: 'l', guildId: 'g',
-    })).toContain(SAFETY_FLOOR);
-  });
-
-  it('adds no floor to the prompts that have none', () => {
-    expect(renderPrompt('topicExtraction', 'Work it out.', {})).toBe('Work it out.');
+  it('leaves a placeholder it was given no value for alone rather than blanking it', () => {
+    expect(renderPrompt('at {{now}} in {{language}}', { now: 'noon' })).toBe('at noon in {{language}}');
   });
 });

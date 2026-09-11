@@ -9,13 +9,13 @@ import { renderPrompt } from './registry';
  * local SQLite file next to two Gemini round trips.
  */
 export function buildFactExtractionInstruction(now: string): string {
-  return renderPrompt('factExtraction', effectivePrompt('factExtraction'), { now });
+  return renderPrompt(effectivePrompt('factExtraction'), { now });
 }
 
 export function buildTopicExtractionInstruction(): string {
-  return renderPrompt('topicExtraction', effectivePrompt('topicExtraction'), {});
+  return renderPrompt(effectivePrompt('topicExtraction'), {});
 }
 
 export function buildReplyInstruction(guildId: string, language: string, now: string): string {
-  return renderPrompt('reply', effectivePrompt('reply'), { guildId, language, now });
+  return renderPrompt(effectivePrompt('reply'), { guildId, language, now });
 }

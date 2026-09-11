@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { Upload, RotateCcw, Lock } from 'lucide-react';
+import { Upload, RotateCcw } from 'lucide-react';
 import type { PromptSummary } from '@shared/types';
 import { api } from '@/lib/api';
 import { Label } from '@/components/ui/label';
@@ -89,19 +89,6 @@ function PromptCard({
             onChange={(event) => setDraft({ ...draft, text: event.target.value })}
           />
         </div>
-
-        {prompt.floor && (
-          <Alert>
-            <Lock className="h-4 w-4" />
-            <AlertTitle>Always added to the end of this prompt</AlertTitle>
-            <AlertDescription>
-              <p className="mb-2 text-xs">
-                Not part of the text above and not removed by rewriting or uploading over it.
-              </p>
-              <p className="text-xs italic">{prompt.floor}</p>
-            </AlertDescription>
-          </Alert>
-        )}
       </CardContent>
 
       <CardFooter className="flex flex-wrap gap-2">

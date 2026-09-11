@@ -17,7 +17,6 @@ import { db } from '../../src/server/db/client';
 import { promptOverrides } from '../../src/server/db/schema';
 import { promptsRouter } from '../../src/server/api/routes/prompts';
 import { PROMPTS } from '../../src/server/ai/prompts/registry';
-import { SAFETY_FLOOR } from '../../src/server/ai/prompts/systemInstructions';
 import {
   buildReplyInstruction,
   buildTopicExtractionInstruction,
@@ -62,8 +61,6 @@ describe('editing the prompts over HTTP', () => {
     const reply = payload.data.find((entry: { id: string }) => entry.id === 'reply');
     expect(reply.override).toBeNull();
     expect(reply.shipped).toBe(PROMPTS.reply.fallback);
-    // The panel needs to show it, so it travels even though it is not editable.
-    expect(reply.floor).toBe(SAFETY_FLOOR);
     expect(reply.placeholders).toEqual(['now', 'language', 'guildId']);
   });
 
@@ -71,10 +68,8 @@ describe('editing the prompts over HTTP', () => {
     const response = await send('PUT', '/prompts/reply', { body: VALID_REPLY });
     expect(response.status).toBe(200);
 
-    const built = buildReplyInstruction('999', 'Czech', 'right now');
-    expect(built).toContain('answer people right now Czech 999');
-    // No restart, no cache to bust.
-    expect(built).toContain(SAFETY_FLOOR);
+    // No restart, no cache to bust — and exactly what was saved, nothing more.
+    expect(buildReplyInstruction('999', 'Czech', 'right now')).toBe('answer people right now Czech 999');
   });
 
   it('refuses a prompt missing a placeholder, and changes nothing', async () => {
@@ -84,8 +79,7 @@ describe('editing the prompts over HTTP', () => {
     expect(buildReplyInstruction('999', 'Czech', 'now')).toBe(
       (await (await send('GET', '/prompts')).json()).data
         .find((entry: { id: string }) => entry.id === 'reply').shipped
-        .replace('{{now}}', 'now').replace('{{language}}', 'Czech').replace('{{guildId}}', '999')
-        + `\n\n${SAFETY_FLOOR}`,
+        .replace('{{now}}', 'now').replace('{{language}}', 'Czech').replace('{{guildId}}', '999'),
     );
   });
 
@@ -128,8 +122,8 @@ describe('editing the prompts over HTTP', () => {
     expect((await response.json()).error).toContain('not a text file');
   });
 
-  it('cannot be used to remove the floor, however the prompt is written', async () => {
+  it('appends nothing of its own to a saved prompt', async () => {
     await send('PUT', '/prompts/reply', { body: VALID_REPLY });
-    expect(buildReplyInstruction('1', 'English', 'now')).toContain(SAFETY_FLOOR);
+    expect(buildReplyInstruction('1', 'English', 'now')).toBe('answer people now English 1');
   });
 });

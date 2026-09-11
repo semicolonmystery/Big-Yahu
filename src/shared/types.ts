@@ -186,8 +186,6 @@ export interface PromptSummary {
   description: string;
   /** Substituted at call time. A saved prompt missing one of these is refused. */
   placeholders: readonly string[];
-  /** Appended after the body and not editable, or null where there is none. */
-  floor: string | null;
   /** What the bot ships with, so the panel can show what Reset restores. */
   shipped: string;
   /** The operator's version, or null while they are using the shipped one. */

@@ -802,7 +802,7 @@ does not queue or invoke AI.
 | Bot reply pipeline | IMPL | two-stage, jump links, `save_fact` tool, reply logging |
 | Per-user rate limiting | IMPL | configurable cap and message |
 | Editable system prompts | IMPL | `/prompts` screen and `prompt_overrides` table; only overrides stored, reset is a delete. `{{now}}`/`{{language}}`/`{{guildId}}` substituted, and a prompt missing one is refused at save. Typed or uploaded; read per call, so edits land on the next message |
-| Non-editable reply floor | IMPL | slurs and minors only, appended after the operator's text so no edit or upload can remove it. Every other rule moved into the editable body |
+| Prompts are exactly what was saved | IMPL | nothing appended to an operator's text. The model's own safety filtering is the only content limit, at SDK defaults — the bot sets no `safetySettings` |
 | Split failure messages | IMPL | five configurable messages, chosen by the API's canonical status: rate limit, overload, spent budget, no credit, bug. Every failure still logged in full with its status |
 | Billing cut-out | IMPL | `RESOURCE_EXHAUSTED`/`FAILED_PRECONDITION` with billing wording throws `BillingError` on the first request — no next model, no failure recorded, since every model shares the key. Other 429s stay ordinary rate limits |
 | Retiring dead models | IMPL | 404 `NOT_FOUND`/`MODEL_NOT_FOUND` retires the model permanently instead of resting it; excluded from the pool and from the "everything is resting" revive, and cleared only by Reset errors |
