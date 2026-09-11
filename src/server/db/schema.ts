@@ -44,6 +44,29 @@ export const settings = sqliteTable('settings', {
   overloadMessage: text('overload_message')
     .notNull()
     .default("Gemini's getting hammered right now and won't talk to me. Try again in a minute."),
+  // One message for four unrelated failures is why the bot said "no time" when
+  // it had actually hit a bug. These split the model being unavailable from the
+  // bot running out of room, and both from something being broken.
+  busyMessage: text('busy_message')
+    .notNull()
+    .default('took me too long to work that one out, ask me again'),
+  errorMessage: text('error_message')
+    .notNull()
+    .default('something broke on my end, thats not your fault'),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+/**
+ * Only prompts an operator has actually rewritten. A row absent means "use what
+ * ships", so improvements to the shipped text still reach anyone who never
+ * touched it, and resetting is a delete rather than pasting a copy back.
+ *
+ * Its own table rather than more `settings` columns: these are hundreds of
+ * lines each, and `settings` is one row of short values.
+ */
+export const promptOverrides = sqliteTable('prompt_overrides', {
+  id: text('id').primaryKey(),
+  body: text('body').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
 

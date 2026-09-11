@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Search, Settings, Puzzle, LogOut } from 'lucide-react';
+import { LayoutDashboard, Search, Settings, Puzzle, LogOut, MessageSquareText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { useAuth } from '@/hooks/useAuth';
@@ -10,6 +10,7 @@ const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/facts', label: 'Facts', icon: Search, end: false },
   { to: '/settings', label: 'Settings', icon: Settings, end: false },
+  { to: '/prompts', label: 'Prompts', icon: MessageSquareText, end: false },
   { to: '/plugins', label: 'Plugins', icon: Puzzle, end: false },
 ];
 

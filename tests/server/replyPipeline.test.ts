@@ -26,6 +26,8 @@ vi.mock('../../src/server/plugins/engine', () => ({
 vi.mock('../../src/server/ai/context', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/server/ai/context')>(), windowMessagesWithAttachments: m.referenceWindow,
 }));
+import { OverloadedError } from '../../src/server/ai/generate';
+import { AIRequestBudgetError } from '../../src/server/ai/requestBudget';
 import { handleMention } from '../../src/server/bot/replyPipeline';
 
 const window = { id: '22', authorId: '12345678901234567', authorUsername: 'Alice', displayName: 'Alice', content: 'question', createdAt: 1, isSelf: false };
@@ -153,7 +155,8 @@ describe('complete reply pipeline boundaries', () => {
   it('sends the configured fallback on empty or failed generation and releases resources', async () => {
     const msg = message(); m.generate.mockResolvedValueOnce({ text: '', silent: false });
     await handleMention(msg as unknown as Message);
-    expect(msg.reply).toHaveBeenCalledWith(expect.objectContaining({ content: DEFAULT_SETTINGS.overloadMessage }));
+    // Producing no text is a bug, not load, and no longer claims Gemini is busy.
+    expect(msg.reply).toHaveBeenCalledWith(expect.objectContaining({ content: DEFAULT_SETTINGS.errorMessage }));
     m.extract.mockRejectedValueOnce(new Error('unavailable'));
     await handleMention(message() as unknown as Message);
     expect(m.release).toHaveBeenCalledTimes(2); expect(m.stopTyping).toHaveBeenCalledTimes(2);
@@ -171,7 +174,18 @@ describe('complete reply pipeline boundaries', () => {
     m.generate.mockRejectedValueOnce(new Error('unexpected'));
     const msg = message(); await handleMention(msg as unknown as Message);
     expect(msg.reply).toHaveBeenCalledTimes(1);
-    expect(msg.reply).toHaveBeenCalledWith(expect.objectContaining({ content: DEFAULT_SETTINGS.overloadMessage }));
+    expect(msg.reply).toHaveBeenCalledWith(expect.objectContaining({ content: DEFAULT_SETTINGS.errorMessage }));
+  });
+
+  // One message for four causes is why "I have no time" could mean a crash.
+  it.each([
+    ['every model failed', () => new OverloadedError(['a', 'b'], new Error('503')), 'overloadMessage'],
+    ['the budget ran out', () => new AIRequestBudgetError('deadline'), 'busyMessage'],
+    ['anything else threw', () => new Error('a real bug'), 'errorMessage'],
+  ] as const)('says which kind of failure it was when %s', async (_case, makeError, setting) => {
+    m.generate.mockRejectedValueOnce(makeError());
+    const msg = message(); await handleMention(msg as unknown as Message);
+    expect(msg.reply).toHaveBeenCalledWith(expect.objectContaining({ content: DEFAULT_SETTINGS[setting] }));
   });
   it('keeps allowed-mentions restrictions on alternative reply targets', async () => {
     m.generate.mockResolvedValueOnce({ text: 'answer', silent: false, savedFactIds: [], deletedFactIds: [], replyToMessageId: 'old' });

@@ -120,6 +120,20 @@
       "when": 1788977589355,
       "tag": "0016_black_shocker",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1789036513423,
+      "tag": "0017_fast_thor",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1789036779542,
+      "tag": "0018_colorful_jean_grey",
+      "breakpoints": true
     }
   ]
 }

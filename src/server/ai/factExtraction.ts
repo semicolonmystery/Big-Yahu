@@ -2,7 +2,7 @@ import type { Message, TextBasedChannel } from 'discord.js';
 import { markUnseenImages, mentionRoster, runEscalatableExtraction, toWindowMessage } from './context';
 import { extractionSchema } from './schemas';
 import type { ExtractionResult } from './schemas';
-import { buildFactExtractionInstruction } from './prompts/systemInstructions';
+import { buildFactExtractionInstruction } from './prompts/build';
 import { addFacts } from '../db/repositories/factsRepo';
 import { cacheMessages } from '../db/repositories/cachedMessagesRepo';
 import { advanceCheckpoint, getCheckpoint } from '../db/repositories/checkpointRepo';

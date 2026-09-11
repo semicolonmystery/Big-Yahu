@@ -1,0 +1,2 @@
+ALTER TABLE `settings` ADD `busy_message` text DEFAULT 'took me too long to work that one out, ask me again' NOT NULL;--> statement-breakpoint
+ALTER TABLE `settings` ADD `error_message` text DEFAULT 'something broke on my end, thats not your fault' NOT NULL;

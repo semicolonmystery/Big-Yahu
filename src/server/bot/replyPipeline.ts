@@ -15,7 +15,7 @@ import type { ForeignChannelMessages } from '../ai/replyGeneration';
 import { readableChannelRoster, resolveReadableChannel } from './channelAccess';
 import { OverloadedError } from '../ai/generate';
 import { AIRequestBudgetError, withAIRequestBudget } from '../ai/requestBudget';
-import { buildReplyInstruction } from '../ai/prompts/systemInstructions';
+import { buildReplyInstruction } from '../ai/prompts/build';
 import { searchFacts } from '../db/repositories/factsRepo';
 import { isController } from '../db/repositories/controllersRepo';
 import { getMessages, cacheMessages } from '../db/repositories/cachedMessagesRepo';
@@ -170,17 +170,29 @@ export async function handleMention(message: Message): Promise<void> {
   try {
     await withAIRequestBudget(() => respond(message, guildId, outcome));
   } catch (error) {
+    // Which of these it was used to be unknowable from the channel, because all
+    // three sent the same sentence. "I have no time" for a crash is how a bug
+    // spent weeks looking like load.
+    const { content, cause } = error instanceof OverloadedError
+      ? { content: settings.overloadMessage, cause: 'every chat model failed' }
+      : error instanceof AIRequestBudgetError
+        ? { content: settings.busyMessage, cause: 'ran out of reply budget' }
+        : { content: settings.errorMessage, cause: 'unexpected error' };
+
     if (error instanceof OverloadedError || error instanceof AIRequestBudgetError) {
-      console.warn(`[bot] not answering ${message.id}: ${error.message}`);
+      console.warn(`[bot] not answering ${message.id} (${cause}): ${error.message}`);
     } else {
-      console.error('[bot] could not complete the reply:', error);
+      console.error(`[bot] not answering ${message.id} (${cause}):`, error);
     }
+
     // Something did go out, so the failure is ours to read in the log rather
     // than a second message contradicting the first. Staying quiet instead
     // would be worse: going silent on somebody who asked a question is the
     // symptom the reply logging exists to make visible.
     if (!outcome.replied) {
-      await message.reply({ content: settings.overloadMessage, allowedMentions: ALLOWED_MENTIONS }).catch(() => {});
+      await message.reply({ content, allowedMentions: ALLOWED_MENTIONS }).catch(() => {});
+    } else {
+      console.warn(`[bot] ${message.id} already had a reply out, so nothing was sent about the ${cause}`);
     }
   } finally {
     stopTyping();
@@ -386,8 +398,8 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
   // Producing nothing is not the same thing, and folding the two together is
   // what made a bot that typed and then never answered impossible to spot.
   if (!reply.text) {
-    console.warn(`[bot] no reply produced for message ${message.id} in #${message.channelId}`);
-    await message.reply({ content: settings.overloadMessage, allowedMentions: ALLOWED_MENTIONS });
+    console.warn(`[bot] no reply produced for message ${message.id} in #${message.channelId} — answering with the error message`);
+    await message.reply({ content: settings.errorMessage, allowedMentions: ALLOWED_MENTIONS });
     outcome.replied = true;
     return;
   }

@@ -167,7 +167,27 @@ export interface AppSettings {
   textAttachmentMaxKb: number;
   /** Messages pulled from another channel the bot was pointed at. 0 turns cross-channel reading off. */
   crossChannelMessages: number;
+  /** Every chat model failed. The one case that really is "try again shortly". */
   overloadMessage: string;
+  /** The reply ran out of attempts or hit its deadline — the bot's own limit, not Gemini's. */
+  busyMessage: string;
+  /** Something threw, or the model produced no text at all. A bug, said plainly. */
+  errorMessage: string;
+}
+
+/** One editable system prompt, with what ships alongside whatever replaced it. */
+export interface PromptSummary {
+  id: 'factExtraction' | 'topicExtraction' | 'reply';
+  label: string;
+  description: string;
+  /** Substituted at call time. A saved prompt missing one of these is refused. */
+  placeholders: readonly string[];
+  /** Appended after the body and not editable, or null where there is none. */
+  floor: string | null;
+  /** What the bot ships with, so the panel can show what Reset restores. */
+  shipped: string;
+  /** The operator's version, or null while they are using the shipped one. */
+  override: string | null;
 }
 
 export interface ReplyLogEntry {

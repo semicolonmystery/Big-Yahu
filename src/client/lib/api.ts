@@ -10,6 +10,7 @@ import type {
   FactPage,
   FactWithSources,
   PluginSummary,
+  PromptSummary,
   PluginPanelSummary,
   PluginPageData,
   PanelView,
@@ -106,6 +107,20 @@ export const api = {
     if (!payload.success) throw new Error(payload.error);
     return payload.data;
   },
+  prompts: () => request<PromptSummary[]>('/prompts'),
+  savePrompt: (id: string, body: string) =>
+    request<{ id: string; override: string }>(`/prompts/${id}`, { method: 'PUT', body: JSON.stringify({ body }) }),
+  resetPrompt: (id: string) => del<{ id: string; reset: boolean }>(`/prompts/${id}`),
+  uploadPrompt: async (id: string, file: File) => {
+    const form = new FormData();
+    form.append('prompt', file);
+    const response = await fetch(`/api/prompts/${id}/upload`, { method: 'POST', body: form });
+    checkAuthentication(response, `/prompts/${id}/upload`);
+    const payload = (await response.json()) as ApiResponse<{ id: string; override: string }>;
+    if (!payload.success) throw new Error(payload.error);
+    return payload.data;
+  },
+
   uninstallPlugin: (id: string) => del<{ id: string }>(`/plugins/${id}`),
   uninstallAllPlugins: () => del<{ removed: string[] }>('/plugins'),
   reloadPlugins: () => post<PluginSummary[]>('/plugins/reload'),

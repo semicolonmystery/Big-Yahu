@@ -12,6 +12,7 @@ import LoginPage from '@/routes/LoginPage';
 import DashboardPage from '@/routes/DashboardPage';
 const FactsSearchPage = lazy(() => import('@/routes/FactsSearchPage'));
 const SettingsPage = lazy(() => import('@/routes/SettingsPage'));
+const PromptsPage = lazy(() => import('@/routes/PromptsPage'));
 const PluginsPage = lazy(() => import('@/routes/PluginsPage'));
 const PluginPage = lazy(() => import('@/routes/PluginPage'));
 
@@ -26,6 +27,7 @@ function AppShell() {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/facts" element={<FactsSearchPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/prompts" element={<PromptsPage />} />
             <Route path="/plugins" element={<PluginsPage />} />
             <Route path="/plugins/:pluginId/:pageId" element={<PluginPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

@@ -4,7 +4,7 @@ import type { TextAttachmentBudget } from '../bot/textAttachments';
 import type { WindowMessage } from './context';
 import { topicSchema } from './schemas';
 import type { TopicResult } from './schemas';
-import { TOPIC_EXTRACTION_INSTRUCTION } from './prompts/systemInstructions';
+import { buildTopicExtractionInstruction } from './prompts/build';
 
 /**
  * Reads the conversation leading up to a mention and works out what is being
@@ -31,7 +31,7 @@ export async function extractTopic(
 
   const topic = await runEscalatableExtraction<TopicResult>({
     schema: topicSchema,
-    systemInstruction: TOPIC_EXTRACTION_INSTRUCTION,
+    systemInstruction: buildTopicExtractionInstruction(),
     task: `The last message (id=${taggedMessage.id}) is the one that mentioned the bot. Work out what is being asked.`,
     windowMessages,
     anchorMessage: taggedMessage,

@@ -29,6 +29,8 @@ export const DEFAULT_SETTINGS = {
   textAttachmentMaxKb: 16,
   crossChannelMessages: 30,
   overloadMessage: "Gemini's getting hammered right now and won't talk to me. Try again in a minute.",
+  busyMessage: 'took me too long to work that one out, ask me again',
+  errorMessage: 'something broke on my end, thats not your fault',
 } as const;
 
 /** HTTP statuses from Gemini that mean "try again shortly" rather than "you did something wrong". */

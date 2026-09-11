@@ -801,6 +801,9 @@ does not queue or invoke AI.
 | Periodic fact extraction + scheduler | IMPL | per-channel, checkpointed, escalation-capable |
 | Bot reply pipeline | IMPL | two-stage, jump links, `save_fact` tool, reply logging |
 | Per-user rate limiting | IMPL | configurable cap and message |
+| Editable system prompts | IMPL | `/prompts` screen and `prompt_overrides` table; only overrides stored, reset is a delete. `{{now}}`/`{{language}}`/`{{guildId}}` substituted, and a prompt missing one is refused at save. Typed or uploaded; read per call, so edits land on the next message |
+| Non-editable reply floor | IMPL | slurs and minors only, appended after the operator's text so no edit or upload can remove it. Every other rule moved into the editable body |
+| Split failure messages | IMPL | `overloadMessage` / `busyMessage` / `errorMessage` for model failure, spent budget, and a bug; the console names the cause against the message id |
 | Choosing not to reply | IMPL | `stay_silent` tool; nothing sent, nothing logged |
 | Controller accounts | IMPL | Discord IDs in Settings; may add and delete facts |
 | Plugin tools + panels | IMPL | JSON-schema tools, declarative admin screens |

@@ -54,6 +54,8 @@ const TEXT_LIMITS: Record<TextSetting, number> = {
   replyLanguage: 10,
   rateLimitMessage: 500,
   overloadMessage: 500,
+  busyMessage: 500,
+  errorMessage: 500,
 };
 
 export function updateSettings(patch: Partial<AppSettings>): AppSettings {

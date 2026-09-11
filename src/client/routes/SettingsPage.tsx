@@ -963,6 +963,31 @@ export default function SettingsPage() {
                   The message sent when Gemini stays unavailable after every retry.
                 </p>
               </div>
+
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="busyMessage">Out of budget message</Label>
+                <Textarea
+                  id="busyMessage"
+                  value={draft.busyMessage}
+                  onChange={(event) => setDraft({ ...draft, busyMessage: event.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Sent when the reply runs out of attempts or takes too long. The bot&apos;s own limit, not Gemini&apos;s.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="errorMessage">Something went wrong message</Label>
+                <Textarea
+                  id="errorMessage"
+                  value={draft.errorMessage}
+                  onChange={(event) => setDraft({ ...draft, errorMessage: event.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Sent when the reply threw, or the model produced no text. Seeing this means a bug, not load —
+                  the console names the cause against the message id.
+                </p>
+              </div>
             </div>
           </CardContent>
           <CardFooter>

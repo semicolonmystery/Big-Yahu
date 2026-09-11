@@ -43,7 +43,23 @@ how it behaves.
   with reading switched off stay off.
 - **Handles rate limits.** Retries transient Gemini errors with a configurable
   count and delay, and falls back to a message you choose if it stays down.
-  Per-user hourly reply caps are configurable too.
+  Per-user hourly reply caps are configurable too. The fallbacks are three
+  separate messages, because one sentence for four unrelated failures is how a
+  crash spent weeks looking like load: **high demand** when every chat model
+  failed, **out of budget** when the reply ran out of attempts or time, and
+  **something went wrong** when it threw or produced nothing at all. Whichever
+  goes out, the console names the cause against the message id.
+- **Its prompts are yours.** The **Prompts** screen holds the three system
+  instructions — fact extraction, topic extraction, and the reply itself — as
+  editable text, either typed in the panel or uploaded as a file. Edits apply to
+  the next message, with no restart. Only your version is stored, so resetting
+  deletes it and hands the prompt back to the shipped text, improvements
+  included. `{{now}}`, `{{language}}` and `{{guildId}}` are substituted at call
+  time and a prompt that drops one is refused when you save it, rather than
+  quietly leaving the bot with no idea what day it is. One short paragraph is
+  appended to the reply prompt and cannot be edited away: no slurs about race,
+  religion, sexuality, gender or disability, and nothing sexual involving
+  minors. Everything else about how it behaves is yours to rewrite.
 - **One guild.** `DISCORD_GUILD_ID` is required in bot mode. Every other guild
   is ignored before any work, and an absent guild never enables a global mode.
 - **Per-channel control.** Reading for facts and replying are separate switches
