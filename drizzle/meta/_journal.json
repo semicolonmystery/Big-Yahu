@@ -134,6 +134,20 @@
       "when": 1789036779542,
       "tag": "0018_colorful_jean_grey",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1789122271467,
+      "tag": "0019_lush_maximus",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1789122359592,
+      "tag": "0020_rich_bullseye",
+      "breakpoints": true
     }
   ]
 }

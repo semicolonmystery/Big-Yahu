@@ -31,6 +31,7 @@ export const DEFAULT_SETTINGS = {
   overloadMessage: "Gemini's getting hammered right now and won't talk to me. Try again in a minute.",
   busyMessage: 'took me too long to work that one out, ask me again',
   errorMessage: 'something broke on my end, thats not your fault',
+  noCreditsMessage: 'im out of credit, someone whos meant to be paying for me isnt',
 } as const;
 
 /** HTTP statuses from Gemini that mean "try again shortly" rather than "you did something wrong". */

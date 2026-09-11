@@ -13,7 +13,7 @@ import {
 import type { WindowMessage } from '../ai/context';
 import type { ForeignChannelMessages } from '../ai/replyGeneration';
 import { readableChannelRoster, resolveReadableChannel } from './channelAccess';
-import { OverloadedError } from '../ai/generate';
+import { BillingError, OverloadedError } from '../ai/generate';
 import { AIRequestBudgetError, withAIRequestBudget } from '../ai/requestBudget';
 import { buildReplyInstruction } from '../ai/prompts/build';
 import { searchFacts } from '../db/repositories/factsRepo';
@@ -173,13 +173,15 @@ export async function handleMention(message: Message): Promise<void> {
     // Which of these it was used to be unknowable from the channel, because all
     // three sent the same sentence. "I have no time" for a crash is how a bug
     // spent weeks looking like load.
-    const { content, cause } = error instanceof OverloadedError
-      ? { content: settings.overloadMessage, cause: 'every chat model failed' }
-      : error instanceof AIRequestBudgetError
-        ? { content: settings.busyMessage, cause: 'ran out of reply budget' }
-        : { content: settings.errorMessage, cause: 'unexpected error' };
+    const { content, cause } = error instanceof BillingError
+      ? { content: settings.noCreditsMessage, cause: 'the key cannot pay' }
+      : error instanceof OverloadedError
+        ? { content: settings.overloadMessage, cause: 'every chat model failed' }
+        : error instanceof AIRequestBudgetError
+          ? { content: settings.busyMessage, cause: 'ran out of reply budget' }
+          : { content: settings.errorMessage, cause: 'unexpected error' };
 
-    if (error instanceof OverloadedError || error instanceof AIRequestBudgetError) {
+    if (error instanceof OverloadedError || error instanceof AIRequestBudgetError || error instanceof BillingError) {
       console.warn(`[bot] not answering ${message.id} (${cause}): ${error.message}`);
     } else {
       console.error(`[bot] not answering ${message.id} (${cause}):`, error);

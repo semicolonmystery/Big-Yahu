@@ -43,12 +43,24 @@ how it behaves.
   with reading switched off stay off.
 - **Handles rate limits.** Retries transient Gemini errors with a configurable
   count and delay, and falls back to a message you choose if it stays down.
-  Per-user hourly reply caps are configurable too. The fallbacks are three
-  separate messages, because one sentence for four unrelated failures is how a
-  crash spent weeks looking like load: **high demand** when every chat model
-  failed, **out of budget** when the reply ran out of attempts or time, and
-  **something went wrong** when it threw or produced nothing at all. Whichever
-  goes out, the console names the cause against the message id.
+  Per-user hourly reply caps are configurable too. Failures are sorted by the
+  API's own status rather than lumped together, because one sentence for every
+  failure is how a crash spent weeks looking like load. Five configurable
+  messages: **rate limited** for the per-user hourly cap, **high demand** when
+  every chat model failed, **out of budget** when the reply ran out of attempts
+  or time, **out of credit** when the key cannot pay, and **something went
+  wrong** for a bug. Every failure is printed in full to the console with its
+  status, whichever message went out.
+
+  Two statuses get special handling. `RESOURCE_EXHAUSTED` means both "the
+  prepay balance is gone" and "you brushed the per-minute rate limit", and only
+  the wording separates them: billing wording stops the whole reply at once,
+  since every model shares the key and trying the next one is guaranteed waste,
+  and no model is blamed for it. Anything else 429 is an ordinary rate limit and
+  moves to the next model as before. A 404 `NOT_FOUND` means the model is gone,
+  not unwell — so it is **retired** from the pool rather than rested, and
+  nothing automatic ever tries it again. Only **Reset errors** in Settings
+  brings a retired model back.
 - **Its prompts are yours.** The **Prompts** screen holds the three system
   instructions — fact extraction, topic extraction, and the reply itself — as
   editable text, either typed in the panel or uploaded as a file. Edits apply to

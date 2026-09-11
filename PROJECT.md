@@ -803,7 +803,9 @@ does not queue or invoke AI.
 | Per-user rate limiting | IMPL | configurable cap and message |
 | Editable system prompts | IMPL | `/prompts` screen and `prompt_overrides` table; only overrides stored, reset is a delete. `{{now}}`/`{{language}}`/`{{guildId}}` substituted, and a prompt missing one is refused at save. Typed or uploaded; read per call, so edits land on the next message |
 | Non-editable reply floor | IMPL | slurs and minors only, appended after the operator's text so no edit or upload can remove it. Every other rule moved into the editable body |
-| Split failure messages | IMPL | `overloadMessage` / `busyMessage` / `errorMessage` for model failure, spent budget, and a bug; the console names the cause against the message id |
+| Split failure messages | IMPL | five configurable messages, chosen by the API's canonical status: rate limit, overload, spent budget, no credit, bug. Every failure still logged in full with its status |
+| Billing cut-out | IMPL | `RESOURCE_EXHAUSTED`/`FAILED_PRECONDITION` with billing wording throws `BillingError` on the first request — no next model, no failure recorded, since every model shares the key. Other 429s stay ordinary rate limits |
+| Retiring dead models | IMPL | 404 `NOT_FOUND`/`MODEL_NOT_FOUND` retires the model permanently instead of resting it; excluded from the pool and from the "everything is resting" revive, and cleared only by Reset errors |
 | Choosing not to reply | IMPL | `stay_silent` tool; nothing sent, nothing logged |
 | Controller accounts | IMPL | Discord IDs in Settings; may add and delete facts |
 | Plugin tools + panels | IMPL | JSON-schema tools, declarative admin screens |

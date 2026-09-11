@@ -241,7 +241,10 @@ function ChatModelsSection() {
     }
   };
 
-  const resting = (models ?? []).filter((entry) => (entry.restingUntil ?? 0) > now);
+  const resting = (models ?? []).filter((entry) => (entry.restingUntil ?? 0) > now && !entry.retired);
+  // Retirement is only ever lifted here, so the button has to appear for it too
+  // — otherwise a pool of retired models has no way back at all.
+  const retired = (models ?? []).filter((entry) => entry.retired);
 
   return (
     <Card>
@@ -281,6 +284,9 @@ function ChatModelsSection() {
               <TableBody>
                 {models.map((entry, index) => {
                   const isResting = (entry.restingUntil ?? 0) > now;
+                  // Retired is not a heavier shade of resting: nothing lifts it
+                  // but Reset errors, so it must not read as "back shortly".
+                  const isRetired = entry.retired;
                   return (
                     <TableRow
                       key={entry.model}
@@ -292,7 +298,7 @@ function ChatModelsSection() {
                       className={cn(
                         'cursor-grab',
                         dragging === entry.model && 'opacity-50',
-                        isResting && 'text-muted-foreground',
+                        (isResting || isRetired) && 'text-muted-foreground',
                       )}
                     >
                       <TableCell className="text-muted-foreground">
@@ -300,14 +306,20 @@ function ChatModelsSection() {
                       </TableCell>
                       <TableCell className="font-mono">
                         {entry.model}
-                        {index === 0 && !isResting && (
+                        {index === 0 && !isResting && !isRetired && (
                           <Badge variant="secondary" className="ml-2">
                             first choice
                           </Badge>
                         )}
                       </TableCell>
                       <TableCell>
-                        {isResting ? (
+                        {isRetired ? (
+                          <span className="text-xs">
+                            <Badge variant="destructive" className="mr-2">retired</Badge>
+                            the API says it does not exist — Reset errors to try it again
+                            {entry.lastError ? ` — ${entry.lastError.slice(0, 60)}` : ''}
+                          </span>
+                        ) : isResting ? (
                           <span className="text-xs">
                             resting until {new Date(entry.restingUntil ?? 0).toLocaleTimeString()}
                             {entry.lastError ? ` — ${entry.lastError.slice(0, 60)}` : ''}
@@ -370,9 +382,10 @@ function ChatModelsSection() {
             <Button type="submit" disabled={adding || !newModel.trim()}>
               {adding ? 'Adding…' : 'Add'}
             </Button>
-            {resting.length > 0 && (
+            {resting.length + retired.length > 0 && (
               <Button type="button" variant="outline" disabled={busy} onClick={() => void handleRevive()}>
-                Wake {resting.length} resting model{resting.length === 1 ? '' : 's'}
+                Reset errors on {resting.length + retired.length} model{resting.length + retired.length === 1 ? '' : 's'}
+                {retired.length > 0 && ` (${retired.length} retired)`}
               </Button>
             )}
           </form>
@@ -961,6 +974,19 @@ export default function SettingsPage() {
                 />
                 <p className="text-xs text-muted-foreground">
                   The message sent when Gemini stays unavailable after every retry.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="noCreditsMessage">Out of credit message</Label>
+                <Textarea
+                  id="noCreditsMessage"
+                  value={draft.noCreditsMessage}
+                  onChange={(event) => setDraft({ ...draft, noCreditsMessage: event.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Sent when Gemini refuses on billing. Every model shares the key, so nothing retries out of
+                  this one and no model is blamed for it &mdash; it needs you, not another try.
                 </p>
               </div>
 

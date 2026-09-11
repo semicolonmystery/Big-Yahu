@@ -9,7 +9,7 @@ export function listModels(): ChatModel[] {
 }
 
 export function addModel(model: string, weight: number): ChatModel {
-  const row = { model, weight, consecutiveFailures: 0, restingUntil: null, lastError: null, createdAt: Date.now() };
+  const row = { model, weight, consecutiveFailures: 0, restingUntil: null, retired: false, lastError: null, createdAt: Date.now() };
   db.insert(chatModels).values(row).onConflictDoUpdate({ target: chatModels.model, set: { weight } }).run();
   return row;
 }
@@ -45,9 +45,23 @@ export function removeModel(model: string): boolean {
   return true;
 }
 
-/** Clears every rest period and failure count. */
+/**
+ * Clears every rest period and failure count, and brings retired models back.
+ *
+ * This is what "Reset errors" in the panel does, and it is the *only* thing
+ * that un-retires a model — the point of retiring is that nothing automatic
+ * ever tries it again.
+ */
 export function reviveAll(): void {
-  db.update(chatModels).set({ consecutiveFailures: 0, restingUntil: null, lastError: null }).run();
+  db.update(chatModels).set({ consecutiveFailures: 0, restingUntil: null, retired: false, lastError: null }).run();
+}
+
+/** Rest periods only, so the automatic fallback below cannot resurrect a dead model. */
+function reviveResting(): void {
+  db.update(chatModels)
+    .set({ consecutiveFailures: 0, restingUntil: null, lastError: null })
+    .where(eq(chatModels.retired, false))
+    .run();
 }
 
 /**
@@ -57,14 +71,34 @@ export function reviveAll(): void {
  */
 export function selectCandidates(): ChatModel[] {
   const now = Date.now();
-  const all = listModels();
-  const available = all.filter((entry) => (entry.restingUntil ?? 0) <= now);
+  // Retired models are not in the pool at all. Unlike resting, this is never
+  // lifted automatically: the API said the model does not exist, and it will
+  // still not exist in two hours.
+  const live = listModels().filter((entry) => !entry.retired);
+  const available = live.filter((entry) => (entry.restingUntil ?? 0) <= now);
   if (available.length > 0) return available;
-  if (all.length === 0) return [];
+  if (live.length === 0) return [];
 
   console.warn('[ai] every model is resting; clearing all rest periods and starting over');
-  reviveAll();
-  return listModels();
+  reviveResting();
+  return listModels().filter((entry) => !entry.retired);
+}
+
+/** Takes a model out of the pool for good. Only "Reset errors" brings it back. */
+export function retireModel(model: string, error: string): boolean {
+  const existing = db.select().from(chatModels).where(eq(chatModels.model, model)).get();
+  if (!existing) return false;
+  db.update(chatModels)
+    .set({ retired: true, restingUntil: null, lastError: error.slice(0, 300) })
+    .where(eq(chatModels.model, model))
+    .run();
+  return true;
+}
+
+/** Whether the pool holds models but every one of them has been retired. */
+export function allRetired(): boolean {
+  const all = listModels();
+  return all.length > 0 && all.every((entry) => entry.retired);
 }
 
 export function recordSuccess(model: string): void {

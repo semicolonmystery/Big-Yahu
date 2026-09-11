@@ -14,7 +14,7 @@ vi.mock('../../src/server/db/client', async () => {
 
 import { db } from '../../src/server/db/client';
 import { chatModels, settings } from '../../src/server/db/schema';
-import { addModel, listModels } from '../../src/server/db/repositories/chatModelsRepo';
+import { addModel, listModels, reviveAll } from '../../src/server/db/repositories/chatModelsRepo';
 import { updateSettings } from '../../src/server/db/repositories/settingsRepo';
 import { generate, OverloadedError } from '../../src/server/ai/generate';
 import { embedDocuments, embedQuery, geminiEmbeddingFunction } from '../../src/server/ai/embeddings';
@@ -25,6 +25,9 @@ import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL } from '../../src/shared/constant
 const vector = () => [3, 4, ...Array<number>(EMBEDDING_DIMENSIONS - 2).fill(0)];
 const success = () => Response.json({ candidates: [{ content: { role: 'model', parts: [{ text: 'An answer' }] } }] });
 const unavailable = (status = 503) => Response.json({ error: { code: status, message: 'Model unavailable', status: 'UNAVAILABLE' } }, { status });
+/** Classification reads the canonical status, so a fixture's status must be one a 400 really carries. */
+const apiError = (status: number, canonical: string, message: string) =>
+  Response.json({ error: { code: status, message, status: canonical } }, { status });
 const transport = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => success());
 const payload = (index = 0): Record<string, any> => JSON.parse(String(transport.mock.calls[index][1]?.body));
 
@@ -76,7 +79,7 @@ describe('Gemini requests through the real SDK', () => {
   it('does not retry a bad request or put its model to rest', async () => {
     updateSettings({ retryAttempts: 2 });
     addModel('model-backup', 50);
-    transport.mockImplementation(async () => unavailable(400));
+    transport.mockImplementation(async () => apiError(400, 'INVALID_ARGUMENT', 'Request contains an invalid argument.'));
     await expect(generate('Question', {})).rejects.toMatchObject({ status: 400 });
     expect(transport).toHaveBeenCalledTimes(1);
     expect(listModels().every((model) => model.consecutiveFailures === 0)).toBe(true);
@@ -148,7 +151,7 @@ describe('embedding requests and validation', () => {
     await expect(embedQuery('Question')).rejects.toMatchObject({ name: 'OverloadedError', attempts: 2 });
     expect(transport).toHaveBeenCalledTimes(2);
     transport.mockClear();
-    transport.mockImplementation(async () => unavailable(400));
+    transport.mockImplementation(async () => apiError(400, 'INVALID_ARGUMENT', 'Request contains an invalid argument.'));
     await expect(embedQuery('Question')).rejects.toMatchObject({ status: 400 });
     expect(transport).toHaveBeenCalledTimes(1);
   });
@@ -343,5 +346,93 @@ describe('request budget refusals name their cause', () => {
       expect(() => claimAIRequest()).toThrow(/exhausted/);
       expect(() => claimAIRequest()).toThrow(/exhausted/);
     });
+  });
+});
+
+describe('what the pool does about each API status', () => {
+  const CREDITS = 'Your prepayment credits are depleted. Please go to AI Studio to manage your billing.';
+  const RATE = 'Quota exceeded for quota metric requests per minute.';
+
+  it('cuts out on depleted credits without trying another model or blaming one', async () => {
+    addModel('model-backup', 50);
+    transport.mockImplementation(async () => apiError(429, 'RESOURCE_EXHAUSTED', CREDITS));
+
+    await expect(generate('Question', {})).rejects.toMatchObject({ name: 'BillingError' });
+    // The second model shares the key, so trying it is guaranteed waste.
+    expect(transport).toHaveBeenCalledTimes(1);
+    // And the model did nothing wrong, so nothing is recorded against it.
+    expect(listModels().every((entry) => entry.consecutiveFailures === 0)).toBe(true);
+    expect(listModels().every((entry) => entry.restingUntil === null)).toBe(true);
+  });
+
+  it('treats an ordinary rate limit as a reason to try the next model', async () => {
+    addModel('model-backup', 50);
+    transport
+      .mockResolvedValueOnce(apiError(429, 'RESOURCE_EXHAUSTED', RATE))
+      .mockResolvedValueOnce(success());
+
+    expect((await generate('Question', {})).text).toBe('An answer');
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(listModels().find((entry) => entry.model === 'model-primary')?.consecutiveFailures).toBe(1);
+  });
+
+  it('also calls billing-not-enabled a billing failure, under its own status', async () => {
+    transport.mockImplementation(async () =>
+      apiError(400, 'FAILED_PRECONDITION', 'Gemini API free tier is not available in your country. Enable billing.'));
+    await expect(generate('Question', {})).rejects.toMatchObject({ name: 'BillingError' });
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it('retires a model the API says does not exist, rather than resting it', async () => {
+    addModel('model-backup', 50);
+    transport
+      .mockResolvedValueOnce(apiError(404, 'NOT_FOUND', 'models/model-primary is not found or no longer available.'))
+      .mockResolvedValueOnce(success());
+
+    expect((await generate('Question', {})).text).toBe('An answer');
+    const primary = listModels().find((entry) => entry.model === 'model-primary');
+    expect(primary?.retired).toBe(true);
+    // Not a countdown: nothing lifts this but Reset errors.
+    expect(primary?.restingUntil).toBeNull();
+  });
+
+  it('never tries a retired model again, even when every other model is resting', async () => {
+    addModel('model-backup', 50);
+    updateSettings({ modelFailureThreshold: 1 });
+    transport.mockResolvedValueOnce(apiError(404, 'MODEL_NOT_FOUND', 'no longer available')).mockResolvedValue(success());
+    await generate('Question', {});
+    transport.mockClear();
+
+    // Rest the only live model. With nothing else live this call cannot
+    // succeed, which is the point: the fallback runs on the call after it.
+    transport.mockImplementation(async () => unavailable());
+    await expect(generate('Another', {})).rejects.toBeInstanceOf(OverloadedError);
+    expect(listModels().find((entry) => entry.model === 'model-backup')?.restingUntil)
+      .toBeGreaterThan(Date.now());
+    transport.mockClear();
+    transport.mockImplementation(async () => success());
+
+    await generate('A third', {});
+    for (const call of transport.mock.calls) {
+      expect(String(call[0])).not.toContain('model-primary:generateContent');
+    }
+    expect(listModels().find((entry) => entry.model === 'model-primary')?.retired).toBe(true);
+  });
+
+  it('says so plainly when every model in the pool has been retired', async () => {
+    transport.mockImplementation(async () => apiError(404, 'NOT_FOUND', 'gone'));
+    await expect(generate('Question', {})).rejects.toBeInstanceOf(OverloadedError);
+    await expect(generate('Question', {})).rejects.toThrow('retired for not existing');
+  });
+
+  it('brings a retired model back only when the errors are reset', async () => {
+    transport.mockImplementationOnce(async () => apiError(404, 'NOT_FOUND', 'gone'));
+    await expect(generate('Question', {})).rejects.toBeInstanceOf(OverloadedError);
+    expect(listModels()[0].retired).toBe(true);
+
+    reviveAll();
+    expect(listModels()[0].retired).toBe(false);
+    transport.mockImplementation(async () => success());
+    expect((await generate('Question', {})).text).toBe('An answer');
   });
 });

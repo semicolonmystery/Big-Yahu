@@ -1,0 +1,1 @@
+ALTER TABLE `settings` ADD `no_credits_message` text DEFAULT 'im out of credit, someone whos meant to be paying for me isnt' NOT NULL;

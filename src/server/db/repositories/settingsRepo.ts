@@ -56,6 +56,7 @@ const TEXT_LIMITS: Record<TextSetting, number> = {
   overloadMessage: 500,
   busyMessage: 500,
   errorMessage: 500,
+  noCreditsMessage: 500,
 };
 
 export function updateSettings(patch: Partial<AppSettings>): AppSettings {

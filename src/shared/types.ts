@@ -54,6 +54,8 @@ export interface ChatModel {
   weight: number;
   consecutiveFailures: number;
   restingUntil: number | null;
+  /** The API says this model does not exist. Never tried again until Reset errors. */
+  retired: boolean;
   lastError: string | null;
 }
 
@@ -173,6 +175,8 @@ export interface AppSettings {
   busyMessage: string;
   /** Something threw, or the model produced no text at all. A bug, said plainly. */
   errorMessage: string;
+  /** The key cannot pay. Nothing retries out of this one, so it says so rather than "try again". */
+  noCreditsMessage: string;
 }
 
 /** One editable system prompt, with what ships alongside whatever replaced it. */

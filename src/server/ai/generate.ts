@@ -2,8 +2,9 @@ import { ApiError } from '@google/genai';
 import type { GenerateContentConfig, ContentListUnion, GenerateContentResponse } from '@google/genai';
 import { ai } from './client';
 import { getSettings } from '../db/repositories/settingsRepo';
-import { recordFailure, recordSuccess, selectCandidates } from '../db/repositories/chatModelsRepo';
-import { isRetryable, retryDelay } from './retry';
+import { allRetired, recordFailure, recordSuccess, retireModel, selectCandidates } from '../db/repositories/chatModelsRepo';
+import { retryDelay } from './retry';
+import { classifyFailure, describeFailure, readApiFailure } from './apiErrors';
 import { claimAIRequest } from './requestBudget';
 
 /** What a caller gets when it asks for nothing in particular. */
@@ -34,8 +35,26 @@ export class OverloadedError extends Error {
   }
 }
 
+/**
+ * The key cannot pay, so no model behind it can answer.
+ *
+ * Thrown instead of falling through the pool: every model shares the billing
+ * account, so trying the next one is guaranteed to fail the same way, several
+ * seconds later. It is also not the model's fault, so nothing is recorded
+ * against it and nothing gets rested for being on a key that ran out.
+ */
+export class BillingError extends Error {
+  readonly detail: string;
+
+  constructor(detail: string) {
+    super(`The Gemini key cannot pay for this request: ${detail}`);
+    this.name = 'BillingError';
+    this.detail = detail;
+  }
+}
+
 function describe(error: unknown): string {
-  if (error instanceof ApiError) return `${error.status}: ${error.message}`;
+  if (error instanceof ApiError) return describeFailure(error);
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -58,7 +77,11 @@ export async function generate(
   for (let pass = 1; pass <= passes; pass += 1) {
     const candidates = selectCandidates();
     if (candidates.length === 0) {
-      throw new Error('No chat models are configured — add one in Settings');
+      // Distinguished so the log does not claim the pool is empty when in fact
+      // every model in it was retired for not existing.
+      throw new Error(allRetired()
+        ? 'Every chat model has been retired for not existing — press Reset errors in Settings, or add a model that does'
+        : 'No chat models are configured — add one in Settings');
     }
 
     for (const candidate of candidates) {
@@ -76,7 +99,31 @@ export async function generate(
         // The SDK can replace a caller's cancellation reason with AbortError.
         // Cancellation is not a model failure and must not trigger fallback.
         config.abortSignal?.throwIfAborted();
-        if (!isRetryable(error)) throw error;
+
+        // Every failure reaches the console, whatever is done about it — the
+        // ones that used to be rethrown in silence were the hardest to diagnose.
+        const kind = classifyFailure(error);
+        if (kind === 'billing') {
+          const failure = readApiFailure(error);
+          console.error(`[ai] ${candidate.model} refused on billing (${describe(error)}) — stopping, the whole key is out`);
+          throw new BillingError(failure.detail);
+        }
+        if (kind === 'fatal') {
+          console.error(`[ai] ${candidate.model} failed unrecoverably (${describe(error)}) — not trying another model`);
+          throw error;
+        }
+        if (kind === 'gone') {
+          // Retired rather than rested: it will not come back on a timer, so a
+          // rest period only means trying a model that does not exist, forever.
+          retireModel(candidate.model, describe(error));
+          lastError = error;
+          tried.push(candidate.model);
+          console.error(
+            `[ai] ${candidate.model} does not exist (${describe(error)})`
+              + ' — retired from the pool until Reset errors in Settings',
+          );
+          continue;
+        }
 
         lastError = error;
         tried.push(candidate.model);

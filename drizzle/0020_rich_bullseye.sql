@@ -1,0 +1,1 @@
+ALTER TABLE `chat_models` ADD `retired` integer DEFAULT false NOT NULL;

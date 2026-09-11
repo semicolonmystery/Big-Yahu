@@ -53,6 +53,11 @@ export const settings = sqliteTable('settings', {
   errorMessage: text('error_message')
     .notNull()
     .default('something broke on my end, thats not your fault'),
+  // Terminal in a way the others are not: every model shares the key, so this
+  // is the operator's problem and nothing retries out of it.
+  noCreditsMessage: text('no_credits_message')
+    .notNull()
+    .default('im out of credit, someone whos meant to be paying for me isnt'),
   updatedAt: integer('updated_at').notNull(),
 });
 
@@ -143,6 +148,10 @@ export const chatModels = sqliteTable('chat_models', {
   weight: integer('weight').notNull().default(100),
   consecutiveFailures: integer('consecutive_failures').notNull().default(0),
   restingUntil: integer('resting_until'),
+  // A model the API says does not exist is not unwell, it is gone — a rest
+  // period would just retry it forever. Retiring is permanent until the
+  // operator presses Reset errors, which is the only thing that clears it.
+  retired: integer('retired', { mode: 'boolean' }).notNull().default(false),
   lastError: text('last_error'),
   createdAt: integer('created_at').notNull(),
 });
