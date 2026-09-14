@@ -6,29 +6,37 @@ import type { TextAttachmentBudget } from '../../src/server/bot/textAttachments'
 
 const state = vi.hoisted(() => ({
   settings: { maxEscalationDepth: 1, escalationLookbackHours: 24, factSearchTopK: 5 },
-  generate: vi.fn(async (_contents: unknown, _options: unknown): Promise<{
-    text: string | undefined;
-    candidates?: Array<{ finishReason?: string }>;
-  }> => ({ text: '{"facts":[],"needsMoreContext":false}' })),
+  structured: vi.fn(async (
+    _task: string,
+    _request: { system: string; user: string; images?: unknown[]; schema: unknown; maxOutputTokens?: number },
+  ): Promise<unknown> => ({ facts: [], needsMoreContext: false, contextHint: '' })),
   search: vi.fn(async (_query: string, _count: number, _where: unknown): Promise<Fact[]> => []),
   attachments: vi.fn(async (_messages: Message[], _budget?: TextAttachmentBudget) => new Map<string, string>()),
   allowed: new Set(['open']),
 }));
 
-vi.mock('../../src/server/ai/generate', () => ({ generate: state.generate }));
+// Only the call is replaced; UnreadableAnswerError stays the real class, so the
+// narrowing logic under test recognises what the runner would throw.
+vi.mock('../../src/server/ai/structured', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/server/ai/structured')>(),
+  structured: state.structured,
+}));
 vi.mock('../../src/server/db/repositories/factsRepo', () => ({ searchFacts: state.search }));
 vi.mock('../../src/server/db/repositories/settingsRepo', () => ({ getSettings: () => state.settings }));
 vi.mock('../../src/server/db/repositories/channelSettingsRepo', () => ({ canExtractFrom: (id: string) => state.allowed.has(id) }));
 vi.mock('../../src/server/bot/textAttachments', () => ({ readTextAttachments: state.attachments }));
 
 import {
-  describeActivities, describeSelf, effectiveMaxDepth, fetchOlderMessages, fetchRecentMessages, formatFacts,
-  formatTranscript, listGuildPeople, markUnseenImages, mentionRoster, runEscalatableExtraction,
-  toWindowMessage, windowMessagesWithAttachments,
+  effectiveMaxDepth, fetchOlderMessages, fetchRecentMessages, listGuildPeople, markUnseenImages, mentionRoster,
+  presenceFor, runEscalatableExtraction, selfMaterial, toWindowMessage, windowMessagesWithAttachments,
 } from '../../src/server/ai/context';
+import { factsMaterial, messageMaterial, messagesMaterial } from '../../src/server/ai/material';
 import { extractTopic } from '../../src/server/ai/topicExtraction';
-import { rewriteForFactSearch } from '../../src/server/ai/queryRewrite';
-import { extractionSchema } from '../../src/server/ai/schemas';
+import { UnreadableAnswerError } from '../../src/server/ai/structured';
+import { extractionSchema, topicSchema } from '../../src/server/ai/schemas';
+
+/** What the extraction runner was asked on its nth call. */
+const request = (call: number) => state.structured.mock.calls[call][1];
 
 function message(id: number, overrides: Record<string, unknown> = {}): Message {
   return {
@@ -54,7 +62,7 @@ function fact(id: string, channelId: string): Fact {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  state.generate.mockResolvedValue({ text: '{"facts":[],"needsMoreContext":false}' });
+  state.structured.mockResolvedValue({ facts: [], needsMoreContext: false, contextHint: '' });
   state.search.mockResolvedValue([]);
   state.attachments.mockResolvedValue(new Map());
   state.settings.maxEscalationDepth = 1;
@@ -83,15 +91,16 @@ describe('conversation formatting', () => {
     });
     expect(toWindowMessage(reply)).toMatchObject({ replyToId: '5', replyToAuthorId: '222' });
     expect(toWindowMessage(message(11, { reference: { messageId: '5' } })).replyToId).toBeUndefined();
-    expect(formatTranscript([toWindowMessage(reply)])).toContain('[replying to id=5 by <@222>]');
+    expect(messageMaterial(toWindowMessage(reply)).replyTo).toEqual({ id: '5', authorId: '222' });
   });
 
-  it('labels the bot as you and marks unseen images without mutating the input', () => {
+  it('marks its own lines and unseen images without mutating the input', () => {
     const own = message(10, { author: { id: '999', username: 'bot', bot: true } });
     const window = [toWindowMessage(own), toWindowMessage(message(11))];
-    const marked = markUnseenImages(window, new Map([['10', 1], ['11', 2]]));
-    expect(formatTranscript(marked)).toContain('you: A message [image not shown]');
-    expect(formatTranscript(marked)).toContain('Alice Server aka alice <@111>: A message [2 images not shown]');
+    const marked = messagesMaterial(markUnseenImages(window, new Map([['10', 1], ['11', 2]])));
+    expect(marked[0]).toMatchObject({ fromYou: true, unseenImages: 1 });
+    expect(marked[1]).toMatchObject({ authorId: '111', unseenImages: 2 });
+    expect(marked[1].fromYou).toBeUndefined();
     expect(window[0].unseenImages).toBeUndefined();
   });
 
@@ -101,15 +110,14 @@ describe('conversation formatting', () => {
       .toEqual(new Map([['Alice Server', '111'], ['alice', '111']]));
   });
 
-  it('formats remembered fact and channel IDs for linking and tool use', () => {
-    expect(formatFacts([fact('fact-1', 'open')])).toBe('[factId=fact-1] [channelId=open] fact-1 fact text');
+  it('keeps a remembered fact with the channel it came from, for linking and tool use', () => {
+    expect(factsMaterial([fact('fact-1', 'open')])[0])
+      .toEqual({ id: 'fact-1', channelId: 'open', text: 'fact-1 fact text' });
   });
 
-  it('describes its server nickname separately from the global username', () => {
+  it('gives its server nickname first, then the names it is otherwise known by', () => {
     const source = message(10, { guild: { members: { me: { displayName: 'Server Bot' } } } });
-    expect(describeSelf(source)).toContain('You are <@999>');
-    expect(describeSelf(source)).toContain('"Server Bot"');
-    expect(describeSelf(source)).toContain('"bot"');
+    expect(selfMaterial(source)).toEqual({ id: '999', names: ['Server Bot', 'Bot', 'bot'] });
   });
 
   it('reads activity from presence even when the person has no cached member', () => {
@@ -119,9 +127,10 @@ describe('conversation formatting', () => {
         { type: ActivityType.Custom, name: 'Custom Status', details: null, state: 'Studying' },
       ] }]]) }, members: { cache: new Map() },
     } });
-    const text = describeActivities(source, [{ id: '222', displayName: 'Bob' }, { id: '333', displayName: 'Charlie' }]);
-    expect(text).toContain('Bob <@222> — online, playing Chess (Ranked); status "Studying"');
-    expect(text).toContain('Charlie <@333> — offline, or hiding it');
+    const presence = presenceFor(source, ['222', '333']);
+    expect(presence.get('222')).toEqual({ status: 'online', doing: 'playing Chess (Ranked); status "Studying"' });
+    // Said outright rather than left out: absence reads as missing data and invites a guess.
+    expect(presence.get('333')).toEqual({ status: 'offline, or hiding it' });
   });
 
   it('keeps a people listing explicitly partial and supports name filtering', () => {
@@ -132,10 +141,12 @@ describe('conversation formatting', () => {
       ]) },
     } });
     const listing = listGuildPeople(source, 'BOB');
-    expect(listing).toContain('Bobby aka bob <@222>');
-    expect(listing).not.toContain('Charlie');
-    expect(listing).toContain('not the full member list');
-    expect(listGuildPeople(source, 'nobody')).toContain('Nobody visible matches');
+    expect(listing.people).toEqual([{ id: '222', name: 'Bobby', username: 'bob', status: 'offline, or hiding it' }]);
+    expect(listing.visibleOnly).toBe(true);
+    expect(listing.matching).toBe('BOB');
+    // Never the full member list, and it says so as a field rather than in prose,
+    // so nobody missing reads as proof they left the server.
+    expect(listGuildPeople(source, 'nobody')).toEqual({ people: [], visibleOnly: true, matching: 'nobody' });
   });
 });
 
@@ -181,70 +192,92 @@ describe('history and attachment context', () => {
 });
 
 describe('bounded context escalation', () => {
+  const answer = (overrides: Record<string, unknown> = {}) =>
+    ({ facts: [], needsMoreContext: false, contextHint: '', ...overrides });
+
   function options() {
     const { object, fetch } = channel([message(5)]);
     const anchor = message(10, { channel: object });
     return { fetch, value: {
-      schema: extractionSchema, systemInstruction: 'Extract facts', task: 'Read this channel',
+      aiTask: 'factExtraction', schema: extractionSchema, systemInstruction: 'Extract facts', task: 'Read this channel',
       windowMessages: [toWindowMessage(anchor)], anchorMessage: anchor, guildId: 'guild',
       attachmentBudget: { bytes: 1000, files: 2 },
     } };
   }
 
-  it('finishes after the first response when no more context is needed', async () => {
+  it('finishes after the first answer when no more context is needed', async () => {
     const { value, fetch } = options();
     expect(await runEscalatableExtraction(value)).toMatchObject({ facts: [], needsMoreContext: false });
-    expect(state.generate).toHaveBeenCalledTimes(1);
+    expect(state.structured).toHaveBeenCalledTimes(1);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("asks the task's own model list, with the operator's prompt and room for a whole page of facts", async () => {
+    await runEscalatableExtraction(options().value);
+    expect(state.structured).toHaveBeenCalledWith('factExtraction', expect.objectContaining({
+      system: 'Extract facts', schema: extractionSchema, maxOutputTokens: 32_768,
+    }));
+  });
+
+  it('hands over the window as JSON, with the time and the caller\'s own fields', async () => {
+    const { value } = options();
+    await runEscalatableExtraction({ ...value, material: { channelId: 'channel', images: [{ index: 1, messageId: '10' }] } });
+    const material = JSON.parse(request(0).user);
+    expect(material).toMatchObject({
+      task: 'Read this channel',
+      channelId: 'channel',
+      images: [{ index: 1, messageId: '10' }],
+      messages: [{ id: '10', authorId: '111', content: 'A message' }],
+    });
+    expect(material.now).toEqual(expect.any(String));
+    expect(material.messages[0].at).toBe(new Date(10_000).toISOString());
+    expect(material.noFurtherContext).toBeUndefined();
   });
 
   it('enforces the hard depth cap and tells the final call to answer with existing context', async () => {
     state.settings.maxEscalationDepth = 999;
-    state.generate.mockResolvedValue({ text: '{"facts":[],"needsMoreContext":true}' });
+    state.structured.mockResolvedValue(answer({ needsMoreContext: true }));
     const { value, fetch } = options();
     expect(effectiveMaxDepth()).toBe(3);
     await runEscalatableExtraction(value);
-    expect(state.generate).toHaveBeenCalledTimes(4);
+    expect(state.structured).toHaveBeenCalledTimes(4);
     expect(fetch).toHaveBeenCalledTimes(3);
-    expect(state.generate.mock.calls.at(-1)?.[0]).toContain('No further context is available');
+    expect(JSON.parse(request(3).user).noFurtherContext).toBe(true);
   });
 
   it('does not fetch extra context when escalation is disabled', async () => {
     state.settings.maxEscalationDepth = 0;
-    state.generate.mockResolvedValue({ text: '{"facts":[],"needsMoreContext":true}' });
+    state.structured.mockResolvedValue(answer({ needsMoreContext: true }));
     const { value, fetch } = options();
     await runEscalatableExtraction(value);
-    expect(state.generate).toHaveBeenCalledTimes(1);
+    expect(state.structured).toHaveBeenCalledTimes(1);
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it('filters opted-out channel memories and carries the attachment budget into older history', async () => {
-    state.generate.mockResolvedValueOnce({ text: '{"facts":[],"needsMoreContext":true,"contextHint":"meeting"}' });
+    state.structured.mockResolvedValueOnce(answer({ needsMoreContext: true, contextHint: 'meeting' }));
     state.search.mockResolvedValueOnce([fact('public', 'open'), fact('secret', 'closed')]);
     const { value } = options();
     await runEscalatableExtraction(value);
     expect(state.search).toHaveBeenCalledWith('meeting', 5, { guildId: 'guild' });
-    expect(state.generate.mock.calls[1][0]).toContain('public fact text');
-    expect(state.generate.mock.calls[1][0]).not.toContain('secret fact text');
+    expect(request(1).user).toContain('public fact text');
+    expect(request(1).user).not.toContain('secret fact text');
     expect(state.attachments.mock.calls[0][1]).toBe(value.attachmentBudget);
   });
 
-  it('asks for more output budget than a chat reply, because thinking is paid from it', async () => {
-    const { value } = options();
-    await runEscalatableExtraction(value);
-    expect(state.generate.mock.calls[0][1]).toMatchObject({ maxOutputTokens: 32_768 });
+  it("searches with the caller's own hint when the answer asked for context without saying what", async () => {
+    state.structured.mockResolvedValueOnce(answer({ needsMoreContext: true, searchQuery: 'the trip' }));
+    await runEscalatableExtraction<{ needsMoreContext: boolean; contextHint: string; searchQuery: string }>({
+      ...options().value,
+      hint: (result) => result.searchQuery,
+    });
+    expect(state.search).toHaveBeenCalledWith('the trip', 5, { guildId: 'guild' });
   });
 
-  it('keeps supplied image parts attached to structured extraction calls', async () => {
-    const { value } = options();
-    const part = { inlineData: { mimeType: 'image/png', data: 'data' } };
-    await runEscalatableExtraction({ ...value, imageParts: [part] });
-    expect(state.generate.mock.calls[0][0]).toEqual([{ role: 'user', parts: [expect.objectContaining({ text: expect.any(String) }), part] }]);
-  });
-
-  it.each([undefined, '', 'not-json'])('fails visibly on empty or malformed structured output %#', async (text) => {
-    state.generate.mockResolvedValueOnce({ text });
-    await expect(runEscalatableExtraction(options().value)).rejects.toThrow();
+  it('keeps supplied pictures attached to the extraction call', async () => {
+    const images = [{ messageId: '10', mimeType: 'image/png', data: 'data' }];
+    await runEscalatableExtraction({ ...options().value, images });
+    expect(request(0).images).toEqual(images);
   });
 
   describe('answers that cannot be read', () => {
@@ -254,76 +287,62 @@ describe('bounded context escalation', () => {
       const anchor = message(10, { channel: object });
       const window = [1, 2, 3, 4].map((id) => toWindowMessage(message(id, { content: `Line ${id}` })));
       return {
-        schema: extractionSchema, systemInstruction: 'Extract facts', task: 'Read this channel',
+        aiTask: 'factExtraction', schema: extractionSchema, systemInstruction: 'Extract facts', task: 'Read this channel',
         windowMessages: window, anchorMessage: anchor, guildId: 'guild',
       };
     }
 
-    const good = '{"facts":[],"needsMoreContext":false}';
-
     it('retries a truncated answer on the newest half of the window', async () => {
-      state.generate.mockResolvedValueOnce({ text: '{"facts":[{"tex', candidates: [{ finishReason: 'MAX_TOKENS' }] });
+      state.structured.mockRejectedValueOnce(new UnreadableAnswerError('a/model ran out of output budget after 900 characters', true));
       expect(await runEscalatableExtraction(wideOptions())).toMatchObject({ needsMoreContext: false });
-      expect(state.generate).toHaveBeenCalledTimes(2);
+      expect(state.structured).toHaveBeenCalledTimes(2);
 
       // The oldest half goes; the newest messages are the ones kept.
-      const retry = String(state.generate.mock.calls[1][0]);
+      const retry = request(1).user;
       expect(retry).not.toContain('Line 1');
       expect(retry).not.toContain('Line 2');
       expect(retry).toContain('Line 3');
       expect(retry).toContain('Line 4');
     });
 
-    it('retries a complete but malformed answer the same way', async () => {
-      state.generate.mockResolvedValueOnce({ text: '{"facts":[{"text":"he said "hi""}]}' });
+    it('retries an answer that came back in the wrong shape the same way', async () => {
+      state.structured.mockRejectedValueOnce(new UnreadableAnswerError('a/model twice answered in the wrong shape', false));
       expect(await runEscalatableExtraction(wideOptions())).toMatchObject({ needsMoreContext: false });
-      expect(state.generate).toHaveBeenCalledTimes(2);
+      expect(state.structured).toHaveBeenCalledTimes(2);
     });
 
     it('gives up rather than narrowing forever', async () => {
-      state.generate.mockResolvedValue({ text: 'cut off', candidates: [{ finishReason: 'MAX_TOKENS' }] });
+      state.structured.mockRejectedValue(new UnreadableAnswerError('a/model ran out of output budget after 10 characters', true));
       await expect(runEscalatableExtraction(wideOptions())).rejects.toThrow('ran out of output budget');
       // The first attempt plus its two retries, and no escalation past them.
-      expect(state.generate).toHaveBeenCalledTimes(3);
+      expect(state.structured).toHaveBeenCalledTimes(3);
     });
 
-    it('does not mistake a truncated answer for one that needs more context', async () => {
-      state.generate.mockResolvedValueOnce({ text: good, candidates: [{ finishReason: 'STOP' }] });
-      await runEscalatableExtraction(wideOptions());
-      expect(state.generate).toHaveBeenCalledTimes(1);
+    it('lets any other failure through without narrowing', async () => {
+      state.structured.mockRejectedValueOnce(new Error('every model failed'));
+      await expect(runEscalatableExtraction(wideOptions())).rejects.toThrow('every model failed');
+      expect(state.structured).toHaveBeenCalledTimes(1);
     });
   });
 });
 
-describe('query rewriting and topic extraction', () => {
-  it('uses a valid rewritten query and preserves the original mentions in the request', async () => {
-    state.generate.mockResolvedValueOnce({ text: '{"rewritten":"  <@111> owns a dog.  "}' });
-    expect(await rewriteForFactSearch('Does <@111> own a dog?')).toBe('<@111> owns a dog.');
-    expect(state.generate).toHaveBeenCalledWith('Query: Does <@111> own a dog?', expect.objectContaining({ responseMimeType: 'application/json' }));
-  });
-
-  it.each(['{}', '{"rewritten":123}', '{"rewritten":" "}', 'not-json'])('falls back to the original query on unusable rewriting %#', async (text) => {
-    state.generate.mockResolvedValueOnce({ text });
-    expect(await rewriteForFactSearch('Original question')).toBe('Original question');
-  });
-
-  it('keeps search available if the rewrite service fails', async () => {
-    state.generate.mockRejectedValueOnce(new Error('AI unavailable'));
-    expect(await rewriteForFactSearch('Original question')).toBe('Original question');
-  });
-
-  it('uses chronological context with the tagging message last and includes its text attachment in the topic', async () => {
+describe('topic extraction', () => {
+  it('reads chronologically with the tagging message last, and asks the topic list what to search memory for', async () => {
     const { object, fetch } = channel([message(20), message(10)]);
     const tagged = message(30, { content: '', channel: object });
     const budget = { bytes: 1000, files: 2 };
     state.attachments.mockResolvedValueOnce(new Map([['30', '[message.txt]\nWhat did Bob decide?']]));
-    state.generate.mockResolvedValueOnce({ text: '{"coreTopic":"Decision","whatTaggingMessageIsAbout":"Bob decision","facts":[],"needsMoreContext":false}' });
+    state.structured.mockResolvedValueOnce({
+      coreTopic: 'Decision', whatTaggingMessageIsAbout: 'Bob decision', searchQuery: 'Bob decided something',
+      people: ['222'], channels: [], dateFrom: '', dateTo: '', needsMoreContext: false, contextHint: '',
+    });
     const result = await extractTopic(tagged, 'guild', 20, budget);
     expect(fetch).toHaveBeenCalledWith({ before: '30', limit: 20 });
     expect(result.discordMessages.map((entry) => entry.id)).toEqual(['10', '20', '30']);
     expect(result.windowMessages.at(-1)?.content).toContain('What did Bob decide?');
-    expect(result.topic.coreTopic).toBe('Decision');
-    expect(state.generate.mock.calls[0][0]).toContain('What did Bob decide?');
+    expect(result.topic).toMatchObject({ coreTopic: 'Decision', searchQuery: 'Bob decided something', people: ['222'] });
+    expect(state.structured).toHaveBeenCalledWith('topicExtraction', expect.objectContaining({ schema: topicSchema }));
+    expect(request(0).user).toContain('What did Bob decide?');
     expect(state.attachments.mock.calls[0][1]).toBe(budget);
   });
 });

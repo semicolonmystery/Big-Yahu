@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { DashboardStats } from '@shared/types';
+import type { AiUsageSummary, AiUsageTotals, DashboardStats } from '@shared/types';
 import { api } from '@/lib/api';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table';
@@ -13,6 +13,118 @@ function formatDateTime(ms: number): string {
 function truncate(text: string, maxLength = 120): string {
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+/** Most calls cost fractions of a cent, so small amounts keep four places instead of reading as $0.00. */
+function formatCost(cost: number): string {
+  return `$${cost.toFixed(cost > 0 && cost < 0.01 ? 4 : 2)}`;
+}
+
+function cachedShare(totals: AiUsageTotals): string {
+  return totals.promptTokens > 0 ? `${Math.round((totals.cachedTokens / totals.promptTokens) * 100)}%` : '—';
+}
+
+function UsageStat({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-sm text-muted-foreground">{label}</span>
+      <span className="text-2xl font-semibold text-foreground">{value}</span>
+      <span className="text-xs text-muted-foreground">{detail}</span>
+    </div>
+  );
+}
+
+function UsageTable({ title, groups }: { title: string; groups: AiUsageSummary['byTask'] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>{title}</TableHead>
+          <TableHead className="text-right">Calls</TableHead>
+          <TableHead className="text-right">Cached input</TableHead>
+          <TableHead className="text-right">Cost</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {groups.map((group) => (
+          <TableRow key={group.key}>
+            <TableCell>{group.key}</TableCell>
+            <TableCell className="text-right">
+              {group.calls}
+              {group.failures > 0 && <span className="text-muted-foreground"> ({group.failures} failed)</span>}
+            </TableCell>
+            <TableCell className="text-right">{cachedShare(group)}</TableCell>
+            <TableCell className="text-right">{formatCost(group.cost)}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+/**
+ * Loaded on its own rather than folded into the stats call, so a problem here
+ * never takes the rest of the dashboard with it.
+ */
+function AiUsageCard() {
+  const [usage, setUsage] = useState<AiUsageSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .aiUsage()
+      .then((data) => {
+        if (!cancelled) setUsage(data);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load AI usage');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>AI spend</CardTitle>
+        <CardDescription>
+          What OpenRouter billed for each model call, with peak pricing and cache discounts already included.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-6">
+        {error ? (
+          <p className="text-sm text-destructive">{error}</p>
+        ) : !usage ? (
+          <Skeleton className="h-16 w-full" />
+        ) : (
+          <>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <UsageStat label="Last 24 hours" value={formatCost(usage.day.cost)} detail={`${usage.day.calls} calls`} />
+              <UsageStat
+                label="Last 7 days"
+                value={formatCost(usage.week.cost)}
+                detail={`${usage.week.calls} calls${usage.week.failures > 0 ? `, ${usage.week.failures} failed` : ''}`}
+              />
+              <UsageStat label="Cached input, 7 days" value={cachedShare(usage.week)} detail="of all prompt tokens" />
+            </div>
+            {usage.byTask.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No model calls recorded yet.</p>
+            ) : (
+              <>
+                <UsageTable title="Task, last 7 days" groups={usage.byTask} />
+                <UsageTable title="Model" groups={usage.byModel} />
+                <p className="text-sm text-muted-foreground">
+                  Served by {usage.byProvider.map((group) => `${group.key} (${group.calls})`).join(', ')}.
+                </p>
+              </>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function DashboardPage() {
@@ -79,6 +191,8 @@ export default function DashboardPage() {
           </>
         )}
       </div>
+
+      <AiUsageCard />
 
       <Card>
         <CardHeader>

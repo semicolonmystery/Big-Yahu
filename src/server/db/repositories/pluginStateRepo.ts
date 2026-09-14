@@ -32,13 +32,22 @@ export function listStates(): Record<string, { enabled: boolean; config: Record<
   return result;
 }
 
-export function setState(id: string, patch: { enabled?: boolean; config?: Record<string, unknown> }): void {
+export function setState(
+  id: string,
+  patch: { enabled?: boolean; config?: Record<string, unknown>; useSharedModels?: boolean },
+): void {
   db.update(pluginState)
     .set({
       ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
       ...(patch.config !== undefined ? { configJson: JSON.stringify(patch.config) } : {}),
+      ...(patch.useSharedModels !== undefined ? { useSharedModels: patch.useSharedModels } : {}),
       updatedAt: Date.now(),
     })
     .where(eq(pluginState.id, id))
     .run();
+}
+
+/** A plugin with no row yet has not been installed, and the shared list is the default anyway. */
+export function usesSharedModels(id: string): boolean {
+  return db.select().from(pluginState).where(eq(pluginState.id, id)).get()?.useSharedModels ?? true;
 }

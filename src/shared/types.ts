@@ -2,8 +2,19 @@ export interface FactMetadata {
   guildId: string;
   channelId: string;
   messageIds: string[];
-  /** Everyone whose messages this fact came from, so facts can be filtered per person. */
+  /** Everyone whose messages this fact came from. */
   authorIds: string[];
+  /**
+   * Everyone the fact is *about*, from the mentions in its text. Kept apart from
+   * `authorIds` because they answer different questions, and recall matches on
+   * it exactly rather than hoping the embedding noticed an id.
+   */
+  subjectIds?: string[];
+  /** Channels the fact names. */
+  channelRefs?: string[];
+  /** The first and last day the fact talks about, in whole days since the epoch. */
+  dateMin?: number;
+  dateMax?: number;
   referencedFactIds: string[];
   timePeriodStart: number;
   timePeriodEnd: number;
@@ -47,16 +58,6 @@ export interface FactAuthor {
   authorId: string;
   authorUsername: string;
   factCount: number;
-}
-
-export interface ChatModel {
-  model: string;
-  weight: number;
-  consecutiveFailures: number;
-  restingUntil: number | null;
-  /** The API says this model does not exist. Never tried again until Reset errors. */
-  retired: boolean;
-  lastError: string | null;
 }
 
 export interface PluginPanelSummary {
@@ -146,7 +147,6 @@ export interface Controller {
 }
 
 export interface AppSettings {
-  chatModel: string;
   checkIntervalMinutes: number;
   replyContextMessages: number;
   factSearchTopK: number;
@@ -159,6 +159,9 @@ export interface AppSettings {
   retryAttempts: number;
   retryDelayMs: number;
   duplicateDistance: number;
+  /** What new facts are embedded with; changing either rebuilds the collection. */
+  embeddingModel: string;
+  embeddingDimensions: number;
   modelFailureThreshold: number;
   modelRestMinutes: number;
   /** Whether pictures are sent to the model at all. Off makes every reply text-only. */
@@ -171,7 +174,7 @@ export interface AppSettings {
   crossChannelMessages: number;
   /** Every chat model failed. The one case that really is "try again shortly". */
   overloadMessage: string;
-  /** The reply ran out of attempts or hit its deadline — the bot's own limit, not Gemini's. */
+  /** The reply ran out of attempts or hit its deadline — the bot's own limit, not the provider's. */
   busyMessage: string;
   /** Something threw, or the model produced no text at all. A bug, said plainly. */
   errorMessage: string;
@@ -184,12 +187,12 @@ export interface PromptSummary {
   id: 'factExtraction' | 'topicExtraction' | 'reply';
   label: string;
   description: string;
-  /** Substituted at call time. A saved prompt missing one of these is refused. */
-  placeholders: readonly string[];
   /** What the bot ships with, so the panel can show what Reset restores. */
   shipped: string;
   /** The operator's version, or null while they are using the shipped one. */
   override: string | null;
+  /** Their version describes the old transcript notation, from before the material became JSON. */
+  legacyFormat: boolean;
 }
 
 export interface ReplyLogEntry {
@@ -210,6 +213,103 @@ export interface DashboardStats {
   totalMessagesReferenced: number;
   totalReplies: number;
   latestReplies: ReplyLogEntry[];
+}
+
+/** One row of a task's OpenRouter model list. */
+export interface TaskModel {
+  task: string;
+  model: string;
+  /** OpenRouter host the row is pinned to; empty lets OpenRouter choose. */
+  upstream: string;
+  weight: number;
+  consecutiveFailures: number;
+  restingUntil: number | null;
+  retired: boolean;
+  lastError: string | null;
+}
+
+/** A row as the panel shows it, with what OpenRouter's catalog says it can do there. */
+export interface TaskModelView extends TaskModel {
+  /** Null when the catalog does not know the model, or could not be reached. */
+  capabilities: { images: boolean; tools: boolean; jsonMode: boolean } | null;
+}
+
+export interface AiTaskView {
+  id: string;
+  label: string;
+  description: string;
+  usesImages: boolean;
+  usesTools: boolean;
+  structured: boolean;
+  reasoningEffort: 'none' | 'low' | 'medium' | 'high';
+  reasoningEditable: boolean;
+  models: TaskModelView[];
+  /** Plain-language problems with this list, worst first. */
+  warnings: string[];
+}
+
+export interface AiTasksOverview {
+  tasks: AiTaskView[];
+  /** Plugins that send work to a model, and whether they use the shared list. */
+  plugins: AiTaskPlugin[];
+  openrouterConfigured: boolean;
+  catalogAvailable: boolean;
+}
+
+export interface AiTaskPlugin {
+  pluginId: string;
+  pluginName: string;
+  useSharedModels: boolean;
+  /** The jobs it declares. Each has a list of its own once it is off the shared one. */
+  tasks: Array<{ id: string; label: string; description?: string }>;
+}
+
+/** A model from OpenRouter's catalog, for the add-a-model search. Prices are dollars per million tokens. */
+export interface CatalogModel {
+  id: string;
+  name: string;
+  images: boolean;
+  promptPrice: number | null;
+  completionPrice: number | null;
+}
+
+/** One host serving a model, for the pin picker. Prices are dollars per million tokens, at base rate. */
+export interface CatalogEndpoint {
+  tag: string;
+  providerName: string;
+  promptPrice: number | null;
+  completionPrice: number | null;
+  cacheReadPrice: number | null;
+  /** The host charges more at some hours, as DeepSeek does at its peak. */
+  timeOfDayPricing: boolean;
+  tools: boolean;
+  jsonMode: boolean;
+  healthy: boolean;
+}
+
+/** Sums over a window of model calls. `cost` is US dollars as OpenRouter billed them. */
+export interface AiUsageTotals {
+  calls: number;
+  failures: number;
+  cost: number;
+  promptTokens: number;
+  cachedTokens: number;
+  completionTokens: number;
+}
+
+/** The same sums for one task, model or upstream host. */
+export interface AiUsageGroup extends AiUsageTotals {
+  key: string;
+}
+
+export interface AiUsageSummary {
+  /** The last 24 hours. */
+  day: AiUsageTotals;
+  /** The last 7 days; the groups below cover the same window. */
+  week: AiUsageTotals;
+  byTask: AiUsageGroup[];
+  byModel: AiUsageGroup[];
+  byProvider: AiUsageGroup[];
 }
 
 export interface PluginSummary {

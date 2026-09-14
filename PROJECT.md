@@ -1,36 +1,40 @@
 # Big Yahu
 
-## Reliability and attachment work (September 2026)
+## The AI layer
+
+All AI traffic goes through OpenRouter with one key, using the `openai` npm package:
+chat on `deepseek/deepseek-v4.1-flash`, pinned to DeepSeek's own endpoint (the only one
+with DeepSeek's off-peak pricing and $0.003 cache reads), and embeddings on
+`openai/text-embedding-3-large`. The aim is lower cost without giving the model less
+context.
+
+**What the provider actually does**, measured against it rather than assumed, because
+the design rests on it: JSON mode holds a schema that an optional tool call does not, so
+`strict` is not enforced through OpenRouter and every structured answer is validated
+here. Parallel tool calls work. Reasoning is **on by default**, so `effort: none` has to
+be sent explicitly to get zero reasoning tokens. The cached system prefix survives a
+change to the tool list, so tool definitions sit after the prompt. An 800×600 image costs
+about 317 tokens, a reply-sized prompt answers in about 1.2 s, embeddings come back at
+1536 dimensions, and the billed cost equals the published price. DeepSeek's endpoint is
+filtered out of routing unless the OpenRouter account allows paid endpoints that train on
+request data.
 
 | Work | Status | Scope |
 |---|---|---|
-| Durable fact updates, batch dedupe and bounded extraction | IMPL | Preserve IDs and existing facts on outages; serialize mutations; checkpoint successful pages |
-| Gemini tool dispatch and admission limits | IMPL | Pair every call/result; preserve signatures; durable reservations and bounded AI work |
-| Bounded message.txt attachments | IMPL | Configurable 0–64 KiB per file (default 16); shared 64 KiB/eight-file budget; five-second downloads |
-| Admin error states, permissions and regression tests | IMPL | Correct defaults, recoverable auth, pagination, validated settings and browser coverage |
-| Strict single-guild runtime and deployment checks | IMPL | Required guild in bot mode; health checks, graceful shutdown, Docker/Chroma smoke and CI |
-| Readable structured extraction | IMPL | `maxOutputTokens` is a caller's budget under a 64K runaway bound, not a 4K ceiling; unparsable answers log `finishReason` and retry on the newest half of the window |
-
-The plugin system and its bundled plugins are maintained in this repository. Existing
-capabilities and unfinished features remain; the tool-handler contract deliberately
-advances to plugin API v3.
-
-The reliability changes were integrated with upstream's SDK workspace and MIT
-license changes through `879f454`. This tree now intentionally diverges with plugin
-API v3 and the bundled Discord Admin plugin; its plugin sources and SDK package are no
-longer identical to that upstream revision. Docker copies the compiled SDK and excludes
-nested TypeScript build caches so a local build cannot suppress compilation in a clean
-image.
-
-New admin controls reuse the existing shadcn `base-nova` components. Generated
-Button, Badge and Tabs stay unchanged; their standard variant exports are allowed
-explicitly in the React Fast Refresh lint rule.
-
-A Discord bot that builds a durable memory of a server, plus a single-admin web panel to inspect and configure it.
-
-The bot periodically reads each channel, asks Gemini to extract *facts* worth remembering, embeds them and stores them in ChromaDB alongside the message IDs they came from. When someone mentions the bot, it works out what is being discussed, recalls relevant facts from across the server, and replies — linking back to the original messages so people can jump to the moment being referenced.
-
----
+| OpenRouter as the only provider | IMPL | The client (`ai/openrouter.ts`, built on first use, SDK retries off) and error classification (`ai/openrouterErrors.ts`, from the probe's real error bodies: 402 out of credit, a 400 naming a missing model retires it, a routing block never does). `OPENROUTER_API_KEY` is required whenever a Discord token is set, and it is the only key the bot has |
+| Per-call usage and cost | WIP | In: the `ai_usage` table (migration 0021), `recordCall`, and the dashboard's AI spend card (24 hours, 7 days, by task, model and serving host), recording the cost OpenRouter actually billed rather than a price table of our own. Still to come: the 90-day fold into daily totals |
+| One model list per task | IMPL | `task_models` and `ai_tasks` (reasoning effort), seeded once by migration with `deepseek/deepseek-v4.1-flash` pinned to `deepseek`; OpenRouter's catalog (`ai/catalog.ts`: capabilities per host, prices, peak windows, cached hourly); `/api/ai-tasks`, which refuses a model whose host cannot do the task and pins new rows to the cheapest host that can; and the Settings tab per task with a host picker showing prices. Tasks: reply, fact extraction, topic extraction, date repair, the shared plugins list, and one per plugin-declared job. The single global pool it replaced is gone |
+| Structured calls | IMPL | `ai/structured.ts` walks a task's list in JSON mode with reasoning off, pinned to each row's host; the saved prompt is sent untouched and the answer's shape as a separate message; every answer is validated against its schema (`ai/jsonSchema.ts`) and re-asked once with the problem quoted; a truncated answer goes to the existing narrowing retry. Topic extraction (now with searchQuery/people/channels/dates), fact extraction and date repair run on it; the query-rewrite call is deleted. DeepSeek's endpoint can neither force a tool call nor enforce a schema through OpenRouter, which is why the shape is described and then checked here |
+| JSON material and a cache-stable system prompt | IMPL | Everything that changes per call is one compact JSON document (`ai/material.ts`): the time, who is asking and whether they are a controller, the messages with `replyTo` and `unseenImages`, the people with live presence, remembered facts with their sources, other channels, readable channels, images and plugin notes. Nothing is substituted into a prompt any more — no `{{placeholders}}` at all, and a prompt containing them saves fine because nothing will fill them. Message text is JSON-escaped, so nobody can type their way into the structure. The three shipped prompts describe fields instead of bracket notation, and the Prompts screen flags an override still written for the old one |
+| The model never gets the server id | IMPL | It asks for a link by naming a message (`<link:MESSAGE_ID>`) and the bot builds the URL from the channel that message is actually in, so a link cannot come out pointing at the wrong server or an invented message |
+| Fewer calls per reply | IMPL | The query-rewrite call is gone (topic extraction's `searchQuery` does its job), topic extraction no longer generates facts nobody reads, a turn whose tools were all fire-and-forget ends the reply, the topic call, the quoted message and any mentioned channel are fetched together instead of in turn, and rolling-memory upkeep runs after the reply has been sent — as one call now, not two |
+| Reply on OpenRouter | IMPL | `ai/chat.ts` runs a turn with tools on the reply's own list, echoing the model's turn back untouched (it carries reasoning the provider refuses to have rebuilt); `ai/pool.ts` holds the failover, resting and retirement both paths share; tool declarations and results are provider-neutral, and the reply's material and pictures reach it as data |
+| Plugin SDK v4 | IMPL | Host-neutral throughout: `generate`/`generateStructured` take a plain request and a JSON schema, `aiTasks` declares the jobs a plugin sends to a model (each getting its own list once the operator switches that plugin off the shared one), `DraftPrompt` carries the JSON material and neutral images, `effect` marks a tool nothing is expected back from, and `afterReply` runs once the reply is out. The raw model client is gone: a plugin cannot reach a provider directly |
+| Rolling memories in fact extraction | IMPL | Extraction is shown the memories for the channel it is reading, plus any tied to no channel, and told to leave what they already cover to short-term memory. Every way a memory leaves — running out, the bot forgetting it, compaction dropping it, the operator pressing Forget — now marks it as leaving and goes through the same keep-forever check, so the one durable fact inside a memory cannot be lost. Memories carry their guild, so a promotion needs no Discord message in hand |
+| Structured recall | IMPL | Facts carry who they are about (`subjectIds`, kept apart from the `authorIds` who said it), which channels they name and the span of days they talk about. What goes to the embedding model has the ids and dates stripped out — an embedding cannot mean an id, and two unrelated facts from one afternoon should not look alike — while the stored fact keeps them for the model reading it. `recallFacts` runs the plain search plus one per person, channel and date range the question is about, and a facet match lifts a fact up the list without ever filtering one out |
+| Embeddings through OpenRouter | IMPL | `openai/text-embedding-3-large` at 1536 dimensions, batched, unit-normalised, and billed through the same key and usage table as everything else. Collections are named for the model and width that filled them, so recall can never mix two models' vectors, and dedupe reuses the vector it already has for the candidate rather than embedding the same sentence twice |
+| Transactional re-embed | PLAN | resumable job with dual-write; dedupe threshold calibrated on real pairs; the first migration off the legacy collection; old collection deleted after a verified swap; the Settings dialog and button |
+| Off-peak extraction setting | PLAN | optional, off by default; skips runs while the extraction model's pinned endpoint is priced above its base price, read from the catalog |
 
 ## Stack
 
@@ -38,7 +42,7 @@ The bot periodically reads each channel, asks Gemini to extract *facts* worth re
 |---|---|
 | Frontend | Vite 8, React 19, Tailwind v4, shadcn/ui (`base-nova` style, built on Base UI), react-router 7 |
 | Backend | Node 24, Express 5, discord.js v14, run under `tsx` (never compiled) |
-| AI | `@google/genai` v2 — chat model is a Settings field (default `gemini-3.1-flash-lite`), `gemini-embedding-001` for embeddings |
+| AI | OpenRouter only, through the `openai` package — chat on `deepseek/deepseek-v4.1-flash` pinned to DeepSeek's own endpoint, embeddings on `openai/text-embedding-3-large` at 1536 dimensions. Each job has its own ordered model list |
 | Relational | SQLite via Drizzle ORM + `better-sqlite3` |
 | Vectors | ChromaDB (Docker service) |
 
@@ -46,7 +50,7 @@ The bot periodically reads each channel, asks Gemini to extract *facts* worth re
 
 - **Drizzle over Prisma** — zero codegen, so it works under `tsx` with no generate step and no engine binary in the image.
 - **`better-sqlite3`** uses a prebuilt binary when available. Docker build stages include compiler tools for the fallback and remove them from the runtime image.
-- **`gemini-embedding-001` over the newer `gemini-embedding-2`** — it still supports `taskType`, which maps onto Chroma's document/query embedding split (`RETRIEVAL_DOCUMENT` / `RETRIEVAL_QUERY`) and measurably helps retrieval. Both are free tier.
+- **One provider, not several.** OpenRouter adds no markup, passes DeepSeek's off-peak pricing through, and covers chat and embeddings with a single key, so there is no per-provider plumbing to keep straight. Requests are pinned to DeepSeek's own endpoint because it is the only one serving that model at those prices and at $0.003 cache reads.
 - **Opaque session cookie + `crypto.scrypt`** over JWT/bcrypt — no extra dependency, no signing secret to manage, no second native module.
 
 ---
@@ -57,7 +61,7 @@ The bot periodically reads each channel, asks Gemini to extract *facts* worth re
 src/client/     Admin panel (React). Pages in routes/, shadcn output in components/ui/
 src/server/     Express API + Discord bot + AI, all in one process, separated by folder
   bot/          discord.js client, event handlers, reply pipeline
-  ai/           Gemini calls, prompts, response schemas, embeddings, extraction
+  ai/           OpenRouter calls, prompts, response schemas, embeddings, extraction
   db/           Drizzle schema + repositories, ChromaDB client
   plugins/      Plugin engine and installed plugins
   api/          Express routes and auth middleware
@@ -78,7 +82,7 @@ Runs every `checkIntervalMinutes`, per enabled channel, reading from its stored 
 
 Triggered by an @mention **or** by someone replying to one of the bot's messages (`@everyone` does not count). From the moment it is triggered until the reply lands, the bot shows as typing; the indicator is refcounted per channel, so overlapping replies share one indicator that stays up until the last one finishes.
 
-Two Gemini calls: one to work out what is being asked, one to write the reply. Between them, the topic is embedded and used to recall facts from anywhere in the guild, and each fact's source messages are attached so the model can link to them.
+Two model calls: one to work out what is being asked, one to write the reply. Between them, the topic is embedded and used to recall facts from anywhere in the guild, and each fact's source messages are attached so the model can link to them.
 
 ### Smart context escalation
 
@@ -87,7 +91,7 @@ Two mechanisms, both bounded by `maxEscalationDepth` (default 1, hard cap 3):
 - **Extraction stage** — the structured schemas carry `needsMoreContext` and `contextHint`. When set, older messages and hint-matched facts are fetched and the call is repeated.
 - **Reply stage** — the model has a `request_more_context` tool. Calling it fetches the next 100 older messages (within `escalationLookbackHours`) plus facts matching what it says it is looking for, and hands them back as a tool response so it can answer or ask again. On the last permitted round the tool is withdrawn and the model is told to answer with what it has or say it isn't there.
 
-Tool-call turns are echoed back to Gemini exactly as received: Gemini 3 attaches a `thoughtSignature` to them and rejects a rebuilt copy with a 400.
+Tool-call turns are echoed back exactly as received: they carry the model's own reasoning (`reasoning_details`), which the provider documents must not be rebuilt.
 
 ### What it is allowed to ping
 
@@ -108,9 +112,9 @@ make Discord act on them.
 
 The reply prompt is explicit that the model knows only the messages and facts in front of it, must never quote or paraphrase something it was not shown, and must never narrate a search it did not perform. Beyond the prompt, the output is sanitised: jump links to message IDs the model never saw, `<#channel>` mentions for channels not in the guild, and `<@user>` mentions for users not in context are all stripped before sending.
 
-### Surviving Gemini outages
+### Surviving provider outages
 
-Gemini generation and embeddings use explicit application retries for transient errors, including 429/500/502/503/504 and transport timeouts. The SDK's additional automatic retries are disabled. Delays grow exponentially from `retryDelayMs` (default 3s), capped at 60s; a 400 fails immediately. Generation falls back through the configured model pool. Caller cancellation does not penalize a model. Each reply shares 24 AI attempts and a two-minute deadline, with a 45-second ceiling per AI request. Failures and accidental empty output send the configurable `overloadMessage`; deliberate `stay_silent` remains silent.
+Generation and embeddings use explicit application retries for transient errors, including 408/429/5xx and transport timeouts. The SDK's own retries are disabled, so failover and the reply deadline stay in our hands. Delays grow exponentially from `retryDelayMs` (default 3s), capped at 60s; a bad request fails immediately, and running out of credit fails everything at once rather than walking the list. Generation falls back through the task's model list. Caller cancellation does not penalize a model. Each reply shares 24 AI attempts and a two-minute deadline, with a 45-second ceiling per AI request. Failures and accidental empty output send the configurable `overloadMessage`; deliberate `stay_silent` remains silent.
 
 ### Not writing the same fact twice
 
@@ -236,7 +240,7 @@ the first place. The marker says "not shown" rather than just `[image]` on
 purpose — a bare marker reads as something the model has, and invites it to
 describe contents it was never given.
 
-Gemini has no GIF support, so anything that is not png/jpeg/webp/heic/heif is
+Anything that is not png/jpeg/webp/gif — a phone's HEIC photo, say — is
 re-requested through Discord's media proxy with `?format=png`, which re-encodes
 server-side and avoids an image library here. An image that cannot be fetched or
 converted is dropped rather than failing the reply.
@@ -246,8 +250,8 @@ converted is dropped rather than failing the reply.
 A plugin used to be handed the raw database, which meant any plugin could read
 every other plugin's secrets. It now gets a scoped context instead: its own
 config, its own encrypted secrets, its own key/value storage, its own SQLite
-database, plus the shared things — the fact store, the Gemini client and the
-Discord client.
+database, plus the shared things — the fact store, the model calls and the
+Discord client. Plugins never touch a provider client themselves.
 
 Plugins may use their own npm dependencies. Anything declared in a plugin's
 `package.json` is installed into the plugin's own `node_modules` when it is
@@ -298,7 +302,7 @@ two scores out of 10: a short term that swings on a few messages, and a long ter
 chases it far more slowly and is dragged down harder the longer someone keeps behaving
 badly, so a bad fortnight is not erased by a good afternoon. The model judges behaviour
 on an ordinal scale through a tool call on the reply it is already making — no extra
-Gemini request — and the plugin owns the arithmetic, because letting the model pick
+model request — and the plugin owns the arithmetic, because letting the model pick
 numbers made the scale mean whatever it felt like that turn.
 
 Scores are injected through `annotateContext` rather than fetched with a tool,
@@ -314,15 +318,10 @@ repo) is the plugin contract: every type, `HOOK_NAMES`, `PLUGIN_API_VERSION` and
 a `definePlugin` helper. The bot imports it by name like anyone else, so there is
 exactly one definition of the thing plugins are written against.
 
-Before it, `PLUGINS.md` told authors to `import type { BigYahuPlugin } from
-'../../types'`. Right for a bundled plugin, wrong for an installed one — from
-`<plugins dir>/<id>/index.ts` that resolves to `<plugins dir>/types`, which does
-not exist. It appeared to work only because `import type` is erased before Node
-sees it, so the plugin ran while `tsc` and the editor both broke. Every author's
-answer was to hand-copy the contract, and the copy in `steam-key-activate`
-carried a comment promising to keep it "in step" — a promise, not a mechanism,
-and one that had already been broken by `apiVersion`, `PluginField` and
-`enabledByDefault`.
+A relative import into the host would resolve differently for a bundled plugin
+than for an installed one, and hand-copying the contract into each plugin leaves
+every copy free to drift. A package is the mechanism that a comment promising to
+stay "in step" is not.
 
 It lives in this repo rather than its own, because `PLUGIN_API_VERSION` exists to
 catch a plugin built against a contract the host no longer speaks. Split across
@@ -625,7 +624,7 @@ The prompt reserves it for noise — bait, a stalled slanging match — and stat
 that a real question always gets an answer. A bare mention is explicitly not
 treated as noise: people split the ping from the message, so it reads the
 surrounding conversation and answers that. A silent turn still costs
-the Gemini calls that produced it, so it saves face rather than quota.
+the model calls that produced it, so it saves face rather than quota.
 
 ### The reply and the tool call belong to the same turn
 
@@ -771,7 +770,7 @@ the cache is dropped when an admin changes one.
 ### One guild per instance
 
 The bot is permanently mono-guild. `DISCORD_GUILD_ID` must be a valid snowflake
-whenever a Discord token is configured; a Gemini key is also required.
+whenever a Discord token is configured; an OpenRouter key is also required.
 `isServedGuild` rejects missing and foreign guilds before hooks, database writes
 or AI work. The scheduler and admin channel list apply the same scope. There is
 no all-guild fallback. With no Discord token, the admin panel can run on its own.
@@ -792,24 +791,30 @@ does not queue or invoke AI.
 | Feature | Status | Notes |
 |---|---|---|
 | Repo restructure (`client`/`server`/`shared`), config rewiring | IMPL | Vite alias, tsconfig projects, shadcn css path, HTML entry |
+| Durable fact updates, batch dedupe and bounded extraction | IMPL | Preserve IDs and existing facts on outages; serialize mutations; checkpoint successful pages |
+| Model tool dispatch and admission limits | IMPL | Pair every call/result; preserve signatures; durable reservations and bounded AI work |
+| Bounded message.txt attachments | IMPL | Configurable 0–64 KiB per file (default 16); shared 64 KiB/eight-file budget; five-second downloads |
+| Admin error states, permissions and regression tests | IMPL | Correct defaults, recoverable auth, pagination, validated settings and browser coverage |
+| Strict single-guild runtime and deployment checks | IMPL | Required guild in bot mode; health checks, graceful shutdown, Docker/Chroma smoke and CI |
+| Readable structured extraction | IMPL | `maxOutputTokens` is a caller's budget under a 64K runaway bound, not a 4K ceiling; unparsable answers log `finishReason` and retry on the newest half of the window |
 | Server typechecking in `npm run build` | IMPL | `tsconfig.server.json` added to project references; `tsc -b` now covers the backend |
 | SQLite schema + migrations | IMPL | Drizzle, applied at boot from `drizzle/` |
 | Admin auth (setup, login, logout, sessions) | IMPL | scrypt + opaque session cookie; constant-time and rate-limited |
-| Gemini embedding function for Chroma | IMPL | taskType-aware, unit-normalised |
+| Embedding function for Chroma | IMPL | per-model collections, unit-normalised |
 | Facts repository + duplicate prevention | IMPL | stable-ID updates, serialized writes, same-subject similarity merge |
 | Plugin engine + hooks + bundled plugins | IMPL | `onMessage`, `onHourlyCheck`, `onBotTagged`, `annotateContext`, `annotateExtraction`, `beforeReply` |
 | Periodic fact extraction + scheduler | IMPL | per-channel, checkpointed, escalation-capable |
 | Bot reply pipeline | IMPL | two-stage, jump links, `save_fact` tool, reply logging |
 | Per-user rate limiting | IMPL | configurable cap and message |
-| Editable system prompts | IMPL | `/prompts` screen and `prompt_overrides` table; only overrides stored, reset is a delete. `{{now}}`/`{{language}}`/`{{guildId}}` substituted, and a prompt missing one is refused at save. Typed or uploaded; read per call, so edits land on the next message |
-| Prompts are exactly what was saved | IMPL | nothing appended to an operator's text. The model's own safety filtering is the only content limit, at SDK defaults — the bot sets no `safetySettings` |
-| Split failure messages | IMPL | five configurable messages, chosen by the API's canonical status: rate limit, overload, spent budget, no credit, bug. Every failure still logged in full with its status |
-| Billing cut-out | IMPL | `RESOURCE_EXHAUSTED`/`FAILED_PRECONDITION` with billing wording throws `BillingError` on the first request — no next model, no failure recorded, since every model shares the key. Other 429s stay ordinary rate limits |
-| Retiring dead models | IMPL | 404 `NOT_FOUND`/`MODEL_NOT_FOUND` retires the model permanently instead of resting it; excluded from the pool and from the "everything is resting" revive, and cleared only by Reset errors |
+| Editable system prompts | IMPL | `/prompts` screen and `prompt_overrides` table; only overrides stored, reset is a delete. Typed or uploaded; read per call, so edits land on the next message |
+| Prompts are exactly what was saved | IMPL | nothing appended to an operator's text and nothing substituted into it — a prompt holding `{{anything}}` saves fine, because nothing will ever fill it. Everything volatile arrives in the JSON material instead, which is what keeps the prompt cacheable |
+| Split failure messages | IMPL | five configurable messages, chosen by the API's own status: rate limit, overload, spent budget, no credit, bug. Every failure still logged in full with its status |
+| Billing cut-out | IMPL | a 402 throws `BillingError` on the first request — no next model, no failure recorded, since one key pays for everything. Other 429s stay ordinary rate limits |
+| Retiring dead models | IMPL | a 400 saying the model id is not valid retires it permanently instead of resting it; excluded from the pool and from the "everything is resting" revive, and cleared only by Reset errors. A routing block (404 with the account's ineligibility reasons) moves to the next model and never retires one |
 | Choosing not to reply | IMPL | `stay_silent` tool; nothing sent, nothing logged |
 | Controller accounts | IMPL | Discord IDs in Settings; may add and delete facts |
 | Plugin tools + panels | IMPL | JSON-schema tools, declarative admin screens |
-| Plugin tool invocation and access gates | IMPL | API v3 host-owned turn metadata; `requiresController` and `enabledByConfig`, with live config/controller rechecks before execution |
+| Plugin tool invocation and access gates | IMPL | host-owned turn metadata; `requiresController` and `enabledByConfig`, with live config/controller rechecks before execution |
 | Discord Admin plugin | IMPL | bundled and controller-only; per-capability switches plus payload-bound mutation confirmation, with an unconditional high-risk floor |
 | Autonomous moderation | IMPL | `autonomousModeration`, off by default: the bot moderates on its own judgement, no controller and no confirmation. Discord's hierarchy is the only remaining bound; the audit log names the bot rather than a controller |
 | Live plugin gates | IMPL | config reads merge the operator's row over the plugin's `defaultConfig`, so a switch added by an update works without a reload or a re-save |
@@ -817,14 +822,13 @@ does not queue or invoke AI.
 | Plugin dependencies | IMPL | npm install per plugin, plus the bot's shared modules |
 | Per-channel reply/read permissions | IMPL | reply defaults on, read defaults **off**; enforced in the handler and the scheduler |
 | Fact deletion (bot + web) | IMPL | `delete_fact` tool, `DELETE /api/facts/:id`, confirm dialog |
-| Browse facts, paginated + per-person filter | IMPL | `authorIds` metadata drives the filter |
-| Fact-shaped query rewriting before embedding | IMPL | falls back to the raw query |
+| Browse facts, paginated + per-person filter | IMPL | matches whoever a fact is about as well as whoever said it |
 | Single-guild scoping | IMPL | required in bot mode; missing/foreign guilds rejected before work |
 | Reply-to triggers a response | IMPL | replying to a bot message works like an @mention |
 | Typing indicator while replying | IMPL | refcounted per channel |
-| Reply-stage `request_more_context` tool | IMPL | verified against live Gemini with a synthetic channel |
-| Gemini retry + overload message | IMPL | attempts, delay and message all in Settings |
-| Configurable chat model | IMPL | Settings field, applies to the next request |
+| Reply-stage `request_more_context` tool | IMPL | the reply can pull more history when the window is not enough |
+| Retry + overload message | IMPL | attempts, delay and message all in Settings |
+| Configurable model lists | IMPL | one ordered list per job, edited in Settings, applies to the next request |
 | Anti-fabrication (prompt + mention/link sanitising) | IMPL | strips unknown channels, users and message links |
 | Reply voice (vulgar, room-matching, light gen-z) | IMPL | in the reply system instruction |
 | Configurable reply language | IMPL | 47-language searchable combobox; adapts to the asker's language |
@@ -840,11 +844,11 @@ does not queue or invoke AI.
 | Vision in the periodic extraction pass | IMPL | pictures attached to the extraction call, so an image-only message is no longer read as blank |
 | Vision settings | IMPL | `visionEnabled` toggle and `maxImages` cap, applying to replies and extraction alike |
 | `list_people` tool | IMPL | who is around and what they are doing, on demand, with an optional name filter |
-| Reply threading in transcripts | IMPL | every line carries `[replying to id=...]`; prompts follow the chain, not the order |
-| Fact-search queries carry name and `<@id>` | IMPL | topic fields, `lookingFor`, `contextHint`; the rewriter preserves mentions |
+| Reply threading in the material | IMPL | every message carries `replyTo`; prompts follow the chain, not the order |
+| Fact search is told who and when | IMPL | the topic call returns `searchQuery` plus the people, channels and dates in play, and those are matched as metadata rather than glued onto the text |
 | Plugin `annotateContext` hook | IMPL | plugins annotate users, messages and facts as the reply prompt is built; reply-only |
 | Reputation plugin (short + long term scores) | IMPL | bundled; drizzle + own migrations, scores injected automatically, scored via a tool on the reply call |
-| Prose kept when a tool is called in the same turn | IMPL | the cause of both the silent non-replies and the English meta-replies |
+| Prose kept when a tool is called in the same turn | IMPL | text and tool calls in one turn are both honoured, rather than the text being dropped |
 | Tool-narration net and terminal-outcome logging | IMPL | narration dropped rather than sent; "produced nothing" no longer looks like deliberate silence |
 | Absolute dates enforced on both fact write paths | IMPL | fuzzy detector (folding, stems, edit distance) at the `addFacts` choke point plus one corrective call |
 | Reading a mentioned channel automatically | IMPL | `<#id>` in the tagging message pulls that channel's recent history |
@@ -852,95 +856,69 @@ does not queue or invoke AI.
 | `crossChannelMessages` setting | IMPL | caps the history pulled; 0 disables cross-channel reading entirely |
 | Plugin `annotateExtraction` hook | IMPL | opt-in reach into the periodic pass; `annotateContext` stays reply-only |
 | Plugin `saveFacts` in the context | IMPL | plugins write facts through the dedupe path rather than the raw collection |
-| Versioned plugin API | IMPL | exact API v3 match from the SDK major or `bigYahu.apiVersion`; a mismatch is listed, never imported, never runnable |
+| Versioned plugin API | IMPL | exact API v4 match from the SDK major or `bigYahu.apiVersion`; a mismatch is listed, never imported, never runnable |
 | Plugins always start disabled | IMPL | `enabledByDefault` removed; a plugin cannot switch itself on |
 | Install over an existing id updates it | IMPL | code replaced, config, secrets, storage and database kept |
 | Typed plugin config and declared secrets | IMPL | schema-driven form with server-side coercion; JSON editor kept as the fallback |
 | Plugin pages | IMPL | own route, paginated table, search, row actions; ids resolved to names by the host |
 | Long text cells | IMPL | optional `preview` on a `text` cell; table shows it, full text opens in a dialog with mentions resolved. Additive — no API bump |
 | `@big-yahu/plugin-sdk` | IMPL | the contract as a published package; the bot imports it by name, no more hand-mirroring |
-| Contract version derived from the SDK dependency | IMPL | plugin API v3; the SDK's major declares it, `bigYahu.apiVersion` is the fallback for SDK-less plugins |
+| Contract version derived from the SDK dependency | IMPL | plugin API v4; the SDK's major declares it, `bigYahu.apiVersion` is the fallback for SDK-less plugins |
 | Plugin load failures surfaced | IMPL | a plugin that throws on import is listed with the error instead of vanishing |
 | Reproducible plugin installs | IMPL | `npm ci` when the plugin ships a lockfile; an archive's `node_modules` is stripped |
 | Host paths resolved from the module | IMPL | `BUNDLED_DIR` and the `node_modules` symlink no longer depend on the working directory |
 | Rolling memory plugin | IMPL | bundled; message-based lifespans, scores, inline compaction, expiry promoted to facts |
 | Prompt notation stripped from outgoing replies | IMPL | `[id=...]`, `[replying to id=...]`, `[factId=...]` and friends never reach Discord |
 | `reply_to` — answering a message other than the ping | IMPL | defaults to the tagging message; same-channel ids only, falls back rather than failing |
-| End-to-end verification against a live Discord guild | IMPL | the bot has been running in a real server; replies, memory and the panel all exercised |
 
-### What has actually been verified
+### How it is verified
 
-For the September 2026 reliability changes, `npm run check` builds the client and
-server, typechecks tests, runs lint and reports Vitest coverage. Regression suites
-cover real migrated SQLite, auth HTTP routes and UI states, extraction/checkpoints,
-fact writes, admission, tool dispatch, channel permissions, attachment limits and
-the real Gemini SDK with mocked HTTP transport. They make no paid AI calls.
-The final local run passed 397 tests across 29 suites, with 62% line coverage in
-the configured coverage scope; both Chromium browser scenarios also passed.
+`npm run check` is what CI runs: it builds the client and server, typechecks the
+tests, runs lint and reports Vitest coverage. The suites are offline and make no
+paid model calls — the provider SDKs are exercised against mocked HTTP transport.
+They cover a real migrated SQLite database, the auth HTTP routes and UI states,
+extraction and checkpoints, fact writes and recall ranking, the per-reply attempt
+budget and deadlines, tool dispatch, channel permissions, attachment limits, the
+model catalog and per-task lists, error classification per provider status, and
+usage accounting.
 
 Playwright runs a real isolated admin server and Chromium through setup, login,
 logout, settings persistence, session expiry, retry and mobile navigation. Its
-facts/stats responses are explicit fixtures. A separate smoke test exercised a
-real pinned Chroma server with deterministic embeddings and a temporary collection,
-including metadata arrays, queries and stable-ID updates. The production Docker
-image built, served healthy admin-only HTTP, and exited cleanly on SIGTERM.
+facts and stats responses are explicit fixtures.
 
-The installed Chroma SDK is also exercised against a local HTTP server that hangs
-before headers or during the body. Every request gets a fresh ten-second timeout
-and inherits the reply deadline; tests verify closed sockets, recovery on the same
-client and retry after failed collection initialization. Chroma 3.5.0 lacks a public
-dynamic transport hook, so this uses a guarded, narrowly scoped SDK adapter whose
-contract is covered by tests. Retry delays and queued mutations honor cancellation;
-an expired queued deletion cannot execute later.
+`npm run test:integration` exercises a real pinned Chroma server with
+deterministic embeddings and a temporary collection, including metadata arrays,
+`$contains` and `$or` filters, numeric ranges and stable-ID updates. The
+installed Chroma SDK is separately exercised against a local server that hangs
+before headers or during the body: every request gets a fresh ten-second timeout
+and inherits the reply deadline, and tests cover closed sockets, recovery on the
+same client and retry after a failed collection initialisation. Chroma 3.5.0 has
+no public dynamic transport hook, so this uses a guarded, narrowly scoped SDK
+adapter whose contract is covered by tests. Retry delays and queued mutations
+honour cancellation; an expired queued deletion cannot execute later.
 
-Live Discord/Gemini behavior was not revalidated for this change. Discord Admin
-behavior and the plugin-tool authorization boundary were exercised with isolated
-tests; coverage reports still show remaining gaps rather than claiming complete
-coverage. The records below also describe verification from earlier development.
+Discord Admin's focused suite covers every controller and config gate,
+payload-bound mutation confirmations, ban message-deletion binding, nickname and
+hierarchy handling, timeout bounds, Administrator opt-in, member and role
+changes, unknown permission-bit preservation, channel overwrite tri-state
+updates, voice movement prerequisites, audit reason limits and malformed input.
+Engine and reply-pipeline tests verify that host-owned invocation metadata is
+frozen and that current controller, plugin-enabled and config state are
+rechecked before a previously exposed tool can execute.
 
-Exercised against a running server: migrations apply on boot; the whole auth flow
-(first-run state, setup, login, wrong-password rejection, logout invalidating the session,
-401 on protected routes); settings read/write including server-side clamping
-(`maxEscalationDepth: 999` → 3); plugin discovery, enable and config persistence; SPA deep
-links (`/settings` returns the app, confirming the Express 5 `/*splat` route).
+The relative-date detector and the prompt-marker stripper are unit-checked in
+isolation, because the interesting cases are the ones nobody types on purpose.
 
-Exercised against a **live Discord guild** with real Gemini and Chroma: replying on a
-mention and on a reply, in Czech and in English; fact extraction and recall; the reply
-tool loop with a plugin enabled alongside it. That is what surfaced the silent non-replies
-and the English meta-replies, neither of which any amount of local reasoning had found.
+Known gaps:
 
-Exercised through the real plugin engine, without the panel: the two original bundled plugins loading
-with the right hooks and seeded config; an installed third-party plugin loading the same
-way; a deliberately wrong `apiVersion` being refused, listed with its reason and left with
-no reachable hooks; typed config coercion on save; page rendering with ids resolved to
-names, search matching on a name rather than an id, paging splitting correctly, and both a
-row action and a header action doing what they say. The plugin store was driven directly
-against a real SQLite file — migrations, ticking, expiry, refresh, orphaned link cleanup
-and config clamping.
-
-Discord Admin's focused suite covers every controller/config gate, exact payload-bound
-mutation confirmations, ban message-deletion binding, nickname and hierarchy handling, timeout
-bounds, Administrator opt-in, member and role changes, unknown permission-bit
-preservation, channel overwrite tri-state updates, voice movement prerequisites, audit
-reason limits and malformed input. Separate engine and reply-pipeline tests verify that
-host-owned invocation metadata is frozen and that current controller, plugin-enabled and
-config state are rechecked before a previously exposed tool can execute.
-
-Unit-checked in isolation, because the interesting cases are the ones nobody types on
-purpose: the relative-date detector over 35 cases including missing diacritics and typos,
-and the prompt-marker stripper against the actual leaked replies it was written for.
-
-Still unverified:
-
-- **The admin panel's newest screens in a browser.** The plugin pages, the typed config
-  form and the secrets form have been exercised server-side but not clicked through.
-  Cookie and rendering bugs need a real browser, not curl — that lesson has already cost
-  this project a day once.
-- **The reputation plugin against a live guild.** The scoring is simulated and correct;
-  whether the model reliably *calls* `reputation__assess` is unproven.
-- **Load.** `listFactsPage` reads the whole collection and pages in memory to sort
-  newest-first, since Chroma does not provide that ordering. Worth revisiting
-  past a few thousand facts.
+- **The newest admin screens in a browser.** The plugin pages, the typed config
+  form, the secrets form and the per-task model lists are covered server-side
+  but not clicked through.
+- **The reputation plugin against a live guild.** The scoring is simulated and
+  correct; whether the model reliably *calls* `reputation__assess` is unproven.
+- **Load.** `listFactsPage` reads the whole collection and pages in memory to
+  sort newest-first, since Chroma does not provide that ordering. Worth
+  revisiting past a few thousand facts.
 
 ---
 

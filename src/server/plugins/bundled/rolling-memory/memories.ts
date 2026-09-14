@@ -51,6 +51,10 @@ export interface MemoryRow {
   remaining: number;
   lifespan: number;
   messageIds: string;
+  /** Where it was said, so it can become a fact without a Discord message in hand. */
+  guildId: string;
+  /** On its way out, waiting to be asked whether any of it is worth keeping forever. */
+  leaving: boolean;
   createdAt: number;
   updatedAt: number;
 }

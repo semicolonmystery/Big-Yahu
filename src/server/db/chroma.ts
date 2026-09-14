@@ -1,7 +1,6 @@
 import { ChromaClient, type ChromaClientArgs, type Collection } from 'chromadb';
 import { env } from '../env';
-import { geminiEmbeddingFunction } from '../ai/embeddings';
-import { FACTS_COLLECTION } from '@shared/constants';
+import { activeEmbedding, embeddingFunctionFor, type EmbeddingConfig } from '../ai/embeddings';
 import { getAIRequestSignal } from '../ai/requestBudget';
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -64,8 +63,18 @@ export const chroma = createBoundedChromaClient({
   ssl: false,
 });
 
-let factsCollection: Collection | null = null;
-let initializing: Promise<Collection> | null = null;
+/**
+ * One collection per embedding pair, named after it.
+ *
+ * A collection is fixed to the width of the vectors in it, and mixing two models
+ * in one is not a degraded search but a meaningless one, so changing either
+ * builds a new collection beside the old rather than writing into it.
+ */
+export function collectionNameFor(config: EmbeddingConfig): string {
+  return `facts__${config.model.replace(/[^\w.-]+/g, '_')}__${config.dimensions}`;
+}
+
+const collections = new Map<string, Promise<Collection>>();
 
 function awaitInitialization(pending: Promise<Collection>): Promise<Collection> {
   const signal = getAIRequestSignal();
@@ -79,16 +88,34 @@ function awaitInitialization(pending: Promise<Collection>): Promise<Collection> 
   });
 }
 
-export async function getFactsCollection(): Promise<Collection> {
-  if (factsCollection) return factsCollection;
-  if (!initializing) {
-    initializing = chroma.getOrCreateCollection({
-      name: FACTS_COLLECTION,
-      embeddingFunction: geminiEmbeddingFunction,
-    }).then((collection) => {
-      factsCollection = collection;
-      return collection;
-    }).finally(() => { initializing = null; });
+/** The collection for one embedding pair, created on first use with that pair recorded on it. */
+export function collectionFor(config: EmbeddingConfig): Promise<Collection> {
+  const name = collectionNameFor(config);
+  let pending = collections.get(name);
+  if (!pending) {
+    pending = chroma
+      .getOrCreateCollection({
+        name,
+        embeddingFunction: embeddingFunctionFor(config),
+        // Written down so a mismatch is something that can be noticed rather
+        // than guessed at from the name.
+        metadata: { embeddingModel: config.model, dimensions: config.dimensions },
+      })
+      .catch((error: unknown) => {
+        collections.delete(name);
+        throw error;
+      });
+    collections.set(name, pending);
   }
-  return awaitInitialization(initializing);
+  return awaitInitialization(pending);
+}
+
+/** What recall searches: the pair the live collection was built with, not necessarily today's setting. */
+export function getFactsCollection(): Promise<Collection> {
+  return collectionFor(activeEmbedding());
+}
+
+/** After a swap, so the next call opens the collection that is now live. */
+export function forgetCollections(): void {
+  collections.clear();
 }

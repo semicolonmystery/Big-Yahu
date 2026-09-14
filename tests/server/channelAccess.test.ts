@@ -59,13 +59,13 @@ describe('cross-channel access gate', () => {
     const channels = Array.from({ length: 110 }, (_, index) => ({ id: String(index), name: `channel-${index}`, type: ChannelType.GuildText }));
     for (const channel of channels) state.allowed.add(channel.id);
     const guild = { channels: { cache: new Map(channels.map((channel) => [channel.id, channel])) } } as unknown as Guild;
-    expect(readableChannelRoster(guild).split('\n')).toHaveLength(100);
+    expect(readableChannelRoster(guild)).toHaveLength(100);
 
     state.allowed.clear();
     state.allowed.add('0');
     state.allowed.add('1');
     channels[0].type = ChannelType.GuildAnnouncement;
     channels[1].type = ChannelType.GuildVoice;
-    expect(readableChannelRoster(guild)).toBe('<#0>(#channel-0)');
+    expect(readableChannelRoster(guild)).toEqual([{ id: '0', name: 'channel-0' }]);
   });
 });

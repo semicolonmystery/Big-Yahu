@@ -8,6 +8,6 @@
     "displayName": "Rolling Memory"
   },
   "devDependencies": {
-    "@big-yahu/plugin-sdk": "^3.0.0"
+    "@big-yahu/plugin-sdk": "^4"
   }
 }

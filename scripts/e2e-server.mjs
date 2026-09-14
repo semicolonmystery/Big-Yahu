@@ -51,7 +51,7 @@ async function startE2EServer() {
       env: {
         ...process.env,
         // Empty values intentionally block dotenv from filling live secrets.
-        DISCORD_TOKEN: '', DISCORD_GUILD_ID: '', GEMINI_API_KEY: '', PLUGIN_ENV_KEY: '',
+        DISCORD_TOKEN: '', DISCORD_GUILD_ID: '', OPENROUTER_API_KEY: '', PLUGIN_ENV_KEY: '',
         SQLITE_PATH: path.join(directory, 'e2e.sqlite3'),
         NODE_ENV: 'production', PORT: '3137', TRUSTED_PROXY_HOPS: '0',
         // The browser tests probe this separate local endpoint and fixture the

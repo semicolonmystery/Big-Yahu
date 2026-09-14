@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { searchFacts, listFactsPage, listAllFacts, deleteFact } from '../../db/repositories/factsRepo';
+import {
+  peopleIn, searchFacts, listFactsPage, listAllFacts, deleteFact } from '../../db/repositories/factsRepo';
 import { getMessages, getUsernames } from '../../db/repositories/cachedMessagesRepo';
 import { getSettings } from '../../db/repositories/settingsRepo';
 import { mentionedUserIds } from '@shared/discord';
@@ -123,7 +124,7 @@ factsRouter.get('/authors', async (_req, res) => {
 
   const counts = new Map<string, number>();
   for (const fact of facts) {
-    for (const authorId of fact.metadata.authorIds) {
+    for (const authorId of peopleIn(fact)) {
       counts.set(authorId, (counts.get(authorId) ?? 0) + 1);
     }
   }

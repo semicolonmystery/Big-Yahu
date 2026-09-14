@@ -1,13 +1,13 @@
 import { ActivityType, MessageType } from 'discord.js';
 import type { Message, TextBasedChannel } from 'discord.js';
-import { FinishReason } from '@google/genai';
-import type { GenerateContentResponse, Part, Schema } from '@google/genai';
-import { generate } from './generate';
+import { structured, UnreadableAnswerError } from './structured';
+import { factsMaterial, messagesMaterial, renderMaterial } from './material';
+import type { JsonSchema } from './jsonSchema';
 import { searchFacts } from '../db/repositories/factsRepo';
 import { getSettings } from '../db/repositories/settingsRepo';
-import { MAX_ESCALATION_DEPTH_HARD_CAP } from '@shared/constants';
+import { MAX_ESCALATION_DEPTH_HARD_CAP, formatNow } from '@shared/constants';
 import type { Fact } from '@shared/types';
-import type { ExtractionResult } from './schemas';
+import type { MessageImage } from '../bot/attachments';
 import { readTextAttachments, type TextAttachmentBudget } from '../bot/textAttachments';
 import { canExtractFrom } from '../db/repositories/channelSettingsRepo';
 
@@ -79,48 +79,6 @@ export async function windowMessagesWithAttachments(messages: Message[], budget?
   });
 }
 
-function describeAuthor(message: WindowMessage): string {
-  // The bot's own lines are labelled "you" and nothing else. Seeing its own
-  // nickname here made it talk about itself in the third person, as if some
-  // other bot had said it.
-  if (message.isSelf) return 'you';
-  const handle = message.displayName === message.authorUsername ? '' : ` aka ${message.authorUsername}`;
-  return `${message.displayName}${handle} <@${message.authorId}>`;
-}
-
-/**
- * Two conversations running at once in one channel are only tellable apart by
- * what replies to what, so every reply says which message it answers. The id is
- * given even when that message is outside the window: knowing a line belongs to
- * a thread you cannot see beats reading it as part of the one you can.
- */
-function describeReplyTo(message: WindowMessage): string {
-  if (!message.replyToId) return '';
-  const author = message.replyToAuthorId ? ` by <@${message.replyToAuthorId}>` : '';
-  return ` [replying to id=${message.replyToId}${author}]`;
-}
-
-/**
- * Says "not shown" rather than just "[image]". A bare marker reads as something
- * the model has and invites it to describe the contents; the point is the
- * opposite — the message had a picture, it is not blank, and you cannot see it.
- */
-function describeUnseenImages(message: WindowMessage): string {
-  const count = message.unseenImages ?? 0;
-  if (count <= 0) return '';
-  return count === 1 ? ' [image not shown]' : ` [${count} images not shown]`;
-}
-
-export function formatTranscript(messages: WindowMessage[]): string {
-  return messages
-    .map(
-      (message) =>
-        `[id=${message.id}]${describeReplyTo(message)} [${new Date(message.createdAt).toISOString()}] `
-        + `${describeAuthor(message)}: ${message.content}${describeUnseenImages(message)}`,
-    )
-    .join('\n');
-}
-
 /** Folds the unseen-picture counts into the window before it is written out. */
 export function markUnseenImages(messages: WindowMessage[], unseen: Map<string, number>): WindowMessage[] {
   if (unseen.size === 0) return messages;
@@ -140,17 +98,16 @@ export function mentionRoster(messages: WindowMessage[]): Map<string, string> {
   return roster;
 }
 
-/** Who the bot is in this server right now, so it recognises its own name. */
-export function describeSelf(message: Message): string {
+/**
+ * Who the bot is in this server right now, so it recognises its own name. The
+ * server nickname comes first: it is what people actually type at it.
+ */
+export function selfMaterial(message: Message): { id: string; names: string[] } | undefined {
   const client = message.client.user;
-  if (!client) return '';
+  if (!client) return undefined;
   const nickname = message.guild?.members.me?.displayName;
-  const names = [...new Set([nickname, client.displayName, client.username].filter(Boolean))];
-  return (
-    `You are <@${client.id}>. In this server you show up as "${names[0] ?? client.username}"`
-    + (names.length > 1 ? ` (also known as ${names.slice(1).map((name) => `"${name}"`).join(', ')})` : '')
-    + '. When people use that name, or reply to a message marked "you", they mean you.'
-  );
+  const names = [...new Set([nickname, client.displayName, client.username].filter((name): name is string => Boolean(name)))];
+  return { id: client.id, names };
 }
 
 const ACTIVITY_VERB: Record<number, string> = {
@@ -184,34 +141,23 @@ function describeActivity(activity: { type: number; name: string; details: strin
  * Someone with no presence is reported as offline rather than left out. Silence
  * reads to the model as missing data and invites a guess; "offline" is an answer.
  */
-export function describeActivities(
-  message: Message,
-  people: Array<{ id: string; displayName: string }>,
-): string {
+export function presenceFor(message: Message, ids: string[]): Map<string, { status: string; doing?: string }> {
   const guild = message.guild;
-  if (!guild) return '';
+  const found = new Map<string, { status: string; doing?: string }>();
+  if (!guild) return found;
 
-  const lines: string[] = [];
-  const seen = new Set<string>();
-
-  for (const person of people) {
-    if (seen.has(person.id)) continue;
-    seen.add(person.id);
-
-    const presence = guild.presences.cache.get(person.id);
+  for (const id of new Set(ids)) {
+    const presence = guild.presences.cache.get(id);
     if (!presence) {
-      lines.push(`${person.displayName} <@${person.id}> — offline, or hiding it`);
+      // Said outright rather than left out: silence reads as missing data and
+      // invites a guess, while "offline" is an answer.
+      found.set(id, { status: 'offline, or hiding it' });
       continue;
     }
-
     const doing = (presence.activities ?? []).map(describeActivity).filter(Boolean).join('; ');
-    lines.push(
-      `${person.displayName} <@${person.id}> — ${presence.status}`
-      + (doing ? `, ${doing}` : ', not doing anything Discord can see'),
-    );
+    found.set(id, { status: presence.status, ...(doing ? { doing } : {}) });
   }
-
-  return lines.join('\n');
+  return found;
 }
 
 /** Nobody needs a thousand names in a prompt; the useful ones are near the top anyway. */
@@ -228,56 +174,63 @@ const PEOPLE_LISTING_CAP = 150;
  * GuildMembers intent, so the listing says plainly that it is partial rather
  * than letting the model read absence as proof somebody is not in the server.
  */
-export function listGuildPeople(message: Message, nameContains?: string): string {
+export interface GuildPerson {
+  id: string;
+  name: string;
+  username?: string;
+  status: string;
+  doing?: string;
+}
+
+export function listGuildPeople(message: Message, nameContains?: string): {
+  people: GuildPerson[];
+  visibleOnly: true;
+  matching?: string;
+  shown?: number;
+  total?: number;
+} {
   const guild = message.guild;
-  if (!guild) return 'Not in a guild, so there is nobody to list.';
+  if (!guild) return { people: [], visibleOnly: true };
 
   const selfId = message.client.user?.id;
-  const lines = new Map<string, string>();
+  const found = new Map<string, GuildPerson>();
 
   for (const [id, presence] of guild.presences.cache) {
     if (id === selfId) continue;
     const member = presence.member;
     const name = member?.displayName ?? presence.user?.username ?? id;
-    const handle = presence.user?.username;
+    const username = presence.user?.username;
     const doing = (presence.activities ?? []).map(describeActivity).filter(Boolean).join('; ');
-    lines.set(
-      id,
-      `${name}${handle && handle !== name ? ` aka ${handle}` : ''} <@${id}> — ${presence.status}`
-      + (doing ? `, ${doing}` : ', not doing anything Discord can see'),
-    );
+    found.set(id, {
+      id, name, ...(username && username !== name ? { username } : {}),
+      status: presence.status, ...(doing ? { doing } : {}),
+    });
   }
 
   for (const [id, member] of guild.members.cache) {
-    if (id === selfId || lines.has(id)) continue;
-    const handle = member.user.username;
+    if (id === selfId || found.has(id)) continue;
+    const username = member.user.username;
     const name = member.displayName;
-    lines.set(id, `${name}${handle !== name ? ` aka ${handle}` : ''} <@${id}> — offline, or hiding it`);
+    found.set(id, {
+      id, name, ...(username !== name ? { username } : {}), status: 'offline, or hiding it',
+    });
   }
 
   const needle = nameContains?.trim().toLowerCase();
-  let listed = [...lines.values()];
-  if (needle) listed = listed.filter((line) => line.toLowerCase().includes(needle));
-
-  if (listed.length === 0) {
-    return needle
-      ? `Nobody visible matches "${nameContains}". They may be offline, or not in this server at all.`
-      : 'Nobody is visible right now.';
+  let listed = [...found.values()];
+  if (needle) {
+    listed = listed.filter((person) => `${person.name} ${person.username ?? ''}`.toLowerCase().includes(needle));
   }
 
   const capped = listed.slice(0, PEOPLE_LISTING_CAP);
-  return (
-    `${capped.join('\n')}\n\n`
-    + `This is everyone currently visible${listed.length > capped.length ? ` (${capped.length} of ${listed.length} shown)` : ''}. `
-    + 'It is not the full member list — people who are offline and have not spoken lately do not appear, '
-    + 'so somebody missing here is not proof they are not in the server.'
-  );
-}
-
-export function formatFacts(facts: Fact[]): string {
-  return facts
-    .map((fact) => `[factId=${fact.id}] [channelId=${fact.metadata.channelId}] ${fact.text}`)
-    .join('\n');
+  return {
+    people: capped,
+    // Never the full member list: whoever is offline and has not spoken lately
+    // is absent, so somebody missing is not proof they left.
+    visibleOnly: true,
+    ...(nameContains?.trim() ? { matching: nameContains.trim() } : {}),
+    ...(listed.length > capped.length ? { shown: capped.length, total: listed.length } : {}),
+  };
 }
 
 /** Discord's per-call maximum. */
@@ -326,8 +279,16 @@ export function effectiveMaxDepth(): number {
   return Math.min(getSettings().maxEscalationDepth, MAX_ESCALATION_DEPTH_HARD_CAP);
 }
 
-export interface EscalationOptions {
-  schema: Schema;
+/** What every escalatable answer carries, whatever else it holds. */
+export interface EscalatableResult {
+  needsMoreContext: boolean;
+  contextHint: string;
+}
+
+export interface EscalationOptions<T extends EscalatableResult> {
+  /** Which AI task's model list answers, such as `factExtraction`. */
+  aiTask: string;
+  schema: JsonSchema;
   systemInstruction: string;
   /** What the model is being asked to do with this window. */
   task: string;
@@ -335,15 +296,19 @@ export interface EscalationOptions {
   /** Anchor used to walk further back, through its own channel. */
   anchorMessage: Message;
   guildId: string;
-  /** Pictures from the window, attached after the text. */
-  imageParts?: Part[];
+  /** Pictures from the window, attached after the material. */
+  images?: MessageImage[];
+  /** Extra fields for the material, such as which message each picture came from. */
+  material?: Record<string, unknown>;
   attachmentBudget?: TextAttachmentBudget;
+  /** What to search older facts for when the answer asked for more context but gave no hint. */
+  hint?: (result: T) => string;
 }
 
 /**
  * Extraction answers a schema over a whole page of messages, so it needs far
- * more room than a chat reply. On thinking models the budget is shared with
- * thinking, which is what made the default cut answers off mid-document.
+ * more room than a chat reply. What cut answers off mid-document before was a
+ * budget far smaller than a full page's worth of facts.
  */
 const EXTRACTION_MAX_OUTPUT_TOKENS = 32_768;
 
@@ -355,60 +320,13 @@ const EXTRACTION_MAX_OUTPUT_TOKENS = 32_768;
  */
 const UNREADABLE_ANSWER_RETRIES = 2;
 
-/** A structured answer that could not be read, and whether a shorter one might be. */
-class UnreadableAnswerError extends Error {
-  readonly truncated: boolean;
-
-  constructor(message: string, truncated: boolean, cause?: unknown) {
-    super(message, { cause });
-    this.name = 'UnreadableAnswerError';
-    this.truncated = truncated;
-  }
-}
-
-/**
- * The response, not just its text: when JSON will not parse, the reason is
- * almost always in `finishReason`, and throwing the string away meant nobody
- * could tell a truncated answer from a malformed one.
- */
-function parseResponse<T>(response: GenerateContentResponse): T {
-  const raw = response.text;
-  const finishReason = response.candidates?.[0]?.finishReason;
-
-  if (finishReason === FinishReason.MAX_TOKENS) {
-    throw new UnreadableAnswerError(
-      `Gemini ran out of output budget after ${raw?.length ?? 0} characters`,
-      true,
-    );
-  }
-  if (!raw) {
-    throw new UnreadableAnswerError(
-      `Gemini returned an empty response (finishReason ${finishReason ?? 'unknown'})`,
-      false,
-    );
-  }
-
-  try {
-    return JSON.parse(raw) as T;
-  } catch (error) {
-    // Complete but malformed — the prompts quote verbatim text in double
-    // quotes, and one the model failed to escape lands here.
-    console.error(
-      `[ai] could not parse a structured answer: finishReason ${finishReason ?? 'unknown'}, `
-        + `${raw.length} characters, ${error instanceof Error ? error.message : String(error)}`,
-    );
-    console.error(`[ai] it began: ${raw.slice(0, 300)}`);
-    throw new UnreadableAnswerError('Gemini returned JSON that could not be parsed', false, error);
-  }
-}
-
 /**
  * Runs a structured extraction, and if the model says it cannot understand the
  * window without earlier conversation, widens the window with older messages
  * plus related stored facts and asks again. Bounded so it can never spin.
  */
-export async function runEscalatableExtraction<T extends ExtractionResult>(
-  options: EscalationOptions,
+export async function runEscalatableExtraction<T extends EscalatableResult>(
+  options: EscalationOptions<T>,
 ): Promise<T> {
   const settings = getSettings();
   const maxDepth = effectiveMaxDepth();
@@ -419,35 +337,24 @@ export async function runEscalatableExtraction<T extends ExtractionResult>(
   for (let depth = 0; ; depth += 1) {
     const isFinalAttempt = depth >= maxDepth;
 
-    const buildPrompt = (windowMessages: WindowMessage[]): string => {
-      const sections = [options.task];
-      if (relatedFacts.length > 0) {
-        sections.push(`Facts already known about this server:\n${formatFacts(relatedFacts)}`);
-      }
-      if (olderMessages.length > 0) {
-        sections.push(`Earlier messages, for background:\n${formatTranscript(olderMessages)}`);
-      }
-      sections.push(`Messages to work from:\n${formatTranscript(windowMessages)}`);
-      if (isFinalAttempt) {
-        sections.push('No further context is available. Give your best answer using only what is above.');
-      }
-      return sections.join('\n\n');
-    };
+    const buildPrompt = (windowMessages: WindowMessage[]): string => renderMaterial({
+      now: formatNow(settings.timezone),
+      task: options.task,
+      ...options.material,
+      ...(relatedFacts.length > 0 ? { knownFacts: factsMaterial(relatedFacts) } : {}),
+      ...(olderMessages.length > 0 ? { earlierMessages: messagesMaterial(olderMessages) } : {}),
+      messages: messagesMaterial(windowMessages),
+      // Nothing more can be fetched, so the answer has to be made from what is here.
+      ...(isFinalAttempt ? { noFurtherContext: true } : {}),
+    });
 
-    const imageParts = options.imageParts ?? [];
-    const ask = async (windowMessages: WindowMessage[]): Promise<T> => {
-      const prompt = buildPrompt(windowMessages);
-      const response = await generate(
-        imageParts.length > 0 ? [{ role: 'user', parts: [{ text: prompt }, ...imageParts] }] : prompt,
-        {
-          systemInstruction: options.systemInstruction,
-          responseMimeType: 'application/json',
-          responseSchema: options.schema,
-          maxOutputTokens: EXTRACTION_MAX_OUTPUT_TOKENS,
-        },
-      );
-      return parseResponse<T>(response);
-    };
+    const ask = (windowMessages: WindowMessage[]): Promise<T> => structured<T>(options.aiTask, {
+      system: options.systemInstruction,
+      user: buildPrompt(windowMessages),
+      images: options.images,
+      schema: options.schema,
+      maxOutputTokens: EXTRACTION_MAX_OUTPUT_TOKENS,
+    });
 
     // A page that cannot be answered whole is worth asking about in part. Only
     // the oldest messages are dropped, so what survives is the most recent and
@@ -483,7 +390,7 @@ export async function runEscalatableExtraction<T extends ExtractionResult>(
     );
     olderMessages = [...fetched, ...olderMessages];
 
-    const hint = result.contextHint?.trim() || result.facts.map((fact) => fact.text).join(' ');
+    const hint = result.contextHint.trim() || options.hint?.(result).trim() || '';
     if (hint) {
       relatedFacts = (await searchFacts(hint, settings.factSearchTopK, { guildId: options.guildId }))
         .filter((fact) => canExtractFrom(fact.metadata.channelId));

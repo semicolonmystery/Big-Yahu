@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, primaryKey, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, primaryKey, index } from 'drizzle-orm/sqlite-core';
 
 /** Mono-account system: this table holds at most one row, always id 1. */
 export const adminUser = sqliteTable('admin_user', {
@@ -30,11 +30,20 @@ export const settings = sqliteTable('settings', {
   rateLimitMessage: text('rate_limit_message')
     .notNull()
     .default("You've hit me up a lot this hour — give me a bit and try again."),
-  chatModel: text('chat_model').notNull().default('gemini-3.1-flash-lite'),
   timezone: text('timezone').notNull().default('UTC'),
   retryAttempts: integer('retry_attempts').notNull().default(2),
   retryDelayMs: integer('retry_delay_ms').notNull().default(3000),
   duplicateDistance: integer('duplicate_distance').notNull().default(25),
+  /** What new facts are embedded with. Changing either rebuilds the collection. */
+  embeddingModel: text('embedding_model').notNull().default('openai/text-embedding-3-large'),
+  embeddingDimensions: integer('embedding_dimensions').notNull().default(1536),
+  /**
+   * What the collection recall actually searches was built with. It trails the
+   * two above until a re-embed finishes, because a query embedded with one model
+   * and compared against another produces scores that look fine and mean nothing.
+   */
+  activeEmbeddingModel: text('active_embedding_model').notNull().default(''),
+  activeEmbeddingDimensions: integer('active_embedding_dimensions').notNull().default(0),
   modelFailureThreshold: integer('model_failure_threshold').notNull().default(3),
   modelRestMinutes: integer('model_rest_minutes').notNull().default(120),
   visionEnabled: integer('vision_enabled', { mode: 'boolean' }).notNull().default(true),
@@ -43,7 +52,7 @@ export const settings = sqliteTable('settings', {
   crossChannelMessages: integer('cross_channel_messages').notNull().default(30),
   overloadMessage: text('overload_message')
     .notNull()
-    .default("Gemini's getting hammered right now and won't talk to me. Try again in a minute."),
+    .default('every model I can reach is busy right now, try again in a minute'),
   // One message for four unrelated failures is why the bot said "no time" when
   // it had actually hit a bug. These split the model being unavailable from the
   // bot running out of room, and both from something being broken.
@@ -79,6 +88,12 @@ export const pluginState = sqliteTable('plugin_state', {
   id: text('id').primaryKey(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull(),
   configJson: text('config_json').notNull(),
+  /**
+   * Whether this plugin's model calls go through the shared Plugins list. Off,
+   * and each job it declares gets a list of its own. Host-side rather than in
+   * the plugin's config: which models answer is the operator's business.
+   */
+  useSharedModels: integer('use_shared_models', { mode: 'boolean' }).notNull().default(true),
   updatedAt: integer('updated_at').notNull(),
 });
 
@@ -100,6 +115,28 @@ export const replyAttempts = sqliteTable('reply_attempts', {
   userId: text('user_id').notNull(),
   createdAt: integer('created_at').notNull(),
 }, (table) => [index('reply_attempts_user_time').on(table.userId, table.createdAt)]);
+
+/**
+ * One row per model call, as OpenRouter billed it. `cost` is what the account
+ * was actually charged in US dollars, peak pricing and cache discounts already
+ * applied, so nothing here multiplies tokens by a price that can drift from the
+ * bill. A float is exact enough for sums of fractions of a cent.
+ */
+export const aiUsage = sqliteTable('ai_usage', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  at: integer('at').notNull(),
+  task: text('task').notNull(),
+  model: text('model').notNull(),
+  /** The upstream host that actually served the call, as OpenRouter reported it. */
+  provider: text('provider'),
+  promptTokens: integer('prompt_tokens').notNull().default(0),
+  cachedTokens: integer('cached_tokens').notNull().default(0),
+  completionTokens: integer('completion_tokens').notNull().default(0),
+  reasoningTokens: integer('reasoning_tokens').notNull().default(0),
+  cost: real('cost').notNull().default(0),
+  latencyMs: integer('latency_ms').notNull(),
+  outcome: text('outcome').notNull(),
+}, (table) => [index('ai_usage_at').on(table.at)]);
 
 /** Tracks how far the hourly extraction has read in each channel. */
 export const channelCheckpoints = sqliteTable('channel_checkpoints', {
@@ -139,21 +176,32 @@ export const pluginEnv = sqliteTable(
   (table) => [primaryKey({ columns: [table.pluginId, table.key] })],
 );
 
-/**
- * The pool of chat models. The highest weight is tried first; a model that
- * fails repeatedly is rested for a while rather than retried into the ground.
- */
-export const chatModels = sqliteTable('chat_models', {
-  model: text('model').primaryKey(),
-  weight: integer('weight').notNull().default(100),
-  consecutiveFailures: integer('consecutive_failures').notNull().default(0),
-  restingUntil: integer('resting_until'),
-  // A model the API says does not exist is not unwell, it is gone — a rest
-  // period would just retry it forever. Retiring is permanent until the
-  // operator presses Reset errors, which is the only thing that clears it.
-  retired: integer('retired', { mode: 'boolean' }).notNull().default(false),
-  lastError: text('last_error'),
-  createdAt: integer('created_at').notNull(),
+/** One ordered list of OpenRouter models per AI task. */
+export const taskModels = sqliteTable(
+  'task_models',
+  {
+    task: text('task').notNull(),
+    model: text('model').notNull(),
+    /**
+     * The OpenRouter host this row is pinned to, such as `deepseek`. Empty lets
+     * OpenRouter choose, which can mean a host that charges more.
+     */
+    upstream: text('upstream').notNull().default(''),
+    weight: integer('weight').notNull().default(100),
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    restingUntil: integer('resting_until'),
+    retired: integer('retired', { mode: 'boolean' }).notNull().default(false),
+    lastError: text('last_error'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.task, table.model] })],
+);
+
+/** Per-task settings that are not about which models: for now, how hard it may reason. */
+export const aiTasks = sqliteTable('ai_tasks', {
+  task: text('task').primaryKey(),
+  reasoningEffort: text('reasoning_effort').notNull().default('none'),
+  updatedAt: integer('updated_at').notNull(),
 });
 
 /** Per-plugin key/value store. Rows are only ever reachable through that plugin's own context. */

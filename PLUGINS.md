@@ -53,7 +53,7 @@ without disturbing anything npm itself cares about:
 ### The API version
 
 ```json
-{ "devDependencies": { "@big-yahu/plugin-sdk": "^3" } }
+{ "devDependencies": { "@big-yahu/plugin-sdk": "^4" } }
 ```
 
 **Depending on the SDK is how you declare the contract version.** Its major version *is*
@@ -69,7 +69,7 @@ A plugin that does not use the SDK — plain JavaScript, no build step, nothing 
 — says it directly instead:
 
 ```json
-{ "bigYahu": { "displayName": "My Plugin", "apiVersion": 3 } }
+{ "bigYahu": { "displayName": "My Plugin", "apiVersion": 4 } }
 ```
 
 Do not do both. When the two disagree the plugin is refused rather than one being quietly
@@ -84,7 +84,7 @@ SDK and imported by the bot, so the two cannot disagree.
 
 **API v3 is intentionally incompatible with external v2 plugins.** They remain installed
 and visible but are marked incompatible and are not imported. To migrate, update the
-dependency to `@big-yahu/plugin-sdk` `^3` (or the explicit `bigYahu.apiVersion` to `3` for
+dependency to `@big-yahu/plugin-sdk` `^4` (or the explicit `bigYahu.apiVersion` to `4` for
 SDK-less JavaScript) and update every tool handler's second parameter from
 `PluginContext` to `PluginToolContext`. The ordinary plugin services are still there;
 tool handlers now also receive the authoritative `ctx.invocation` described in section 5.
@@ -120,7 +120,7 @@ Minimal complete `package.json`:
     "displayName": "My Plugin"
   },
   "devDependencies": {
-    "@big-yahu/plugin-sdk": "^3"
+    "@big-yahu/plugin-sdk": "^4"
   }
 }
 ```
@@ -303,7 +303,7 @@ reply follows.
 Good for lightweight, per-message logic that does not need the reply pipeline — keyword
 watching, canned replies, logging, moderation signals. A plugin in this shape would scan
 `message.content` for trigger phrases and reply directly with `message.reply(...)`,
-without spending a Gemini call. Rolling memory uses this hook to age its records;
+without spending a model call. Rolling memory uses this hook to age its records;
 reputation and Discord Admin do not.
 
 ### `onHourlyCheck`
@@ -320,7 +320,7 @@ onHourlyCheck?(ctx: OnHourlyCheckContext): Promise<void> | void;
 Fires once per channel, per periodic extraction pass, from `runExtractionForChannel` in
 `src/server/ai/factExtraction.ts`. It runs **after** new messages since the channel's
 checkpoint have been fetched but **before** they are cached into `cached_messages` and
-before the fact-extraction Gemini call is made. `newMessages` is that batch, oldest
+before the fact-extraction model call is made. `newMessages` is that batch, oldest
 first, already filtered to non-bot messages with non-empty content. If there is nothing
 new for the channel, the checkpoint is advanced and `onHourlyCheck` is not called at all
 for that pass.
@@ -442,11 +442,28 @@ beforeReply?(ctx: BeforeReplyContext): Promise<BeforeReplyResult | void> | Befor
 Fires from `handleMention` in `src/server/bot/replyPipeline.ts`. By this point the topic
 has been extracted, facts have been retrieved from ChromaDB, their source messages
 resolved, and a full `DraftPrompt` has been assembled — this is the last stop before the
-reply-generation Gemini call. It is the only hook that can redirect the reply itself —
-replace the whole draft, or skip it. `annotateContext`, immediately before it, can only
-add to what the prompt says, not change what happens next. See section 4.
+reply-generation call. It is the only hook that can redirect the reply itself — replace
+the whole draft, or skip it. `annotateContext`, immediately before it, can only add to
+what the prompt says, not change what happens next. See section 4.
 
-All six hooks are awaited **in sequence**, one plugin at a time, in a deterministic
+### `afterReply`
+
+```ts
+export interface AfterReplyContext extends PluginContext {
+  taggedMessage: Message;
+  sentMessageId: string | null; // null when the bot stayed silent, or failed
+  silent: boolean;
+}
+afterReply?(ctx: AfterReplyContext): Promise<void> | void;
+```
+
+Fires once the reply is already in the channel. Nobody is waiting on it, so this is where
+work that must happen but nobody should sit through belongs — a model call of your own,
+tidying, bookkeeping. `rolling-memory` does its upkeep here for exactly that reason. A
+throw is logged and swallowed: the reply has already succeeded and nothing here may
+undo that.
+
+All seven hooks are awaited **in sequence**, one plugin at a time, in a deterministic
 load order (section 10) — never in parallel.
 
 ---
@@ -485,23 +502,25 @@ export interface BeforeReplyResult {
 ```ts
 export interface DraftPrompt {
   systemInstruction: string;
-  conversation: Content[];         // Content from @google/genai — the chat turns sent to Gemini
-  retrievedFacts: Fact[];          // facts pulled from ChromaDB for this reply
-  sourceMessages: SourceMessage[]; // the Discord messages those facts were derived from
+  material: Record<string, unknown>; // the JSON document the model reads
+  images: DraftImage[];              // pictures from the conversation
+  retrievedFacts: Fact[];            // facts pulled from ChromaDB for this reply
+  sourceMessages: SourceMessage[];   // the Discord messages those facts were derived from
 }
 ```
 
 - `systemInstruction` — the system prompt, already carrying every enabled plugin's
   `instructions` (section 7). Append to it rather than replacing it outright, unless you
   deliberately want to drop the base instruction.
-- `conversation` — the actual turns handed to Gemini: the formatted transcript, the
-  extracted topic, and the facts-with-sources, already assembled. Editing this is more
-  invasive than editing `systemInstruction`, since you are rewriting what the model
-  literally reads as the user turn.
-- `retrievedFacts` / `sourceMessages` — informational at this stage; the pipeline has
-  already used them to build `conversation` and reuses `retrievedFacts` afterwards for
-  the reply log. Changing them here does not retroactively change text already baked
-  into `conversation`.
+- `material` — everything that changes from reply to reply, as one JSON document: `now`,
+  `messages`, `people`, `memory.facts`, `channel`, `requester`, and whatever plugins have
+  added. Add a key and it is a field the model can see; the rules for reading it belong in
+  your `instructions`, which are cached, rather than in the data. Do not assemble prose
+  here — the whole point is that the model is given data, and that message text is escaped
+  so nobody can type their way into the structure.
+- `images` — `{ messageId, mimeType, data }`, provider-neutral.
+- `retrievedFacts` / `sourceMessages` — the facts already in `material.memory`, and the
+  messages behind them. `retrievedFacts` is also what the reply log records.
 
 Minimal example — appending a note to the system instruction:
 
@@ -512,6 +531,19 @@ beforeReply({ draftPrompt, getConfig }) {
     draftPrompt: {
       ...draftPrompt,
       systemInstruction: `${draftPrompt.systemInstruction}\n\n${styleNote}`,
+    },
+  };
+},
+```
+
+Or adding a field of your own to the material:
+
+```ts
+beforeReply({ draftPrompt, database }) {
+  return {
+    draftPrompt: {
+      ...draftPrompt,
+      material: { ...draftPrompt.material, myPluginState: read(database) },
     },
   };
 },
@@ -544,6 +576,8 @@ export interface PluginTool {
   parameters: Record<string, unknown>;
   /** Offer and run this tool only for a requester configured as a controller. */
   requiresController?: boolean;
+  /** Nothing is expected back: the reply finishes as soon as the message is written. */
+  effect?: boolean;
   /** Offer and run this tool only while this top-level config key is exactly true. */
   enabledByConfig?: string;
   handler(args: Record<string, unknown>, ctx: PluginToolContext): Promise<unknown> | unknown;
@@ -567,6 +601,12 @@ original Discord request.
 
 Two declarative access gates cover the common cases:
 
+- `effect: true` says nothing is expected back. Once the model has written its message and
+  everything it called was one of these, the reply is finished then and there instead of
+  going round again — which is both a round trip saved and one fewer chance for it to
+  narrate what it just did. Reputation's assessment and rolling memory's bookkeeping are
+  the shape this is for. A tool that answers a question the reply depends on must leave it
+  off, or the model will never see what it asked for.
 - `requiresController: true` keeps the tool out of the model's tool list unless the
   requester's Discord id is configured as a controller.
 - `enabledByConfig: 'enableSomething'` keeps it out unless that top-level key in the
@@ -889,6 +929,28 @@ quote when explicitly asked to remember one, never for ordinary chat").
 A throwing `instructions` function is caught and logged like a hook; the plugin simply
 contributes nothing to the prompt for that reply.
 
+Keep it identical from call to call where you can. It sits in the system prompt, which the
+provider caches; text that changes every reply belongs in `material` (section 4) instead,
+where it costs a cache miss only on the part that actually changed.
+
+### `aiTasks`
+
+```ts
+aiTasks?: Array<{ id: string; label: string; description?: string; needsImages?: boolean }>;
+```
+
+The jobs your plugin sends to a model. Declare them and the operator sees them by name in
+Settings, and can give each its own ordered list of models — otherwise every plugin call
+goes through the shared **Plugins** list. `ctx.generate` and `ctx.generateStructured` take
+`task` to pick between them; leave it out and your first one is used.
+
+```ts
+aiTasks: [{ id: 'upkeep', label: 'Upkeep', description: 'Deciding what is worth keeping.' }],
+```
+
+You never name a model, a provider or an API key. What answers your call is the operator's
+choice, and it can change under you without your plugin knowing or caring.
+
 ---
 
 ## 8. State: config vs secrets vs storage vs database
@@ -1060,8 +1122,8 @@ export interface PluginContext {
   factsCollection: Collection;
   saveFacts(candidates: FactCandidate[]): Promise<string[]>;
   resolveUserNames(ids: string[]): Record<string, string>;
-  generate(contents: ContentListUnion, config: GenerateContentConfig): Promise<GenerateContentResponse>;
-  ai: GoogleGenAI;
+  generate(request: PluginGenerateRequest): Promise<{ text: string }>;
+  generateStructured<T>(request: PluginStructuredRequest): Promise<T>;
   discordClient: Client | null;
   getConfig<T = Record<string, unknown>>(): T;
   getEnv(): Record<string, string>;
@@ -1083,16 +1145,20 @@ export interface PluginContext {
 - `resolveUserNames` — display names for Discord user ids, gateway first and message cache
   behind it. Ids nothing can name are simply absent from the result. Page cells of kind
   `user` are resolved for you; this is for everything else.
-- `generate` — asks a model **through the bot's pool**, which is what the operator
-  configures in the panel: several models in a weighted order, tried best-first, one that
-  keeps failing counted and rested and skipped, transient failures retried on the
-  operator's settings. Use this for a chat completion. Naming your own model puts you
-  outside all of it — it works right up until that model is the one having a bad day, and
-  then your plugin quietly stops while the rest of the bot carries on. Throws once every
-  model has been tried and none answered.
-- `ai` — the shared `GoogleGenAI` client, already constructed with the configured key. For
-  what the pool does not cover: embeddings, file uploads, anything that is not a chat
-  completion.
+- `generate` — asks a model **through a list the operator configures**: models in order,
+  tried best first, one that keeps failing rested and skipped, and the next tried instead.
+  You pass `{ instruction, prompt, images?, task? }` and get `{ text }` back. Which models
+  answer, and how hard they may think, is the operator's business, not yours. Throws once
+  every model on the list has been tried and none answered.
+- `generateStructured` — the same, for an answer your code reads. You pass a `schema`
+  (`PluginJsonSchema`: objects with every property required, arrays, strings with an
+  optional `enum` or `pattern`, numbers, booleans) and get that shape back, already checked
+  against it. The host asks again by itself if the first answer does not fit, so anything
+  you receive is usable. Throws if it cannot be read.
+- `aiTasks` — declare the jobs you send to a model (see section 7). Each becomes a list in
+  the panel once the operator switches your plugin off the shared one, and `task` on a
+  request picks between them. There is no raw model client: a plugin never names a model,
+  a provider or a key.
 - `discordClient` — the logged-in `discord.js` client, or **`null`** when the gateway
   isn't connected. Hooks always have a live client, since Discord events are what
   trigger them; a panel or tool reached from the admin panel may run with the bot
@@ -1201,7 +1267,7 @@ Directory, once installed:
     "displayName": "Quote Book"
   },
   "devDependencies": {
-    "@big-yahu/plugin-sdk": "^3"
+    "@big-yahu/plugin-sdk": "^4"
   }
 }
 ```

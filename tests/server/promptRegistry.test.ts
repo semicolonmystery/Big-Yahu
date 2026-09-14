@@ -3,9 +3,8 @@ import {
   MAX_PROMPT_BYTES,
   PROMPTS,
   PROMPT_IDS,
-  placeholdersIn,
+  describesOldFormat,
   promptRejection,
-  renderPrompt,
 } from '../../src/server/ai/prompts/registry';
 
 describe('what a prompt may be replaced with', () => {
@@ -15,25 +14,12 @@ describe('what a prompt may be replaced with', () => {
     }
   });
 
-  it('refuses a reply prompt that drops a placeholder it cannot do without', () => {
-    // Without {{now}} the bot silently stops knowing the date, and every
-    // relative date it resolves from then on is wrong.
-    const withoutNow = PROMPTS.reply.fallback.replace('{{now}}', 'the current time');
-    expect(promptRejection('reply', withoutNow)).toContain('{{now}}');
-
-    const withoutGuild = PROMPTS.reply.fallback.replace('{{guildId}}', '123');
-    expect(promptRejection('reply', withoutGuild)).toContain('{{guildId}}');
-  });
-
-  it('names every missing placeholder at once rather than one per attempt', () => {
-    const rejection = promptRejection('reply', 'Say something. {{language}}');
-    expect(rejection).toContain('{{now}}');
-    expect(rejection).toContain('{{guildId}}');
-  });
-
-  it('refuses a placeholder nothing will ever replace', () => {
-    const rejection = promptRejection('factExtraction', 'Read this. {{now}} {{nickname}}');
-    expect(rejection).toContain('{{nickname}}');
+  it('takes whatever an operator writes, braces and all', () => {
+    // Nothing is substituted any more, so `{{whatever}}` is simply text. It is
+    // their prompt; refusing it would be the panel being clever for no reason.
+    expect(promptRejection('reply', 'answer people, briefly')).toBeNull();
+    expect(promptRejection('reply', 'answer people in {{language}}')).toBeNull();
+    expect(promptRejection('factExtraction', 'remember what matters {{now}}')).toBeNull();
   });
 
   it('refuses an empty prompt and one past the size cap', () => {
@@ -41,28 +27,32 @@ describe('what a prompt may be replaced with', () => {
     expect(promptRejection('topicExtraction', 'x'.repeat(MAX_PROMPT_BYTES + 1))).toContain('KB');
   });
 
-  it('asks for nothing the topic prompt does not substitute', () => {
-    expect(promptRejection('topicExtraction', 'Work out the topic.')).toBeNull();
+});
+
+describe('a prompt written for the old transcript', () => {
+  it('recognises the markers and the time placeholder that no longer exist', () => {
+    for (const body of [
+      'Lines are tagged [id=...].',
+      'A reply carries [replying to id=...].',
+      'Memories look like [factId=abc].',
+      'A line marked [image not shown] had a picture.',
+      'Right now it is {{now}}.',
+    ]) expect(describesOldFormat(body)).toBe(true);
+  });
+
+  it('leaves what ships, and anything written for the material, alone', () => {
+    for (const id of PROMPT_IDS) expect(describesOldFormat(PROMPTS[id].fallback)).toBe(false);
+    expect(describesOldFormat('Read `messages`, follow `replyTo`, reply in {{language}}.')).toBe(false);
   });
 });
 
-describe('rendering a prompt', () => {
-  it('substitutes every value and leaves nothing behind', () => {
-    const rendered = renderPrompt(PROMPTS.reply.fallback, {
-      now: '10.9.2026 21:00', language: 'Czech', guildId: '100000000000000001',
-    });
-    expect(rendered).toContain('10.9.2026 21:00');
-    expect(rendered).toContain('discord.com/channels/100000000000000001/');
-    expect(placeholdersIn(rendered)).toEqual([]);
+describe('what ships', () => {
+  it('asks for no substitution at all, so every call sends the same bytes', () => {
+    for (const id of PROMPT_IDS) expect(PROMPTS[id].fallback).not.toContain('{{');
   });
 
-  it('gives the model exactly what was saved, with nothing appended', () => {
-    const body = 'be nice {{now}} {{language}} {{guildId}}';
-    expect(renderPrompt(body, { now: 'n', language: 'l', guildId: 'g' })).toBe('be nice n l g');
-    expect(renderPrompt('Work it out.', {})).toBe('Work it out.');
-  });
-
-  it('leaves a placeholder it was given no value for alone rather than blanking it', () => {
-    expect(renderPrompt('at {{now}} in {{language}}', { now: 'noon' })).toBe('at noon in {{language}}');
+  it('never hands the model the server id: it names a message and the bot links it', () => {
+    expect(PROMPTS.reply.fallback).not.toContain('discord.com/channels');
+    expect(PROMPTS.reply.fallback).toContain('<link:MESSAGE_ID>');
   });
 });

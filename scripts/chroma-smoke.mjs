@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { ChromaClient } from 'chromadb';
 
 // Run against an explicitly selected disposable Chroma instance. No application
-// modules, Discord credentials, Gemini calls, or existing collections are used.
+// modules, Discord credentials, model calls, or existing collections are used.
 const host = process.env.CHROMA_HOST || '127.0.0.1';
 const port = Number(process.env.CHROMA_PORT);
 assert(Number.isInteger(port) && port > 0 && port <= 65535, 'Set CHROMA_PORT to the disposable Chroma instance port');
@@ -51,7 +51,11 @@ try {
   await collection.add({
     ids: ['fact-a', 'fact-b', 'foreign-fact'],
     documents: ['apple fruit', 'router network', 'apple elsewhere'],
-    metadatas: [metadata, { ...metadata, messageIds: ['message-b'] }, { ...metadata, guildId: 'other-guild' }],
+    metadatas: [
+      { ...metadata, subjectIds: ['person-1'], dateMin: 20000, dateMax: 20000 },
+      { ...metadata, messageIds: ['message-b'], authorIds: ['person-2'], subjectIds: ['person-3'], dateMin: 20010, dateMax: 20012 },
+      { ...metadata, guildId: 'other-guild', subjectIds: ['person-1'] },
+    ],
   });
   assert.equal(await collection.count(), 3);
   const fetched = await collection.get({ ids: ['fact-a'], include: ['documents', 'metadatas', 'embeddings'] });
@@ -68,6 +72,25 @@ try {
   assert.equal(query.ids[0][0], 'fact-a');
   assert(!query.ids[0].includes('foreign-fact'), 'Guild metadata filtering must exclude the foreign fixture');
   assert(Math.abs(query.distances[0][0]) < 0.00001);
+
+  // Recall narrows on who a fact concerns and when it happened: membership in
+  // an array, either of two array fields, and an overlapping numeric range.
+  const bySubject = await collection.get({
+    where: { $and: [{ guildId: 'smoke-guild' }, { subjectIds: { $contains: 'person-1' } }] },
+  });
+  assert.deepEqual(bySubject.ids, ['fact-a']);
+  const byEitherField = await collection.get({
+    where: { $and: [
+      { guildId: 'smoke-guild' },
+      { $or: [{ subjectIds: { $contains: 'person-2' } }, { authorIds: { $contains: 'person-2' } }] },
+    ] },
+  });
+  assert.deepEqual(byEitherField.ids, ['fact-b']);
+  const inRange = await collection.query({
+    queryTexts: ['apple fruit'], nResults: 3,
+    where: { $and: [{ guildId: 'smoke-guild' }, { dateMin: { $lte: 20011 } }, { dateMax: { $gte: 20005 } }] },
+  });
+  assert.deepEqual(inRange.ids[0], ['fact-b']);
 
   // Superseding a fact updates its content/sources without breaking its ID.
   await collection.update({
@@ -87,7 +110,7 @@ try {
   await reopened.delete({ ids: ['fact-b'] });
   assert.equal(await reopened.count(), 2);
   assert.deepEqual((await reopened.get({ ids: ['fact-b'] })).ids, []);
-  console.log('Chroma smoke passed: create/add/get, metadata arrays, filtered vector query, stable-ID update, new client, record delete.');
+  console.log('Chroma smoke passed: create/add/get, metadata arrays, filtered vector query, array membership, either-field and date-range filters, stable-ID update, new client, record delete.');
 } finally {
   if (created) {
     // This exact random collection was created above; never reset the server.

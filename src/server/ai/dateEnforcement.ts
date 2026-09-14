@@ -1,6 +1,5 @@
-import { Type } from '@google/genai';
-import type { Schema } from '@google/genai';
-import { generate } from './generate';
+import { structured } from './structured';
+import type { JsonSchema } from './jsonSchema';
 import { getSettings } from '../db/repositories/settingsRepo';
 import { formatNow } from '@shared/constants';
 import { hasRelativeDate } from './relativeDates';
@@ -25,22 +24,24 @@ export function hasUnresolvedRelativeDate(text: string): boolean {
   return hasRelativeDate(text.replace(QUOTED_SPAN, ' '));
 }
 
-const resolvedSchema: Schema = {
-  type: Type.OBJECT,
+const resolvedSchema: JsonSchema = {
+  type: 'object',
   properties: {
     facts: {
-      type: Type.ARRAY,
+      type: 'array',
       items: {
-        type: Type.OBJECT,
+        type: 'object',
         properties: {
-          index: { type: Type.INTEGER, description: 'The index of the fact, exactly as given to you.' },
-          text: { type: Type.STRING, description: 'The same fact with every relative date replaced by a real one.' },
+          index: { type: 'integer', description: 'The index of the fact, exactly as given to you.' },
+          text: { type: 'string', description: 'The same fact with every relative date replaced by a real one.' },
         },
         required: ['index', 'text'],
+        additionalProperties: false,
       },
     },
   },
   required: ['facts'],
+  additionalProperties: false,
 };
 
 const INSTRUCTION = `You rewrite stored facts so they still make sense months from now.
@@ -75,13 +76,13 @@ export async function resolveRelativeDates(items: DatedText[]): Promise<string[]
     .join('\n\n');
 
   try {
-    const response = await generate(`Facts to fix:\n\n${listing}`, {
-      systemInstruction: `${INSTRUCTION}\n\nRight now it is ${formatNow(settings.timezone)}.`,
-      responseMimeType: 'application/json',
-      responseSchema: resolvedSchema,
+    // The current time goes with the facts rather than into the instruction, so
+    // the instruction stays the same from call to call and can be cached.
+    const parsed = await structured<{ facts?: Array<{ index?: unknown; text?: unknown }> }>('dateRepair', {
+      system: INSTRUCTION,
+      user: `Right now it is ${formatNow(settings.timezone)}.\n\nFacts to fix:\n\n${listing}`,
+      schema: resolvedSchema,
     });
-
-    const parsed = JSON.parse(response.text ?? '{}') as { facts?: Array<{ index?: unknown; text?: unknown }> };
     const resolved = items.map((item) => item.text);
     for (const entry of parsed.facts ?? []) {
       const index = typeof entry.index === 'number' ? entry.index : Number.NaN;

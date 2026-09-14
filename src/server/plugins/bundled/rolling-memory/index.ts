@@ -1,6 +1,10 @@
-import { Type } from '@google/genai';
-import type { Schema } from '@google/genai';
-import type { BigYahuPlugin, PluginContext, PluginField, PluginPageRow } from '@big-yahu/plugin-sdk';
+import type {
+  BigYahuPlugin,
+  PluginContext,
+  PluginField,
+  PluginJsonSchema,
+  PluginPageRow,
+} from '@big-yahu/plugin-sdk';
 import {
   DEFAULT_CONFIG,
   MIN_SURVIVING_FRACTION,
@@ -12,12 +16,12 @@ import {
 } from './memories';
 import type { MemoryView, RollingMemoryConfig } from './memories';
 import {
-  clearAll,
   createMemory,
   deleteMemories,
-  expiredMemories,
+  departingMemories,
   linkChannels,
   listMemories,
+  markLeaving,
   open,
   refreshMemories,
   reviseMemory,
@@ -48,7 +52,8 @@ The test is one question: **if you are shown a message an hour from now, would t
 Err towards remembering. A memory that turns out not to matter fades on its own in a few messages and costs nothing; a conversation you failed to write down is one you cannot follow later. Holding several at once is normal and expected — people talk about several things at once.
 
 Reading what you hold:
-- Each memory comes with a score between 0 and 1 and when it was last touched. The score is how much life it has left — it drops with every message anyone sends you, so a thread nobody comes back to fades out on its own.
+- What you are holding is in \`shortTermMemory\` in the material, each with its \`id\`, its \`text\`, the channels it belongs to, its \`life\` and when it was \`lastTouched\`. An empty list means you are holding nothing: if this conversation is about anything at all, start a memory for it.
+- \`life\` is a score between 0 and 1: how much life the memory has left. It drops with every message anyone sends you, so a thread nobody comes back to fades out on its own.
 - The two mean different things and you need both. A memory at 0.9 last touched two days ago is dead anyway, because nothing has happened since. One at 0.2 in a channel that has been going all morning is very much alive.
 - Use them out loud. Unlike some of what your plugins tell you, these are yours to act on openly. "jo tos říkal že budeš zpátky v šest" is exactly the point of them.
 
@@ -87,63 +92,72 @@ function readConfig(ctx: PluginContext): RollingMemoryConfig {
   return withDefaults(ctx.getConfig<Partial<RollingMemoryConfig>>());
 }
 
-const compactionSchema: Schema = {
-  type: Type.OBJECT,
-  properties: {
-    keep: {
-      type: Type.ARRAY,
-      description: 'The memories to keep, rewritten where two of them have been merged into one.',
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          id: { type: Type.INTEGER, description: 'The id of the memory this entry replaces.' },
-          text: { type: Type.STRING, description: 'Its text, merged or unchanged.' },
-        },
-        required: ['id', 'text'],
-      },
-    },
-  },
-  required: ['keep'],
-};
-
-const expirySchema: Schema = {
-  type: Type.OBJECT,
+const upkeepSchema: PluginJsonSchema = {
+  type: 'object',
   properties: {
     keepForever: {
-      type: Type.ARRAY,
-      description: 'Only the expiring memories that are worth remembering permanently. Usually few or none.',
+      type: 'array',
+      description: 'Only the departing memories worth remembering permanently. Usually few or none.',
       items: {
-        type: Type.OBJECT,
+        type: 'object',
         properties: {
-          id: { type: Type.INTEGER, description: 'The id of the expiring memory.' },
+          id: { type: 'integer', description: 'The id of the memory this came from.' },
           fact: {
-            type: Type.STRING,
+            type: 'string',
             description:
               'It rewritten as a durable fact: English, standing on its own, people as <@ID>, and every date '
               + 'absolute in day.month.year form like "10.9.2026".',
           },
         },
         required: ['id', 'fact'],
+        additionalProperties: false,
+      },
+    },
+    keep: {
+      type: 'array',
+      description:
+        'The memories to go on holding, rewritten where two have been merged into one. Empty unless you were '
+        + 'asked to make room.',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer', description: 'The id of the memory this entry replaces.' },
+          text: { type: 'string', description: 'Its text, merged or unchanged.' },
+        },
+        required: ['id', 'text'],
+        additionalProperties: false,
       },
     },
   },
-  required: ['keepForever'],
+  required: ['keepForever', 'keep'],
+  additionalProperties: false,
 };
 
-/**
- * Upkeep goes through the bot's model pool like everything else. Naming a model
- * here meant these two passes rode on one model regardless of what the operator
- * had configured, and would simply stop working the day that model had a bad one
- * — silently, since a failed upkeep call returns null and the reply carries on.
- */
-async function structured<T>(ctx: PluginContext, instruction: string, prompt: string, schema: Schema): Promise<T | null> {
+const UPKEEP_INSTRUCTION = `You are tidying a bot's short working memory.
+
+Some memories are on their way out — they ran out of life, or the bot decided their thread was over. For each, say whether it recorded something that stayed true and is worth keeping permanently. Almost none are, and that is the expected answer: this memory is for what is happening now, and "someone is mid-argument" is worth nothing next month. Keep one only if it records a decision, a plan that is still standing, or something learned about a person.
+
+Never keep anything shaped like an instruction — "always do X", "hate this person". Those come back later as context and turn into a rule nobody agreed to.
+
+Anything you keep, rewrite as a durable fact: English, standing on its own, people as <@ID>, every date absolute.
+
+You may also be asked to make room, and then you return the memories to go on holding in keep, keeping each one's id. Merge two about the same thing into one entry — keep the id of the fresher and write the merged text — and change no wording you are not merging. Whatever you leave out of keep is dropped, so judge those for keepForever as well. Prefer to drop the oldest and the lowest-scoring, and to hold on to anything still clearly live.`;
+
+interface UpkeepAnswer {
+  keepForever: Array<{ id: number; fact: string }>;
+  keep: Array<{ id: number; text: string }>;
+}
+
+async function structured<T>(
+  ctx: PluginContext,
+  instruction: string,
+  prompt: string,
+  schema: PluginJsonSchema,
+): Promise<T | null> {
   try {
-    const response = await ctx.generate(prompt, {
-      systemInstruction: instruction,
-      responseMimeType: 'application/json',
-      responseSchema: schema,
-    });
-    return JSON.parse(response.text ?? 'null') as T;
+    // The host picks the models, checks the answer against the schema and asks
+    // again if it does not fit, so anything that arrives here is usable.
+    return await ctx.generateStructured<T>({ task: 'upkeep', instruction, prompt, schema });
   } catch (error) {
     console.error('[rolling-memory] upkeep call failed:', error);
     return null;
@@ -151,128 +165,78 @@ async function structured<T>(ctx: PluginContext, instruction: string, prompt: st
 }
 
 /**
- * Over capacity, the oldest memories are merged and dropped rather than simply
- * truncated: two half-memories of the same argument are one memory, and losing
- * the older half would leave the newer one referring to something gone.
+ * One pass over everything leaving and everything held, run after a reply has
+ * already gone out.
+ *
+ * Every way a memory can disappear comes through here — running out, being
+ * forgotten, being dropped to make room — because each of them can be the last
+ * copy of something that stayed true. Deleting outright is how that was lost.
  */
-async function compact(ctx: PluginContext, config: RollingMemoryConfig, memories: MemoryView[]): Promise<void> {
-  const now = Date.now();
-  const listing = memories.map((memory) => describeMemory(memory, now)).join('\n');
-
-  const result = await structured<{ keep?: Array<{ id?: unknown; text?: unknown }> }>(
-    ctx,
-    `You are tidying a bot's short working memory. It is holding ${memories.length} things and may only hold ${config.compactTo}.
-
-Return the ${config.compactTo} worth keeping, keeping each one's id. Merge two that are about the same thing into one entry — keep the id of the fresher of the two and write the merged text. Drop the rest, preferring to drop the oldest and the lowest-scoring, and preferring to keep anything still clearly live.
-
-Change no wording you are not merging. Keep every <@ID> mention exactly as it is. Keep dates absolute.`,
-    `Memories:\n${listing}`,
-    compactionSchema,
-  );
-  if (!result) return;
-
+async function runUpkeep(ctx: PluginContext): Promise<void> {
+  const config = readConfig(ctx);
   const db = open(ctx.database);
-  const kept = new Map<number, string>();
-  for (const entry of result.keep ?? []) {
-    if (typeof entry.id !== 'number' || typeof entry.text !== 'string' || !entry.text.trim()) continue;
-    kept.set(entry.id, entry.text.trim());
-  }
+  const departing = departingMemories(db);
+  const held = listMemories(db);
+  const overCapacity = held.length > config.capacity;
+  if (departing.length === 0 && !overCapacity) return;
 
-  const dropped = memories.filter((memory) => !kept.has(memory.id)).map((memory) => memory.id);
-  for (const [id, text] of kept) {
-    const existing = memories.find((memory) => memory.id === id);
-    if (existing && existing.text !== text) reviseMemory(db, id, text, now);
-  }
-  if (dropped.length > 0) deleteMemories(db, dropped);
-  console.log(`[rolling-memory] compacted ${memories.length} memories down to ${kept.size}`);
-}
-
-/**
- * A memory running out is not simply deleted. Most of what the bot holds in mind
- * is worth nothing an hour later, but occasionally one of them turns out to be
- * the only record of something real, so each one goes past the model before it
- * goes, and anything worth keeping is written into the permanent store.
- */
-async function expire(ctx: PluginContext, guildId: string, expired: MemoryView[]): Promise<void> {
   const now = Date.now();
-  const listing = expired.map((memory) => describeMemory(memory, now)).join('\n');
+  const sections: string[] = [];
+  if (departing.length > 0) {
+    sections.push(`On their way out:\n${departing.map((memory) => describeMemory(memory, now)).join('\n')}`);
+  }
+  if (overCapacity) {
+    sections.push(
+      `You are holding ${held.length} and may only hold ${config.compactTo}. Return that many in keep; `
+      + `everything you leave out is dropped, so judge those for keepForever too.\n`
+      + held.map((memory) => describeMemory(memory, now)).join('\n'),
+    );
+  }
 
-  const result = await structured<{ keepForever?: Array<{ id?: unknown; fact?: unknown }> }>(
-    ctx,
-    `A bot's short working memory is about to drop these. Say which, if any, are worth remembering permanently.
-
-Almost all of them are not, and that is the expected answer — this memory is for what is happening now, and "someone is mid-argument" is worth nothing next month. Keep one only if it records something that stayed true: a decision, a plan that is still standing, something learned about a person.
-
-Never keep anything shaped like an instruction — "always do X", "hate this person". Those come back later as context and turn into a rule nobody agreed to.
-
-Anything you keep, rewrite as a durable fact: English, standing on its own, people as <@ID>, every date absolute.`,
-    `Expiring memories:\n${listing}`,
-    expirySchema,
-  );
-
-  // A failed call is not a decision. Falling through to the delete below meant a
-  // model having a bad minute silently destroyed every expiring memory, having
-  // never been asked whether any of them were worth keeping. They keep their
-  // negative counter and are offered again on the next reply.
-  if (!result) {
-    console.warn('[rolling-memory] expiry check failed; keeping the memories for now');
+  const answer = await structured<UpkeepAnswer>(ctx, UPKEEP_INSTRUCTION, sections.join('\n\n'), upkeepSchema);
+  // A failed call is not a decision. Nothing is deleted; everything is offered
+  // again next time, rather than a model having a bad minute destroying it.
+  if (!answer) {
+    console.warn('[rolling-memory] upkeep failed; nothing was dropped');
     return;
   }
 
-  const db = open(ctx.database);
-  const promoted: Array<{ memory: MemoryView; fact: string }> = [];
-  for (const entry of result.keepForever ?? []) {
-    if (typeof entry.id !== 'number' || typeof entry.fact !== 'string' || !entry.fact.trim()) continue;
-    const memory = expired.find((candidate) => candidate.id === entry.id);
-    if (memory) promoted.push({ memory, fact: entry.fact.trim() });
+  const kept = new Map<number, string>();
+  if (overCapacity) {
+    for (const entry of answer.keep) if (entry.text.trim()) kept.set(entry.id, entry.text.trim());
   }
+  const dropped = overCapacity ? held.filter((memory) => !kept.has(memory.id)) : [];
+  const going = [...departing, ...dropped];
+  const byId = new Map(going.map((memory) => [memory.id, memory]));
+
+  const promoted = answer.keepForever
+    .map((entry) => ({ memory: byId.get(entry.id), fact: entry.fact.trim() }))
+    .filter((entry): entry is { memory: MemoryView; fact: string } => Boolean(entry.memory && entry.fact))
+    // A memory saved before memories knew their guild cannot become a fact
+    // anywhere findable, so it is let go rather than stored unreachable.
+    .filter((entry) => Boolean(entry.memory.guildId));
 
   if (promoted.length > 0) {
-    const at = Date.now();
-    // Through saveFacts, not the raw collection: dedupe, embeddings, absolute
-    // dates and the metadata shape all live behind it.
-    const created = await ctx.saveFacts(
-      promoted.map(({ memory, fact }) => ({
-        text: fact,
-        messageIds: parseMessageIds(memory.messageIds),
-        guildId,
-        channelId: memory.channelIds[0] ?? '',
-        source: 'auto' as const,
-        timePeriodStart: memory.createdAt,
-        timePeriodEnd: memory.updatedAt || at,
-      })),
-    );
-    console.log(`[rolling-memory] promoted ${created.length} expiring memories into facts`);
+    const created = await ctx.saveFacts(promoted.map(({ memory, fact }) => ({
+      text: fact,
+      messageIds: parseMessageIds(memory.messageIds),
+      guildId: memory.guildId,
+      channelId: memory.channelIds[0] ?? '',
+      source: 'auto' as const,
+      timePeriodStart: memory.createdAt,
+      timePeriodEnd: memory.updatedAt || now,
+    })));
+    console.log(`[rolling-memory] kept ${created.length} of ${going.length} departing memories as facts`);
   }
 
-  deleteMemories(db, expired.map((memory) => memory.id));
-  console.log(`[rolling-memory] expired ${expired.length} memories, kept ${promoted.length} as facts`);
-}
-
-/** Compaction and expiry both run the moment they are needed, on the reply that caused it. */
-async function runUpkeep(ctx: PluginContext, guildId: string): Promise<void> {
-  const config = readConfig(ctx);
-  const db = open(ctx.database);
-
-  const expired = expiredMemories(db);
-  if (expired.length > 0) await expire(ctx, guildId, expired);
-
-  const remaining = listMemories(db);
-  if (remaining.length > config.capacity) await compact(ctx, config, remaining);
-}
-
-function renderMemories(memories: MemoryView[], now: number): string {
-  // Said out loud rather than omitted. An absent section reads as the feature not
-  // being there, and the model has no reason to start one; naming the empty state
-  // is what turns "nothing to see" into "nothing yet, and that is on you".
-  if (memories.length === 0) {
-    return 'You are currently holding nothing in mind. If this conversation is about anything at all, start a memory for it.';
+  for (const [id, text] of kept) {
+    const existing = held.find((memory) => memory.id === id);
+    if (existing && existing.text !== text) reviseMemory(db, id, text, now);
   }
-  return (
-    'What you are currently holding in mind. These are short-term and yours to use openly — '
-    + 'the score is how much life each has left, and when it was last touched is separate from that:\n'
-    + memories.map((memory) => describeMemory(memory, now)).join('\n')
-  );
+  if (going.length > 0) {
+    deleteMemories(db, going.map((memory) => memory.id));
+    console.log(`[rolling-memory] let go of ${going.length} memories`);
+  }
 }
 
 function numericIds(value: unknown): number[] {
@@ -320,6 +284,12 @@ const plugin: BigYahuPlugin = {
 
   instructions: SKILL,
 
+  aiTasks: [{
+    id: 'upkeep',
+    label: 'Upkeep',
+    description: 'Merging memories that are over capacity, and deciding which expiring ones are worth keeping as facts.',
+  }],
+
   /** One message, one tick. Lifespans are counted in messages so a quiet channel does not forget. */
   onMessage({ database }) {
     tick(open(database));
@@ -333,22 +303,37 @@ const plugin: BigYahuPlugin = {
    * "yeah, you said you'd be back by six".
    */
   async beforeReply(ctx) {
-    await runUpkeep(ctx, ctx.taggedMessage.guildId ?? '');
+    // A field of the material rather than prose appended to it: the bot hands
+    // the model one JSON document, so what this plugin knows is simply part of
+    // it, beside the messages and the memories it already has.
+    const memories = listMemories(open(ctx.database));
 
-    const section = renderMemories(listMemories(open(ctx.database)), Date.now());
+    return {
+      draftPrompt: {
+        ...ctx.draftPrompt,
+        material: {
+          ...ctx.draftPrompt.material,
+          shortTermMemory: memories.length > 0
+            ? memories.map((memory) => ({
+              id: memory.id,
+              text: memory.text,
+              channelIds: memory.channelIds,
+              life: Number(score(memory).toFixed(2)),
+              lastTouched: new Date(memory.updatedAt || memory.createdAt).toISOString(),
+            }))
+            : [],
+        },
+      },
+    };
+  },
 
-    const conversation = ctx.draftPrompt.conversation.map((content, index) => {
-      if (index !== 0) return content;
-      const parts = [...(content.parts ?? [])];
-      const first = parts[0];
-      // Appended to the existing text part rather than added as a turn of its
-      // own, so the attached images stay where they are.
-      if (first && typeof first.text === 'string') parts[0] = { ...first, text: `${first.text}\n\n${section}` };
-      else parts.unshift({ text: section });
-      return { ...content, parts };
-    });
-
-    return { draftPrompt: { ...ctx.draftPrompt, conversation } };
+  /**
+   * Upkeep runs once the reply is already in the channel. Deciding what is worth
+   * keeping forever is a model call of its own, and nobody should wait through
+   * it: what it drops was not shown to that reply anyway.
+   */
+  async afterReply(ctx) {
+    await runUpkeep(ctx);
   },
 
   /**
@@ -356,12 +341,18 @@ const plugin: BigYahuPlugin = {
    * annotateExtraction exists. No upkeep runs here: extraction should not be
    * spending model calls tidying, and the next reply will do it.
    */
-  annotateExtraction({ database }) {
-    const memories = listMemories(open(database));
+  annotateExtraction({ database, channelId }) {
+    // Only what belongs to the channel being read, plus anything tied to no
+    // channel. A thread running somewhere else is not background for this one,
+    // and offering it invites skipping a fact that merely looks familiar.
+    const memories = listMemories(open(database))
+      .filter((memory) => memory.channelIds.length === 0 || memory.channelIds.includes(channelId));
     if (memories.length === 0) return;
     const now = Date.now();
     return (
-      'What the bot is currently holding in mind, so you can tell who "he" is and what "the thing" means:\n'
+      'What the bot is holding in mind about this channel right now, so you can tell who "he" is and what '
+      + '"the thing" means. Anything one of these already covers is being tracked, and is offered for keeping '
+      + 'permanently when it leaves, so there is no need to store it as a fact now:\n'
       + memories.map((memory) => describeMemory(memory, now)).join('\n')
     );
   },
@@ -369,6 +360,7 @@ const plugin: BigYahuPlugin = {
   tools: [
     {
       name: 'remember',
+      effect: true,
       description:
         'Start holding a new subject in mind — what is being discussed, who is in it, which channel, and where '
         + 'it has got to. Reach for this whenever the conversation turns to something you are not already '
@@ -425,6 +417,10 @@ const plugin: BigYahuPlugin = {
             remaining: lifespan,
             lifespan,
             messageIds: JSON.stringify(stringIds(args.messageIds)),
+            // Where it was said, so it can still become a fact long after the
+            // conversation that produced it is gone.
+            guildId: ctx.invocation.guildId,
+            leaving: false,
             createdAt: now,
             updatedAt: now,
           },
@@ -436,6 +432,7 @@ const plugin: BigYahuPlugin = {
     },
     {
       name: 'refresh',
+      effect: true,
       description:
         'Put memories back to full life because they are still going. Pass every id still relevant in one call. '
         + 'Refreshing costs nothing and forgetting something people are still talking about costs a lot.',
@@ -508,6 +505,7 @@ const plugin: BigYahuPlugin = {
     },
     {
       name: 'forget',
+      effect: true,
       description:
         'Drop memories that are genuinely over — the argument ended, they came back, the plan happened. '
         + 'Do not use it on something merely quiet; that fades on its own.',
@@ -519,9 +517,11 @@ const plugin: BigYahuPlugin = {
         required: ['ids'],
       },
       handler(args, ctx) {
+        // Marked rather than deleted: upkeep asks whether any of it was worth
+        // keeping permanently before it goes, exactly as with one that ran out.
         const ids = numericIds(args.ids);
-        const forgotten = deleteMemories(open(ctx.database), ids);
-        if (forgotten > 0) console.log(`[rolling-memory] forgot ${ids.join(', ')}`);
+        const forgotten = markLeaving(open(ctx.database), ids);
+        if (forgotten > 0) console.log(`[rolling-memory] letting go of ${ids.join(', ')}`);
         return { forgotten };
       },
     },
@@ -639,17 +639,26 @@ const plugin: BigYahuPlugin = {
       },
 
       // An empty rowId is the header button; anything else is one memory's row.
-      action(actionId, rowId, { database }) {
+      // Both go through the same keep-forever check as any other way a memory
+      // leaves, so pressing Forget cannot lose the one durable fact inside it.
+      async action(actionId, rowId, ctx) {
+        const db = open(ctx.database);
         if (actionId === 'forget-all') {
-          clearAll(open(database));
-          return { tone: 'success', message: 'Every rolling memory has been cleared.' };
+          const held = listMemories(db);
+          if (held.length === 0) return { tone: 'success', message: 'There was nothing held.' };
+          markLeaving(db, held.map((memory) => memory.id));
+          await runUpkeep(ctx);
+          return {
+            tone: 'success',
+            message: 'Every rolling memory has been let go; anything worth keeping was saved as a fact.',
+          };
         }
         if (actionId !== 'forget') return { tone: 'error', message: 'Unknown action.' };
         const id = Number.parseInt(rowId, 10);
         if (!Number.isInteger(id)) return { tone: 'error', message: 'That is not a memory id.' };
-        return deleteMemories(open(database), [id]) > 0
-          ? { tone: 'success', message: `Memory ${id} is gone.` }
-          : { tone: 'error', message: `There is no memory ${id}.` };
+        if (markLeaving(db, [id]) === 0) return { tone: 'error', message: `There is no memory ${id}.` };
+        await runUpkeep(ctx);
+        return { tone: 'success', message: `Memory ${id} is gone; anything worth keeping was saved as a fact.` };
       },
     },
   ],

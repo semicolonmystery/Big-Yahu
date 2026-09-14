@@ -35,8 +35,7 @@ vi.mock('../../src/server/plugins/manifest', async (importOriginal) => {
 });
 vi.mock('../../src/server/db/chroma', () => ({ getFactsCollection: m.getFactsCollection }));
 vi.mock('../../src/server/db/repositories/factsRepo', () => ({ addFacts: vi.fn() }));
-vi.mock('../../src/server/ai/client', () => ({ ai: {} }));
-vi.mock('../../src/server/ai/generate', () => ({ generate: vi.fn() }));
+vi.mock('../../src/server/ai/chat', () => ({ chat: vi.fn() }));
 vi.mock('../../src/server/db/repositories/pluginStateRepo', () => ({
   getState: (id: string) => id === 'tool-test' ? m.state : undefined,
   listStates: () => ({ 'tool-test': m.state }),
@@ -162,7 +161,7 @@ describe('plugin tool authorization gates', () => {
     });
     const resolved: ResolvedTool = {
       pluginId: 'tool-test',
-      declaration: { name: 'tool_test__direct' },
+      declaration: { name: 'tool_test__direct', description: 'Direct', parameters: {} },
       tool: { name: 'direct', description: 'Direct', parameters: {}, handler },
     };
     const original = invocation(true);

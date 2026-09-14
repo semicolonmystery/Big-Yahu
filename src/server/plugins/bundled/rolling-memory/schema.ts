@@ -15,6 +15,17 @@ export const rollingMemories = sqliteTable('rolling_memories', {
   lifespan: integer('lifespan').notNull(),
   /** JSON array of the message ids this came from, so promoting it to a fact keeps its sources. */
   messageIds: text('message_ids').notNull().default('[]'),
+  /**
+   * Where it was said. Kept on the row so a memory can be promoted into a fact
+   * from anywhere — the operator's page has no Discord message to read it from.
+   */
+  guildId: text('guild_id').notNull().default(''),
+  /**
+   * On its way out: expired, forgotten, or dropped by compaction. It stops being
+   * shown, and the next upkeep asks whether any of it is worth keeping forever
+   * before it goes. Deleting outright is how a memory's one durable fact was lost.
+   */
+  leaving: integer('leaving', { mode: 'boolean' }).notNull().default(false),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });

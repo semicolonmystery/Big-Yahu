@@ -49,7 +49,7 @@ const send = (method: string, path: string, body?: unknown) => fetch(`${baseUrl}
   body: body === undefined ? undefined : JSON.stringify(body),
 });
 
-const VALID_REPLY = 'answer people {{now}} {{language}} {{guildId}}';
+const VALID_REPLY = 'answer people, briefly, and link what you quote';
 
 describe('editing the prompts over HTTP', () => {
   it('lists all three with the shipped text and no override yet', async () => {
@@ -61,7 +61,7 @@ describe('editing the prompts over HTTP', () => {
     const reply = payload.data.find((entry: { id: string }) => entry.id === 'reply');
     expect(reply.override).toBeNull();
     expect(reply.shipped).toBe(PROMPTS.reply.fallback);
-    expect(reply.placeholders).toEqual(['now', 'language', 'guildId']);
+    expect(reply.legacyFormat).toBe(false);
   });
 
   it('saves an override and uses it on the very next call', async () => {
@@ -69,18 +69,21 @@ describe('editing the prompts over HTTP', () => {
     expect(response.status).toBe(200);
 
     // No restart, no cache to bust — and exactly what was saved, nothing more.
-    expect(buildReplyInstruction('999', 'Czech', 'right now')).toBe('answer people right now Czech 999');
+    expect(buildReplyInstruction()).toBe(VALID_REPLY);
   });
 
-  it('refuses a prompt missing a placeholder, and changes nothing', async () => {
-    const response = await send('PUT', '/prompts/reply', { body: 'answer people' });
+  it('refuses an empty prompt, and changes nothing', async () => {
+    const response = await send('PUT', '/prompts/reply', { body: '   ' });
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toContain('{{now}}');
-    expect(buildReplyInstruction('999', 'Czech', 'now')).toBe(
-      (await (await send('GET', '/prompts')).json()).data
-        .find((entry: { id: string }) => entry.id === 'reply').shipped
-        .replace('{{now}}', 'now').replace('{{language}}', 'Czech').replace('{{guildId}}', '999'),
-    );
+    expect((await response.json()).error).toContain('cannot be empty');
+    expect(buildReplyInstruction()).toBe(PROMPTS.reply.fallback);
+  });
+
+  it('says when a saved prompt was written for the old transcript format', async () => {
+    await send('PUT', '/prompts/factExtraction', { body: 'Lines are tagged [id=...]. Extract facts.' });
+    const payload = await (await send('GET', '/prompts')).json();
+    const extraction = payload.data.find((entry: { id: string }) => entry.id === 'factExtraction');
+    expect(extraction.legacyFormat).toBe(true);
   });
 
   it('resets by deleting the override rather than copying the default in', async () => {
@@ -109,9 +112,9 @@ describe('editing the prompts over HTTP', () => {
       return fetch(`${baseUrl}/prompts/reply/upload`, { method: 'POST', body: form });
     };
 
-    expect((await upload('no placeholders here')).status).toBe(400);
+    expect((await upload('   ')).status).toBe(400);
     expect((await upload(VALID_REPLY)).status).toBe(200);
-    expect(buildReplyInstruction('7', 'English', 'today')).toContain('answer people today English 7');
+    expect(buildReplyInstruction()).toBe(VALID_REPLY);
   });
 
   it('will not take a file that is not text', async () => {
@@ -122,8 +125,8 @@ describe('editing the prompts over HTTP', () => {
     expect((await response.json()).error).toContain('not a text file');
   });
 
-  it('appends nothing of its own to a saved prompt', async () => {
+  it('appends nothing of its own to a saved prompt, and substitutes nothing into it', async () => {
     await send('PUT', '/prompts/reply', { body: VALID_REPLY });
-    expect(buildReplyInstruction('1', 'English', 'now')).toBe('answer people now English 1');
+    expect(buildReplyInstruction()).toBe(VALID_REPLY);
   });
 });

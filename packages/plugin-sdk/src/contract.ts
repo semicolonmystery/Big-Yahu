@@ -1,11 +1,4 @@
 import type { Client, Message } from 'discord.js';
-import type {
-  Content,
-  ContentListUnion,
-  GenerateContentConfig,
-  GenerateContentResponse,
-  GoogleGenAI,
-} from '@google/genai';
 import type { Collection } from 'chromadb';
 import type { Database } from 'better-sqlite3';
 import type { Fact, FactCandidate, PluginStorage, SourceMessage } from './data';
@@ -38,25 +31,24 @@ export interface PluginContext {
    */
   resolveUserNames(ids: string[]): Record<string, string>;
   /**
-   * Asks a model, through the bot's own pool.
+   * Asks a model, through the bot's own list.
    *
-   * Use this rather than `ai.models.generateContent`. The pool is what the
-   * operator configures in the panel: several models in a weighted order, tried
-   * best-first, with a model that keeps failing counted, rested and skipped, and
-   * transient failures retried on the operator's settings. A plugin naming its
-   * own model sits outside all of that — it keeps working right up until that one
-   * model is the one having a bad day, and then it simply stops, quietly, while
-   * the rest of the bot carries on.
+   * Which models, in which order, and how hard they may think is the operator's
+   * business, set in the panel: a plugin says what it wants, not who answers.
+   * One that keeps failing is rested and skipped, and the next is tried. Naming
+   * a model yourself would sit outside all of that — working right up until that
+   * one model has a bad day, then stopping quietly while the rest of the bot
+   * carries on.
    *
-   * Throws once every model in the pool has been tried and none answered.
+   * Throws once every model on the list has been tried and none answered.
    */
-  generate(contents: ContentListUnion, config: GenerateContentConfig): Promise<GenerateContentResponse>;
+  generate(request: PluginGenerateRequest): Promise<{ text: string }>;
   /**
-   * The raw SDK client, for what the pool does not cover — embeddings, file
-   * uploads, anything that is not a chat completion. For a chat completion, use
-   * `generate`.
+   * The same, for an answer your code reads rather than a person: the model is
+   * asked for JSON in the shape you describe, and what comes back is checked
+   * against it before you see it. Throws if it cannot be read.
    */
-  ai: GoogleGenAI;
+  generateStructured<T>(request: PluginStructuredRequest): Promise<T>;
   /**
    * Null when the bot is not connected to Discord. Hooks always have one, since
    * they are triggered by Discord events, but a panel or tool can be reached
@@ -81,6 +73,46 @@ export interface PluginContext {
   readonly database: Database;
 }
 
+/** The part of JSON Schema a structured answer may use. */
+export type PluginJsonSchema =
+  | {
+    type: 'object';
+    properties: Record<string, PluginJsonSchema>;
+    required: readonly string[];
+    additionalProperties: false;
+    description?: string;
+  }
+  | { type: 'array'; items: PluginJsonSchema; description?: string }
+  | { type: 'string'; enum?: readonly string[]; pattern?: string; description?: string }
+  | { type: 'integer' | 'number' | 'boolean'; description?: string };
+
+export interface PluginGenerateRequest {
+  /**
+   * Which of your declared `aiTasks` this is. Left out, it is your first one.
+   * Which models answer it is the operator's choice, not yours.
+   */
+  task?: string;
+  /** The rules, sent as the system prompt. Keep it identical from call to call and it can be cached. */
+  instruction: string;
+  /** What to work from this time. */
+  prompt: string;
+  images?: DraftImage[];
+  maxOutputTokens?: number;
+}
+
+export interface PluginStructuredRequest extends PluginGenerateRequest {
+  schema: PluginJsonSchema;
+}
+
+/** A job a plugin sends to a model, so the operator can see it and choose models for it. */
+export interface PluginAiTask {
+  id: string;
+  label: string;
+  description?: string;
+  /** It sends pictures, so image-capable models are wanted. */
+  needsImages?: boolean;
+}
+
 export interface OnMessageContext extends PluginContext {
   message: Message;
 }
@@ -95,10 +127,27 @@ export interface OnBotTaggedContext extends PluginContext {
   message: Message;
 }
 
-/** Everything that will be handed to Gemini to write the reply. */
+/** A picture going to the model, in a shape no particular provider owns. */
+export interface DraftImage {
+  /** The message it was posted in, so the material can say which is which. */
+  messageId: string;
+  mimeType: string;
+  /** Base64. */
+  data: string;
+}
+
+/**
+ * Everything the model is given to write the reply from.
+ *
+ * `material` is the JSON document it reads: the messages, the people, what the
+ * bot remembers, and anything a plugin adds. Edit that rather than assembling
+ * prose — it is handed over as JSON, so a key you add is a field the model can
+ * see, and the rules for reading it live in the reply prompt.
+ */
 export interface DraftPrompt {
   systemInstruction: string;
-  conversation: Content[];
+  material: Record<string, unknown>;
+  images: DraftImage[];
   retrievedFacts: Fact[];
   sourceMessages: SourceMessage[];
 }
@@ -106,6 +155,18 @@ export interface DraftPrompt {
 export interface BeforeReplyContext extends PluginContext {
   taggedMessage: Message;
   draftPrompt: DraftPrompt;
+}
+
+/**
+ * After the reply has actually been sent. Anything here happens with nobody
+ * waiting: work that has to be done, but that the person who asked should not
+ * sit through, belongs in this hook rather than in `beforeReply`.
+ */
+export interface AfterReplyContext extends PluginContext {
+  taggedMessage: Message;
+  /** What the bot posted, or null when it stayed silent or failed. */
+  sentMessageId: string | null;
+  silent: boolean;
 }
 
 export interface BeforeReplyResult {
@@ -221,6 +282,18 @@ export interface PluginTool {
   description: string;
   /** JSON Schema for the arguments. Use an empty properties object for none. */
   parameters: Record<string, unknown>;
+  /**
+   * Nothing is expected back from this tool, so the reply is finished the moment
+   * the model has written its message and everything it called was one of these.
+   * Reputation's assessment and rolling memory's bookkeeping are the shape this
+   * is for: they act on the reply being written, and waiting to tell the model
+   * "done" only buys another round trip and an opportunity to narrate it.
+   *
+   * A tool that answers a question — a lookup the reply depends on — must leave
+   * this off, or the model will never see what it asked for.
+   */
+  effect?: boolean;
+
   /** Offered and executed only when the requesting Discord user is a bot controller. */
   requiresController?: boolean;
   /**
@@ -447,6 +520,12 @@ export interface BigYahuPlugin {
   tools?: PluginTool[];
 
   /**
+   * The jobs this plugin sends to a model. Each becomes a list the operator can
+   * choose models for, once they switch this plugin off the shared one.
+   */
+  aiTasks?: PluginAiTask[];
+
+  /**
    * Small screens: a login form, a QR code, a connection status, a setup step.
    * Opened as a dialog. Anything the operator reads and pages through belongs in
    * `pages` instead.
@@ -489,6 +568,8 @@ export interface BigYahuPlugin {
   onHourlyCheck?(ctx: OnHourlyCheckContext): Promise<void> | void;
   onBotTagged?(ctx: OnBotTaggedContext): Promise<void> | void;
   beforeReply?(ctx: BeforeReplyContext): Promise<BeforeReplyResult | void> | BeforeReplyResult | void;
+  /** Runs once the reply is out, so nothing here keeps anybody waiting. */
+  afterReply?(ctx: AfterReplyContext): Promise<void> | void;
 }
 
 export const HOOK_NAMES = [
@@ -498,5 +579,6 @@ export const HOOK_NAMES = [
   'annotateContext',
   'annotateExtraction',
   'beforeReply',
+  'afterReply',
 ] as const;
 export type HookName = (typeof HOOK_NAMES)[number];

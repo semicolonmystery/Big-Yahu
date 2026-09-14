@@ -1,10 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildJumpLink, mentionedUserIds, mentionifyNames, mentionsIn, normaliseFactMentions, readMention,
-  restoreMentions, stripPromptMarkers, stripUnknownJumpLinks, stripUnknownMentions,
+  buildJumpLink, expandLinkMarkers, mentionedUserIds, mentionifyNames, mentionsIn, normaliseFactMentions,
+  readMention, restoreMentions, stripPromptMarkers, stripUnknownJumpLinks, stripUnknownMentions,
 } from '../../src/shared/discord';
 
 describe('Discord output sanitizers', () => {
+  it('builds the link itself from the message the model named, in that message\'s own channel', () => {
+    // The model is never given the server id, so it cannot write a URL at all —
+    // it names a message and this puts the right link together.
+    const channelOf = (id: string) => ({ '300': '200', '301': '250' })[id];
+    expect(expandLinkMarkers('see <link:300> and <link:301>', '100', channelOf))
+      .toBe(`see ${buildJumpLink('100', '200', '300')} and ${buildJumpLink('100', '250', '301')}`);
+  });
+
+  it('drops a link to a message it was never shown, rather than pointing at nothing', () => {
+    expect(expandLinkMarkers('here <link:999>', '100', () => undefined)).toBe('here ');
+  });
+
   it('keeps only jump links for messages actually shown', () => {
     const known = buildJumpLink('100', '200', '300');
     const unknown = buildJumpLink('100', '200', '400');

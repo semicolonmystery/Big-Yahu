@@ -1,0 +1,1 @@
+ALTER TABLE `plugin_state` ADD `use_shared_models` integer DEFAULT true NOT NULL;

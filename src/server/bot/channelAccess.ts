@@ -54,13 +54,13 @@ const CHANNEL_ROSTER_CAP = 100;
  * has no ids to point `read_channel` at — the prompt forbids naming a channel
  * whose id it was not given, which is what stops it inventing one.
  */
-export function readableChannelRoster(guild: Guild): string {
-  const lines: string[] = [];
+export function readableChannelRoster(guild: Guild): Array<{ id: string; name: string }> {
+  const channels: Array<{ id: string; name: string }> = [];
   for (const channel of guild.channels.cache.values()) {
     if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement) continue;
     if (!canExtractFrom(channel.id)) continue;
-    lines.push(`<#${channel.id}>(#${channel.name})`);
-    if (lines.length >= CHANNEL_ROSTER_CAP) break;
+    channels.push({ id: channel.id, name: channel.name });
+    if (channels.length >= CHANNEL_ROSTER_CAP) break;
   }
-  return lines.join('\n');
+  return channels;
 }

@@ -69,6 +69,7 @@ const plugin: BigYahuPlugin = {
   tools: [
     {
       name: 'assess',
+      effect: true,
       description:
         'Record how someone treated you in this exchange, after you have written your reply. '
         + 'Judge behaviour towards you, not whether you agreed with them. Call it once, listing everyone '

@@ -72,6 +72,18 @@ test('real admin setup, session lifecycle, persisted attachment settings and mob
     }
   });
 
+  // Nothing here depends on OpenRouter answering: the lists come from the
+  // isolated database, and a catalog that cannot be reached only adds a notice.
+  await test.step('Every AI task has its own OpenRouter list, seeded with DeepSeek pinned to its own host', async () => {
+    await expect(page.getByText('AI models (OpenRouter)', { exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: /^Reply/ })).toBeVisible();
+    await expect(page.getByText('deepseek/deepseek-v4.1-flash', { exact: true }).first()).toBeVisible();
+    await expect(page.getByLabel('Host for deepseek/deepseek-v4.1-flash').first()).toContainText(/deepseek/i);
+    await page.getByRole('tab', { name: /^Fact extraction/ }).click();
+    await expect(page.getByText('Reads each channel on a timer and decides what is worth remembering.', { exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('settings-ai-tasks.png'), fullPage: true });
+  });
+
   await test.step('Logout invalidates the session, and wrong-password login remains a form error', async () => {
     await page.getByRole('button', { name: 'Log out' }).click();
     await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();

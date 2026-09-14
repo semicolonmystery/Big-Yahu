@@ -1,14 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ generate: vi.fn(async () => ({ text: '{}' })) }));
-vi.mock('../../src/server/ai/generate', () => ({ generate: state.generate }));
+const state = vi.hoisted(() => ({
+  structured: vi.fn(async (_task: string, _request: { system: string; user: string; schema: unknown }): Promise<unknown> => ({ facts: [] })),
+}));
+vi.mock('../../src/server/ai/structured', () => ({ structured: state.structured }));
 vi.mock('../../src/server/db/repositories/settingsRepo', () => ({ getSettings: () => ({ timezone: 'Europe/Prague' }) }));
 
 import { hasUnresolvedRelativeDate, resolveRelativeDates } from '../../src/server/ai/dateEnforcement';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  state.generate.mockResolvedValue({ text: '{}' });
+  state.structured.mockResolvedValue({ facts: [] });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
 describe('fact date enforcement', () => {
@@ -24,36 +27,40 @@ describe('fact date enforcement', () => {
 
   it('does no AI work for an empty correction batch', async () => {
     expect(await resolveRelativeDates([])).toEqual([]);
-    expect(state.generate).not.toHaveBeenCalled();
+    expect(state.structured).not.toHaveBeenCalled();
   });
 
-  it('anchors the correction to each fact timestamp in the configured timezone', async () => {
-    state.generate.mockResolvedValueOnce({ text: '{"facts":[{"index":0,"text":"Meeting on 11.9.2026."}]}' });
+  it('anchors the correction to each fact timestamp in the configured timezone, on the date repair list', async () => {
+    state.structured.mockResolvedValueOnce({ facts: [{ index: 0, text: 'Meeting on 11.9.2026.' }] });
     const result = await resolveRelativeDates([{ text: 'Meeting tomorrow.', anchor: Date.parse('2026-09-09T23:30:00Z') }]);
     expect(result).toEqual(['Meeting on 11.9.2026.']);
-    expect(state.generate).toHaveBeenCalledWith(expect.stringContaining('10 September 2026'), expect.objectContaining({
-      responseMimeType: 'application/json', responseSchema: expect.any(Object),
+    expect(state.structured).toHaveBeenCalledWith('dateRepair', expect.objectContaining({
+      user: expect.stringContaining('10 September 2026'), schema: expect.any(Object),
     }));
-    expect(state.generate).toHaveBeenCalledWith(expect.stringContaining('01:30'), expect.any(Object));
+    const [, request] = state.structured.mock.calls[0];
+    expect(request.user).toContain('01:30');
+    // The time travels with the facts, so the instruction stays cacheable.
+    expect(request.user).toContain('Right now it is');
+    expect(request.system).not.toContain('Right now it is');
   });
 
-  it('uses response indices rather than response ordering and rejects invalid entries', async () => {
-    state.generate.mockResolvedValueOnce({ text: JSON.stringify({ facts: [
+  it('uses answer indices rather than answer order, and ignores entries that make no sense', async () => {
+    state.structured.mockResolvedValueOnce({ facts: [
       { index: 1, text: '  Second on 12.9.2026.  ' },
       { index: -1, text: 'Bad' }, { index: 2, text: 'Bad' }, { index: '0', text: 'Bad' },
       { index: 0.5, text: 'Bad' }, { index: 0, text: '  ' }, { index: 0, text: 123 },
-    ] }) });
+    ] });
     expect(await resolveRelativeDates([{ text: 'First tomorrow.', anchor: 100 }, { text: 'Second next week.', anchor: 200 }]))
       .toEqual(['First tomorrow.', 'Second on 12.9.2026.']);
   });
 
-  it.each(['not JSON', '{"facts":{}}', '{}'])('retains originals if output is unusable: %s', async (text) => {
-    state.generate.mockResolvedValueOnce({ text });
+  it.each([{ facts: {} }, {}, null])('keeps the originals when the answer is unusable: %j', async (answer) => {
+    state.structured.mockResolvedValueOnce(answer);
     expect(await resolveRelativeDates([{ text: 'Meeting tomorrow.', anchor: 100 }])).toEqual(['Meeting tomorrow.']);
   });
 
-  it('retains originals during a Gemini outage', async () => {
-    state.generate.mockRejectedValueOnce(new Error('service unavailable'));
+  it('keeps the originals when no model answers', async () => {
+    state.structured.mockRejectedValueOnce(new Error('service unavailable'));
     expect(await resolveRelativeDates([{ text: 'Meeting tomorrow.', anchor: 100 }])).toEqual(['Meeting tomorrow.']);
   });
 });

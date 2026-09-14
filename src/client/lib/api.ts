@@ -1,9 +1,12 @@
 import type {
+  AiTasksOverview,
+  AiUsageSummary,
   ApiResponse,
+  CatalogEndpoint,
+  CatalogModel,
   AppSettings,
   AuthStatus,
   ChannelPermission,
-  ChatModel,
   Controller,
   DashboardStats,
   FactAuthor,
@@ -60,6 +63,7 @@ export const api = {
   elevate: (password: string) => post<null>('/auth/elevate', { password }),
 
   stats: () => request<DashboardStats>('/stats'),
+  aiUsage: () => request<AiUsageSummary>('/stats/usage'),
   searchFacts: (query: string, topK?: number) => post<FactWithSources[]>('/facts/search', { query, topK }),
   listFacts: (params: { page?: number; pageSize?: number; authorId?: string } = {}) => {
     const query = new URLSearchParams();
@@ -72,14 +76,27 @@ export const api = {
   factAuthors: () => request<FactAuthor[]>('/facts/authors'),
   deleteFact: (id: string) => del<{ id: string }>(`/facts/${id}`),
 
-  listModels: () => request<ChatModel[]>('/models'),
-  addModel: (model: string, weight = 100) => post<ChatModel>('/models', { model, weight }),
-  reorderModels: (order: string[]) => request<ChatModel[]>('/models/order', {
+  // Every change answers with the whole overview, so the panel never has to
+  // work out what else a change affected.
+  aiTasks: () => request<AiTasksOverview>('/ai-tasks'),
+  setReasoningEffort: (task: string, reasoningEffort: string) =>
+    patch<AiTasksOverview>(`/ai-tasks/${task}`, { reasoningEffort }),
+  addTaskModel: (task: string, model: string) => post<AiTasksOverview>(`/ai-tasks/${task}/models`, { model }),
+  setTaskModelUpstream: (task: string, model: string, upstream: string) =>
+    patch<AiTasksOverview>(`/ai-tasks/${task}/models`, { model, upstream }),
+  reorderTaskModels: (task: string, order: string[]) => request<AiTasksOverview>(`/ai-tasks/${task}/models/order`, {
     method: 'PUT',
     body: JSON.stringify({ order }),
   }),
-  removeModel: (model: string) => del<ChatModel[]>(`/models/${encodeURIComponent(model)}`),
-  reviveModels: () => post<ChatModel[]>('/models/revive'),
+  // OpenRouter ids carry a slash, so the model goes in the query rather than the path.
+  removeTaskModel: (task: string, model: string) =>
+    del<AiTasksOverview>(`/ai-tasks/${task}/models?model=${encodeURIComponent(model)}`),
+  reviveTask: (task: string) => post<AiTasksOverview>(`/ai-tasks/${task}/revive`),
+  setPluginSharedModels: (pluginId: string, useSharedModels: boolean) =>
+    patch<AiTasksOverview>(`/ai-tasks/plugins/${pluginId}`, { useSharedModels }),
+  aiTaskCatalog: (query: string) => request<CatalogModel[]>(`/ai-tasks/catalog?q=${encodeURIComponent(query)}`),
+  modelHosts: (model: string) =>
+    request<CatalogEndpoint[]>(`/ai-tasks/catalog/endpoints?model=${encodeURIComponent(model)}`),
 
   listChannels: () => request<{ channels: ChannelPermission[]; botOnline: boolean }>('/channels'),
   updateChannel: (channelId: string, values: { canReply?: boolean; canExtract?: boolean }) =>

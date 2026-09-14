@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/server/env', () => ({ env: { chromaHost: '127.0.0.1', chromaPort: 8000 } }));
 vi.mock('../../src/server/ai/embeddings', () => ({
-  geminiEmbeddingFunction: { generate: async () => [[1, 0, 0]] },
+  activeEmbedding: () => ({ model: 'test/embeddings', dimensions: 3 }),
+  embeddingFunctionFor: () => ({ generate: async () => [[1, 0, 0]] }),
 }));
 
 type ResponseMode = 'healthy' | 'hang-headers' | 'hang-body' | 'missing';
@@ -87,7 +88,7 @@ describe('installed Chroma SDK bounded transport contract', () => {
     await expect(chroma.heartbeat()).resolves.toBe(123);
   });
 
-  it('honors the outer reply deadline without spending a Gemini attempt', async () => {
+  it('honors the outer reply deadline without spending a model attempt', async () => {
     const chroma = await client(2_000);
     const { withAIRequestBudget, claimAIRequest } = await import('../../src/server/ai/requestBudget');
     const controller = new AbortController();

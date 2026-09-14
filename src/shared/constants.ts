@@ -1,15 +1,21 @@
 /**
- * Embedding model and dimensionality are baked into the Chroma collection at
- * creation time — changing either requires recreating the collection, so they
- * are constants here rather than admin-editable settings.
+ * What the facts were embedded with before the move to OpenRouter. A collection
+ * is fixed to one model and width, so this is not a setting — it is the shape of
+ * the old store, kept only so the re-embed knows what it is reading from.
  */
-export const EMBEDDING_MODEL = 'gemini-embedding-001';
-export const EMBEDDING_DIMENSIONS = 768;
+export const LEGACY_EMBEDDING_MODEL = 'gemini-embedding-001';
+export const LEGACY_EMBEDDING_DIMENSIONS = 768;
+export const LEGACY_FACTS_COLLECTION = 'facts';
 
-export const FACTS_COLLECTION = 'facts';
+/**
+ * What a fresh install embeds with. Both are Settings: changing them builds a
+ * new collection and swaps to it when it is complete, rather than leaving the
+ * store half in one model and half in another.
+ */
+export const DEFAULT_EMBEDDING_MODEL = 'openai/text-embedding-3-large';
+export const DEFAULT_EMBEDDING_DIMENSIONS = 1536;
 
 export const DEFAULT_SETTINGS = {
-  chatModel: 'gemini-3.1-flash-lite',
   checkIntervalMinutes: 60,
   replyContextMessages: 15,
   factSearchTopK: 8,
@@ -22,20 +28,19 @@ export const DEFAULT_SETTINGS = {
   retryAttempts: 2,
   retryDelayMs: 3000,
   duplicateDistance: 25,
+  embeddingModel: DEFAULT_EMBEDDING_MODEL,
+  embeddingDimensions: DEFAULT_EMBEDDING_DIMENSIONS,
   modelFailureThreshold: 3,
   modelRestMinutes: 120,
   visionEnabled: true,
   maxImages: 4,
   textAttachmentMaxKb: 16,
   crossChannelMessages: 30,
-  overloadMessage: "Gemini's getting hammered right now and won't talk to me. Try again in a minute.",
+  overloadMessage: 'every model I can reach is busy right now, try again in a minute',
   busyMessage: 'took me too long to work that one out, ask me again',
   errorMessage: 'something broke on my end, thats not your fault',
   noCreditsMessage: 'im out of credit, someone whos meant to be paying for me isnt',
 } as const;
-
-/** HTTP statuses from Gemini that mean "try again shortly" rather than "you did something wrong". */
-export const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 /** Window the per-user reply cap is measured over. */
 export const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;

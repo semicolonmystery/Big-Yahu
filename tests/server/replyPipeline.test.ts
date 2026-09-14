@@ -6,27 +6,32 @@ import { DEFAULT_SETTINGS } from '../../src/shared/constants';
 const m = vi.hoisted(() => ({
   extract: vi.fn(), generate: vi.fn(), cache: vi.fn(), facts: vi.fn(), sources: vi.fn(), log: vi.fn(),
   canExtract: vi.fn(), admit: vi.fn(), release: vi.fn(), stopTyping: vi.fn(), images: vi.fn(),
-  before: vi.fn(), controller: vi.fn(), referenceWindow: vi.fn(), settings: vi.fn(),
+  before: vi.fn(), after: vi.fn(), controller: vi.fn(), referenceWindow: vi.fn(), settings: vi.fn(),
 }));
 vi.mock('../../src/server/ai/topicExtraction', () => ({ extractTopic: m.extract }));
 vi.mock('../../src/server/ai/replyGeneration', () => ({ generateReply: m.generate }));
 vi.mock('../../src/server/db/repositories/settingsRepo', () => ({ getSettings: m.settings }));
 vi.mock('../../src/server/db/repositories/channelSettingsRepo', () => ({ canExtractFrom: m.canExtract }));
 vi.mock('../../src/server/db/repositories/controllersRepo', () => ({ isController: m.controller }));
-vi.mock('../../src/server/db/repositories/factsRepo', () => ({ searchFacts: m.facts }));
+vi.mock('../../src/server/db/repositories/factsRepo', () => ({ recallFacts: m.facts }));
 vi.mock('../../src/server/db/repositories/cachedMessagesRepo', () => ({ cacheMessages: m.cache, getMessages: m.sources }));
 vi.mock('../../src/server/db/repositories/replyLogRepo', () => ({ logReply: m.log }));
 vi.mock('../../src/server/bot/replyAdmission', () => ({ admitReply: m.admit }));
 vi.mock('../../src/server/bot/typing', () => ({ startTyping: () => m.stopTyping }));
-vi.mock('../../src/server/bot/attachments', () => ({ imagePartsFor: m.images }));
+// Only the download is replaced; the rest of the module, such as the image
+// part adapter the reply still uses, stays real.
+vi.mock('../../src/server/bot/attachments', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/server/bot/attachments')>(),
+  imagePartsFor: m.images,
+}));
 vi.mock('../../src/server/bot/channelAccess', () => ({ readableChannelRoster: () => '', resolveReadableChannel: vi.fn() }));
 vi.mock('../../src/server/plugins/engine', () => ({
-  collectAnnotations: () => '', collectInstructions: () => [], runBeforeReply: m.before,
+  collectAnnotations: () => '', collectInstructions: () => [], runBeforeReply: m.before, runAfterReply: m.after,
 }));
 vi.mock('../../src/server/ai/context', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/server/ai/context')>(), windowMessagesWithAttachments: m.referenceWindow,
 }));
-import { OverloadedError } from '../../src/server/ai/generate';
+import { OverloadedError } from '../../src/server/ai/errors';
 import { AIRequestBudgetError } from '../../src/server/ai/requestBudget';
 import { handleMention } from '../../src/server/bot/replyPipeline';
 
@@ -46,12 +51,16 @@ function message() {
 describe('complete reply pipeline boundaries', () => {
   beforeEach(() => {
     m.settings.mockReturnValue({ ...DEFAULT_SETTINGS });
-    m.extract.mockResolvedValue({ topic: { coreTopic: 'topic', whatTaggingMessageIsAbout: 'question' }, windowMessages: [window], discordMessages: [] });
+    m.extract.mockResolvedValue({
+      topic: { coreTopic: 'topic', whatTaggingMessageIsAbout: 'question', searchQuery: 'the question', people: [] },
+      windowMessages: [window], discordMessages: [],
+    });
     m.generate.mockResolvedValue({ text: 'answer', silent: false, savedFactIds: [], deletedFactIds: [], replyToMessageId: null });
     m.canExtract.mockReturnValue(true); m.admit.mockReturnValue(m.release); m.controller.mockReturnValue(false);
     m.facts.mockResolvedValue([]); m.sources.mockReturnValue([]);
     m.images.mockResolvedValue({ images: [], unseen: new Map() });
     m.before.mockImplementation(async ({ draftPrompt }) => ({ draftPrompt, skipReply: false }));
+    m.after.mockResolvedValue(undefined);
     m.referenceWindow.mockResolvedValue([{ ...window, id: 'old' }]);
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -60,6 +69,62 @@ describe('complete reply pipeline boundaries', () => {
     expect(msg.reply).toHaveBeenCalledWith({ content: 'answer', allowedMentions: { parse: ['users'], repliedUser: true } });
     expect(m.log).toHaveBeenCalledWith(expect.objectContaining({ replyMessageId: 'sent', taggedMessageId: '22' }));
     expect(m.release).toHaveBeenCalledTimes(1); expect(m.stopTyping).toHaveBeenCalledTimes(1);
+  });
+  it('searches memory with the topic search query and who, where and when it is about', async () => {
+    m.extract.mockResolvedValueOnce({
+      topic: {
+        coreTopic: 'pets', whatTaggingMessageIsAbout: 'whose dog', searchQuery: 'Someone owns a dog',
+        people: ['12345678901234567'], channels: ['555'], dateFrom: '3.4.2026', dateTo: '5.4.2026',
+      },
+      windowMessages: [window], discordMessages: [],
+    });
+    await handleMention(message() as unknown as Message);
+    // The ids go as facets, not glued onto the text: an embedding cannot mean an id.
+    expect(m.facts).toHaveBeenCalledWith({
+      query: 'Someone owns a dog', topK: DEFAULT_SETTINGS.factSearchTopK, guildId: 'guild',
+      people: ['12345678901234567'], channels: ['555'], dateFrom: '3.4.2026', dateTo: '5.4.2026',
+    });
+  });
+
+  it('falls back to the core topic when the model gave no search query', async () => {
+    m.extract.mockResolvedValueOnce({
+      topic: { coreTopic: 'pets', whatTaggingMessageIsAbout: 'whose dog', searchQuery: '', people: [] },
+      windowMessages: [window], discordMessages: [],
+    });
+    await handleMention(message() as unknown as Message);
+    expect(m.facts).toHaveBeenCalledWith(expect.objectContaining({ query: 'pets' }));
+  });
+  it('hands the model one JSON document: who is asking, what they asked, the messages and what it remembers', async () => {
+    m.controller.mockReturnValueOnce(true);
+    m.facts.mockResolvedValueOnce([{ id: 'fact-1', text: 'a fact', metadata: { channelId: 'public', messageIds: [] } }]);
+    await handleMention(message() as unknown as Message);
+
+    const material = m.generate.mock.calls[0][0].material;
+    expect(material).toMatchObject({
+      trigger: 'mention',
+      channel: { id: 'public' },
+      requester: { id: window.authorId, isController: true },
+      whatIsBeingAsked: 'question',
+      messages: [expect.objectContaining({ id: '22', authorId: window.authorId, content: 'question' })],
+      memory: { facts: [{ id: 'fact-1', channelId: 'public', text: 'a fact' }] },
+      people: [expect.objectContaining({ id: window.authorId, isAsking: true, spokeHere: true })],
+    });
+    expect(material.now).toEqual(expect.any(String));
+  });
+  it('tells plugins the reply is out only once it has actually been sent', async () => {
+    const msg = message();
+    m.after.mockImplementation(async () => {
+      // Whatever a plugin does here, the answer is already in the channel.
+      expect(msg.reply).toHaveBeenCalled();
+    });
+    await handleMention(msg as unknown as Message);
+    expect(m.after).toHaveBeenCalledWith({ taggedMessage: msg, sentMessageId: 'sent', silent: false });
+  });
+  it('tells them about a deliberate silence too, with nothing sent', async () => {
+    m.generate.mockResolvedValueOnce({ text: '', silent: true });
+    const msg = message();
+    await handleMention(msg as unknown as Message);
+    expect(m.after).toHaveBeenCalledWith({ taggedMessage: msg, sentMessageId: null, silent: true });
   });
   it('propagates the controller result as authoritative reply context', async () => {
     m.controller.mockReturnValueOnce(true);
@@ -111,10 +176,10 @@ describe('complete reply pipeline boundaries', () => {
     expect(m.images).toHaveBeenCalledExactlyOnceWith([oldImage], DEFAULT_SETTINGS.maxImages);
     expect(download).toHaveBeenCalledTimes(1);
     const [draft, context] = m.generate.mock.calls[0];
-    const prompt = draft.conversation[0].parts[0].text;
-    expect(prompt.slice(prompt.indexOf('The message being replied to:'))).toContain('[image not shown]');
+    expect(draft.material.quoted).toEqual([expect.objectContaining({ id: 'old', unseenImages: 1 })]);
+    expect(draft.material.images).toBeUndefined();
     expect(context.quotedMessages).toEqual([expect.objectContaining({ id: 'old', unseenImages: 1 })]);
-    expect(draft.conversation[0].parts).toHaveLength(1);
+    expect(draft.images).toEqual([]);
   });
   it('marks recent and quoted images when vision is disabled without downloading either', async () => {
     const { imagePartsFor } = await vi.importActual<typeof import('../../src/server/bot/attachments')>('../../src/server/bot/attachments');
@@ -129,7 +194,7 @@ describe('complete reply pipeline boundaries', () => {
     const recentImage = imageMessage(window.id);
     const oldImage = imageMessage('old');
     m.extract.mockResolvedValueOnce({
-      topic: { coreTopic: 'images', whatTaggingMessageIsAbout: 'pictures' },
+      topic: { coreTopic: 'images', whatTaggingMessageIsAbout: 'pictures', searchQuery: 'pictures', people: [] },
       windowMessages: [{ ...window, content: '' }], discordMessages: [recentImage],
     });
     m.referenceWindow.mockResolvedValueOnce([{ ...window, id: 'old', content: '' }]);
@@ -140,9 +205,10 @@ describe('complete reply pipeline boundaries', () => {
     expect(m.images).toHaveBeenCalledExactlyOnceWith([recentImage, oldImage], 0);
     expect(download).not.toHaveBeenCalled();
     const [draft, context] = m.generate.mock.calls[0];
-    expect(draft.conversation[0].parts[0].text.match(/\[image not shown\]/g)).toHaveLength(2);
+    expect(draft.material.messages[0].unseenImages).toBe(1);
+    expect(draft.material.quoted[0].unseenImages).toBe(1);
+    expect(draft.images).toEqual([]);
     expect(context.quotedMessages[0]).toMatchObject({ id: 'old', unseenImages: 1 });
-    expect(draft.conversation[0].parts).toHaveLength(1);
   });
   it('honours deliberate silence and plugin skip without writing a reply log', async () => {
     m.generate.mockResolvedValueOnce({ text: '', silent: true });
@@ -155,7 +221,7 @@ describe('complete reply pipeline boundaries', () => {
   it('sends the configured fallback on empty or failed generation and releases resources', async () => {
     const msg = message(); m.generate.mockResolvedValueOnce({ text: '', silent: false });
     await handleMention(msg as unknown as Message);
-    // Producing no text is a bug, not load, and no longer claims Gemini is busy.
+    // Producing no text is a bug, not load, and no longer claims the model is busy.
     expect(msg.reply).toHaveBeenCalledWith(expect.objectContaining({ content: DEFAULT_SETTINGS.errorMessage }));
     m.extract.mockRejectedValueOnce(new Error('unavailable'));
     await handleMention(message() as unknown as Message);

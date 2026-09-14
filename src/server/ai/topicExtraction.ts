@@ -30,9 +30,12 @@ export async function extractTopic(
   const windowMessages = await windowMessagesWithAttachments(discordMessages, attachmentBudget);
 
   const topic = await runEscalatableExtraction<TopicResult>({
+    aiTask: 'topicExtraction',
     schema: topicSchema,
+    hint: (result) => result.searchQuery,
     systemInstruction: buildTopicExtractionInstruction(),
-    task: `The last message (id=${taggedMessage.id}) is the one that mentioned the bot. Work out what is being asked.`,
+    task: 'Work out what is being asked.',
+    material: { channelId: taggedMessage.channelId, taggingMessageId: taggedMessage.id },
     windowMessages,
     anchorMessage: taggedMessage,
     guildId,

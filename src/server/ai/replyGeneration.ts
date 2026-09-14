@@ -1,18 +1,15 @@
-import { FunctionCallingConfigMode } from '@google/genai';
-import type { Content, FunctionCall, FunctionDeclaration, GenerateContentResponse } from '@google/genai';
 import type { Message } from 'discord.js';
-import { generate } from './generate';
+import { chat, userMessageWithImages, type ChatMessage, type ChatToolCall, type ToolDeclaration } from './chat';
 import {
   effectiveMaxDepth,
   fetchOlderMessages,
   fetchRecentMessages,
-  formatFacts,
-  formatTranscript,
   listGuildPeople,
   mentionRoster,
   toWindowMessage,
 } from './context';
 import type { WindowMessage } from './context';
+import { factsMaterial, messagesMaterial, renderMaterial } from './material';
 import {
   deleteFactDeclaration,
   listPeopleDeclaration,
@@ -23,7 +20,7 @@ import {
   staySilentDeclaration,
 } from './schemas';
 import { resolveReadableChannel } from '../bot/channelAccess';
-import { addFacts, deleteFact, searchFacts } from '../db/repositories/factsRepo';
+import { addFacts, deleteFact, recallFacts } from '../db/repositories/factsRepo';
 import { cacheMessages, getMessages } from '../db/repositories/cachedMessagesRepo';
 import { getSettings } from '../db/repositories/settingsRepo';
 import { canExtractFrom } from '../db/repositories/channelSettingsRepo';
@@ -33,6 +30,7 @@ import {
   mentionedUserIds,
   normaliseFactMentions,
   restoreMentions,
+  expandLinkMarkers,
   stripPromptMarkers,
   stripUnknownJumpLinks,
   stripUnknownMentions,
@@ -126,44 +124,15 @@ function looksLikeToolNarration(text: string): boolean {
 }
 
 /**
- * The reply text, read off the parts directly.
- *
- * `response.text` does the same thing, and logs a warning about the non-text
- * parts every single time — which on a bot that calls a tool on nearly every
- * reply means the log is mostly that warning. Thought parts are skipped, exactly
- * as the accessor does: the model's reasoning is not the message.
+ * Tools nothing is expected back from. Once the model has written its message
+ * and everything it called was one of these, the reply is finished: asking it to
+ * carry on only buys a round trip and a chance to narrate what it just did.
  */
-function textOf(response: GenerateContentResponse): string {
-  const parts = response.candidates?.[0]?.content?.parts ?? [];
-  return parts
-    .filter((part) => typeof part.text === 'string' && part.thought !== true)
-    .map((part) => part.text)
-    .join('')
-    .trim();
-}
+const HOST_EFFECT_TOOLS = new Set(['save_fact', 'delete_fact', 'reply_to', 'stay_silent']);
 
-/**
- * The model's own turn must be echoed back exactly as received — Gemini 3
- * attaches a thoughtSignature to tool-call parts and rejects a rebuilt copy.
- */
-function functionResponseTurn(
-  modelTurn: Content | undefined,
-  calls: FunctionCall[],
-  responses: Map<FunctionCall, Record<string, unknown>>,
-): Content[] {
-  const turns: Content[] = [];
-  if (modelTurn) turns.push(modelTurn);
-  turns.push({
-    role: 'user',
-    parts: calls.map((call) => ({
-      functionResponse: {
-        name: call.name,
-        ...(call.id ? { id: call.id } : {}),
-        response: responses.get(call) ?? { error: 'This tool was not executed.', note: REPLY_NOW },
-      },
-    })),
-  });
-  return turns;
+/** Discord ids a tool named, ignoring anything that is not one. */
+function readPeople(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string' && /^\d{5,}$/.test(entry)) : [];
 }
 
 export async function generateReply(draft: DraftPrompt, context: ReplyContext): Promise<GeneratedReply> {
@@ -179,7 +148,8 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     requestContent: context.taggedMessage.content,
   });
 
-  const conversation: Content[] = [...draft.conversation];
+  const materialText = renderMaterial(draft.material);
+  const messages: ChatMessage[] = [userMessageWithImages(materialText, draft.images)];
   // Everything already read out of another channel counts as seen, or the
   // sanitisers below would strip the very jump links and mentions the prompt
   // just handed the model.
@@ -197,10 +167,18 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     ...foreignMessages.map((message) => message.authorId),
     ...draft.sourceMessages.map((message) => message.authorId),
   ]);
+  // Which channel each known message lives in, so a link the model asks for can
+  // be built. Discord links are per channel, and a message read out of another
+  // channel must not be linked as though it were said here.
+  const channelByMessageId = new Map<string, string>([
+    ...localMessages.map((message) => [message.id, context.channelId] as const),
+    [context.taggedMessage.id, context.channelId] as const,
+    ...(context.foreignMessages ?? []).flatMap((read) =>
+      read.messages.map((message) => [message.id, read.channelId] as const)),
+    ...draft.sourceMessages.map((message) => [message.messageId, message.channelId] as const),
+  ]);
   const knownFactIds = new Set(draft.retrievedFacts.map((fact) => fact.id));
-  for (const content of draft.conversation) for (const part of content.parts ?? []) {
-    if (part.text) for (const id of mentionedUserIds(part.text)) knownUserIds.add(id);
-  }
+  for (const id of mentionedUserIds(materialText)) knownUserIds.add(id);
   // Discord can only hang a reply under a message in the same channel, so this
   // is deliberately narrower than knownMessageIds — which also holds anything
   // read out of another channel, and the sources under a recalled fact.
@@ -236,6 +214,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     );
     for (const message of messages) {
       knownMessageIds.add(message.id);
+      channelByMessageId.set(message.id, channelId);
       knownUserIds.add(message.authorId);
       for (const id of mentionedUserIds(message.content)) knownUserIds.add(id);
       foreignMessages.push(message);
@@ -266,28 +245,28 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
   const MAX_TURNS = 12;
 
   /** Runs the plugin tools called in one turn, answering honestly when the budget is spent. */
-  const dispatchPluginCalls = async (calls: FunctionCall[]): Promise<ToolResponses> => {
+  const dispatchPluginCalls = async (calls: ChatToolCall[]): Promise<ToolResponses> => {
     const responses: ToolResponses = {};
     for (const call of calls) {
-      const resolved = pluginByName.get(call.name ?? '');
+      const resolved = pluginByName.get(call.name);
       if (!resolved) continue;
 
       if (toolCalls >= MAX_TOOL_CALLS) {
         // Saying "done" here would tell the model a tool ran when it never did.
-        responses[call.name ?? ''] = {
+        responses[call.name] = {
           error: 'You have used up the tool calls for this reply. Answer with what you already have.',
         };
         continue;
       }
       toolCalls += 1;
 
-      const result = await runTool(resolved, (call.args ?? {}) as Record<string, unknown>, invocation);
+      const result = await runTool(resolved, call.args, invocation);
       // Everything crosses the boundary as JSON, so the model always gets a shape it can read.
       const payload =
         typeof result === 'object' && result !== null && !Array.isArray(result)
           ? (result as Record<string, unknown>)
           : { result };
-      responses[call.name ?? ''] = { ...payload, note: REPLY_NOW };
+      responses[call.name] = { ...payload, note: REPLY_NOW };
       console.log(`[plugins] ${resolved.pluginId}.${resolved.tool.name} answered`);
     }
     return responses;
@@ -301,6 +280,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
   const readForeignChannel = async (
     channelId: string,
     lookingFor: string,
+    people: string[],
   ): Promise<{ status: string; response: Record<string, unknown> }> => {
     if (!/^\d{5,}$/.test(channelId)) {
       return { status: 'not a channel id', response: { error: 'That is not a channel id.' } };
@@ -314,8 +294,11 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
 
     let relatedFacts: Fact[] = [];
     if (lookingFor.trim()) {
-      const found = await searchFacts(lookingFor, settings.factSearchTopK, {
-        $and: [{ guildId: context.guildId }, { channelId }],
+      const found = await recallFacts({
+        query: lookingFor,
+        topK: settings.factSearchTopK,
+        people,
+        where: { $and: [{ guildId: context.guildId }, { channelId }] },
       });
       relatedFacts = found.filter(
         (fact) => fact.metadata.channelId === channelId && !knownFactIds.has(fact.id),
@@ -330,10 +313,9 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     return {
       status: `${fetched.length} message(s)`,
       response: {
-        channel: `<#${channelId}>`,
-        messages: fetched.length > 0 ? formatTranscript(fetched) : 'Nothing has been said in there recently.',
-        remembered: relatedFacts.length > 0 ? formatFacts(relatedFacts) : 'Nothing stored about that channel matched.',
-        sources,
+        channel: { id: channelId },
+        messages: messagesMaterial(fetched),
+        remembered: factsMaterial(relatedFacts, sources),
         note:
           'These were said in a different channel from the one you are replying in. Say so if it matters, '
           + `and link them with that channel's id rather than this one's. ${REPLY_NOW}`,
@@ -347,14 +329,14 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
    * turn that also produces the reply. A fact the model decided to keep while it
    * was still asking for context used to be dropped on the floor.
    */
-  const applyTurnCalls = async (calls: FunctionCall[]): Promise<ToolResponses> => {
+  const applyTurnCalls = async (calls: ChatToolCall[]): Promise<ToolResponses> => {
     const responses: ToolResponses = {};
 
     const targetCall = calls.find((call) => call.name === 'reply_to');
     if (targetCall) {
-      const messageId = typeof targetCall.args?.messageId === 'string' ? targetCall.args.messageId : '';
+      const messageId = typeof targetCall.args.messageId === 'string' ? targetCall.args.messageId : '';
       if (channelMessageIds.has(messageId)) {
-        const why = typeof targetCall.args?.why === 'string' ? targetCall.args.why : 'no reason given';
+        const why = typeof targetCall.args.why === 'string' ? targetCall.args.why : 'no reason given';
         console.log(`[bot] replying under ${messageId} instead: ${why}`);
         replyToMessageId = messageId;
         responses.reply_to = { attached: true, note: REPLY_NOW };
@@ -371,13 +353,13 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
 
     const deleteCall = calls.find((call) => call.name === 'delete_fact');
     if (deleteCall) {
-      const factId = typeof deleteCall.args?.factId === 'string' ? deleteCall.args.factId : '';
+      const factId = typeof deleteCall.args.factId === 'string' ? deleteCall.args.factId : '';
       if (!canExtractFrom(context.channelId)) return { delete_fact: { deleted: false, error: 'Memory changes are disabled in this channel.' } };
       // Stable-ID updates already replaced this record. Do not delete its new version.
       if (savedFactIds.includes(factId)) return { delete_fact: { deleted: false, replaced: true, note: REPLY_NOW } };
       // Only facts actually shown in this turn, so a hallucinated id cannot delete anything.
       if (factId && knownFactIds.has(factId) && (await deleteFact(factId))) {
-        const why = typeof deleteCall.args?.why === 'string' ? deleteCall.args.why : 'no reason given';
+        const why = typeof deleteCall.args.why === 'string' ? deleteCall.args.why : 'no reason given';
         console.log(`[bot] deleted fact ${factId}: ${why}`);
         deletedFactIds.push(factId);
         knownFactIds.delete(factId);
@@ -394,7 +376,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     const saveCall = calls.find((call) => call.name === 'save_fact');
     if (saveCall) {
       if (!canExtractFrom(context.channelId)) return { save_fact: { saved: false, error: 'Memory is disabled in this channel.' } };
-      const args = (saveCall.args ?? {}) as SaveFactArgs;
+      const args = saveCall.args as SaveFactArgs;
       // Stored facts name people by id, not by whatever they are called today.
       const factText =
         typeof args.text === 'string'
@@ -436,29 +418,30 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
   const MAX_TOTAL_CALLS = 20;
   for (let turn = 0; turn < MAX_TURNS; turn += 1) {
     const lastTurn = turn === MAX_TURNS - 1;
-    const declarations: FunctionDeclaration[] = [staySilentDeclaration, replyToDeclaration];
+    const declarations: ToolDeclaration[] = [staySilentDeclaration, replyToDeclaration];
     if (canExtractFrom(context.channelId)) declarations.push(saveFactDeclaration, deleteFactDeclaration);
     // Keep declarations present for tool calls already in conversation history.
     declarations.push(requestMoreContextDeclaration, listPeopleDeclaration, readChannelDeclaration,
       ...pluginTools.map((tool) => tool.declaration));
-    const response = await generate(conversation, {
-      systemInstruction: draft.systemInstruction,
-      tools: [{ functionDeclarations: declarations }],
-      toolConfig: { functionCallingConfig: { mode: lastTurn ? FunctionCallingConfigMode.NONE : FunctionCallingConfigMode.AUTO } },
-      automaticFunctionCalling: { disable: true },
+    const answer = await chat('reply', {
+      system: draft.systemInstruction,
+      messages,
+      tools: declarations,
+      // On the last turn the tools are taken away rather than offered and
+      // refused, so the model has nothing to do but answer.
+      toolChoice: lastTurn ? 'none' : 'auto',
+      hasImages: draft.images.length > 0,
     });
-    const calls = response.functionCalls ?? [];
-    const modelTurn = response.candidates?.[0]?.content;
-    let text = textOf(response);
+    const calls = answer.toolCalls;
+    let text = answer.text;
     if (answeredTools && looksLikeToolNarration(text)) text = '';
     if (calls.length === 0) {
       if (text || pendingText) { finalText = text || pendingText; break; }
       if (++emptyTurns > MAX_EMPTY_TURNS || lastTurn) break;
-      if (modelTurn?.parts?.length) conversation.push(modelTurn);
-      conversation.push({ role: 'user', parts: [{ text: `You sent nothing. ${REPLY_NOW}` }] });
+      messages.push(answer.message, { role: 'user', content: `You sent nothing. ${REPLY_NOW}` });
       continue;
     }
-    const responses = new Map<FunctionCall, Record<string, unknown>>();
+    const responses = new Map<ChatToolCall, Record<string, unknown>>();
     let silent = false;
     let needsResult = false;
     let saveFailed = false;
@@ -466,7 +449,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     // emitted delete_fact first. Responses still retain the original call order.
     const ordered = [...calls].sort((a, b) => Number(b.name === 'save_fact') - Number(a.name === 'save_fact'));
     for (const call of ordered) {
-      const name = call.name ?? '';
+      const name = call.name;
       try {
         if (lastTurn || ++totalCalls > MAX_TOTAL_CALLS) {
           responses.set(call, { error: 'Tool budget exhausted; this call was not executed.' });
@@ -499,21 +482,29 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
           })));
           for (const message of fetched) {
             knownMessageIds.add(message.id); channelMessageIds.add(message.id); knownUserIds.add(message.authorId);
+            channelByMessageId.set(message.id, context.channelId);
             for (const id of mentionedUserIds(message.content)) knownUserIds.add(id);
           }
-          const lookingFor = typeof call.args?.lookingFor === 'string' ? call.args.lookingFor : '';
+          const lookingFor = typeof call.args.lookingFor === 'string' ? call.args.lookingFor : '';
           const newFacts = lookingFor.trim()
-            ? (await searchFacts(lookingFor, settings.factSearchTopK, { guildId: context.guildId }))
-              .filter((fact) => canExtractFrom(fact.metadata.channelId) && !knownFactIds.has(fact.id)) : [];
+            ? (await recallFacts({
+              query: lookingFor,
+              topK: settings.factSearchTopK,
+              guildId: context.guildId,
+              people: readPeople(call.args.people),
+            })).filter((fact) => canExtractFrom(fact.metadata.channelId) && !knownFactIds.has(fact.id)) : [];
           for (const fact of newFacts) knownFactIds.add(fact.id);
           const sources = getMessages(newFacts.flatMap((fact) => fact.metadata.messageIds))
             .filter((source) => source.guildId === context.guildId && canExtractFrom(source.channelId));
-          for (const source of sources) { knownMessageIds.add(source.messageId); knownUserIds.add(source.authorId); }
+          for (const source of sources) {
+      knownMessageIds.add(source.messageId);
+      channelByMessageId.set(source.messageId, source.channelId);
+      knownUserIds.add(source.authorId);
+    }
           for (const fact of newFacts) for (const id of mentionedUserIds(fact.text)) knownUserIds.add(id);
           responses.set(call, {
-            olderMessages: formatTranscript(fetched) || 'No older messages available.',
-            additionalFacts: formatFacts(newFacts) || 'No further facts matched.',
-            sources,
+            olderMessages: messagesMaterial(fetched),
+            additionalFacts: factsMaterial(newFacts, sources),
             note: contextRequests >= maxDepth ? `This was the final history batch. ${REPLY_NOW}` : REPLY_NOW,
           });
         } else if (name === 'list_people') {
@@ -521,9 +512,9 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
           peopleListings += 1;
           needsResult = true;
           const listing = listGuildPeople(context.taggedMessage,
-            typeof call.args?.nameContains === 'string' ? call.args.nameContains : undefined);
-          for (const id of mentionedUserIds(listing)) knownUserIds.add(id);
-          responses.set(call, { people: listing, note: REPLY_NOW });
+            typeof call.args.nameContains === 'string' ? call.args.nameContains : undefined);
+          for (const person of listing.people) knownUserIds.add(person.id);
+          responses.set(call, { ...listing, note: REPLY_NOW });
         } else if (name === 'read_channel') {
           if (settings.crossChannelMessages <= 0 || channelReads >= MAX_CHANNEL_READS) {
             responses.set(call, { error: 'Channel reading disabled or budget exhausted.' }); continue;
@@ -531,8 +522,9 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
           channelReads += 1;
           needsResult = true;
           const answer = await readForeignChannel(
-            typeof call.args?.channelId === 'string' ? call.args.channelId.trim() : '',
-            typeof call.args?.lookingFor === 'string' ? call.args.lookingFor : '',
+            typeof call.args.channelId === 'string' ? call.args.channelId.trim() : '',
+            typeof call.args.lookingFor === 'string' ? call.args.lookingFor : '',
+            readPeople(call.args.people),
           );
           responses.set(call, answer.response);
         } else if (pluginByName.has(name)) {
@@ -554,12 +546,30 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     if (rejected || needsResult) pendingText = '';
     if (rejected) needsResult = true;
     if (text && !needsResult) pendingText = text;
-    conversation.push(...functionResponseTurn(modelTurn, calls, responses));
+
+    // Everything it called was fire-and-forget and went through, and the message
+    // is already written. Another turn would only invite it to narrate what it
+    // just did, which is the failure this whole loop keeps tripping over.
+    const everyCallWasAnEffect = calls.every((call) =>
+      HOST_EFFECT_TOOLS.has(call.name) || pluginByName.get(call.name)?.tool.effect === true);
+    if (text && !needsResult && everyCallWasAnEffect) { finalText = text; break; }
+
+    // The model's turn goes back exactly as it arrived: it carries the reasoning
+    // the provider requires unchanged, and a rebuilt copy is refused.
+    messages.push(answer.message);
+    for (const call of calls) {
+      messages.push({
+        role: 'tool',
+        tool_call_id: call.id,
+        content: JSON.stringify(responses.get(call) ?? { error: 'This tool was not executed.', note: REPLY_NOW }),
+      });
+    }
     answeredTools = true;
   }
   let text = finalText || pendingText;
   text = stripPromptMarkers(text);
   text = restoreMentions(text, mentionRoster([...localMessages, ...foreignMessages, ...olderMessages]));
+  text = expandLinkMarkers(text, context.guildId, (id) => channelByMessageId.get(id));
   text = stripUnknownJumpLinks(text, knownMessageIds);
   // A member being cached does not mean that member was present in the prompt.
   text = stripUnknownMentions(text,

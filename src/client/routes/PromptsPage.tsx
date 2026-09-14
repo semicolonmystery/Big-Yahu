@@ -69,16 +69,18 @@ function PromptCard({
       </CardHeader>
 
       <CardContent className="flex flex-col gap-4">
-        {prompt.placeholders.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>Replaced when the bot runs:</span>
-            {prompt.placeholders.map((name) => (
-              <code key={name} className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{`{{${name}}}`}</code>
-            ))}
-            <span>— it will not save without them.</span>
-          </div>
+        {prompt.legacyFormat && (
+          <Alert>
+            <AlertTitle>Written for the old format</AlertTitle>
+            <AlertDescription>
+              Your version still describes the transcript the bot used to be given — markers like
+              {' '}<code className="font-mono text-xs">[id=…]</code>, or <code className="font-mono text-xs">{'{{now}}'}</code>.
+              The bot now hands the model one JSON document instead, so those no longer appear anywhere and this
+              prompt is describing something that is not there. Compare it with the shipped version below, or reset
+              to it and make your changes again.
+            </AlertDescription>
+          </Alert>
         )}
-
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`prompt-${prompt.id}`} className="sr-only">{prompt.label}</Label>
           <Textarea

@@ -1,13 +1,20 @@
-import { Type } from '@google/genai';
-import type { FunctionDeclaration, Schema } from '@google/genai';
+import type { ToolDeclaration } from './chat';
+import type { JsonSchema } from './jsonSchema';
 
-const factListSchema: Schema = {
-  type: Type.ARRAY,
+/**
+ * The shapes of the structured answers, as plain JSON Schema. Every property is
+ * required and nothing else is allowed; a field with nothing to say is an empty
+ * string or an empty list, never missing. The descriptions are the instructions
+ * the model reads for each field, so they carry the rules, not just the type.
+ */
+const factList: JsonSchema = {
+  type: 'array',
+  description: 'The facts worth remembering. An empty array is a perfectly good answer.',
   items: {
-    type: Type.OBJECT,
+    type: 'object',
     properties: {
       text: {
-        type: Type.STRING,
+        type: 'string',
         description:
           'The fact, stated so it still makes sense months later. Always in English. Name people by their '
           + '<@ID> mention rather than their display name. Write dates absolutely — never "tomorrow" or '
@@ -17,56 +24,101 @@ const factListSchema: Schema = {
           + 'and it is kept verbatim.',
       },
       messageIds: {
-        type: Type.ARRAY,
-        items: { type: Type.STRING },
+        type: 'array',
+        items: { type: 'string' },
         description: 'IDs of the messages this fact came from. Copy them exactly.',
       },
     },
     required: ['text', 'messageIds'],
+    additionalProperties: false,
   },
 };
 
-export const extractionSchema: Schema = {
-  type: Type.OBJECT,
+export const extractionSchema: JsonSchema = {
+  type: 'object',
   properties: {
-    facts: factListSchema,
+    facts: factList,
     needsMoreContext: {
-      type: Type.BOOLEAN,
+      type: 'boolean',
       description: 'True only if earlier conversation is genuinely required to understand these messages.',
     },
     contextHint: {
-      type: Type.STRING,
+      type: 'string',
       description:
-        'When asking for more context, describe what is missing so the right history can be found. '
-        + 'Name anyone involved both ways: their name and their <@ID> mention.',
+        'When asking for more context, what is missing, so the right history can be found. Name anyone '
+        + 'involved both ways: their name and their <@ID> mention. Empty when nothing is missing.',
     },
   },
-  required: ['facts', 'needsMoreContext'],
+  required: ['facts', 'needsMoreContext', 'contextHint'],
+  additionalProperties: false,
 };
 
-export const topicSchema: Schema = {
-  type: Type.OBJECT,
+const DAY_MONTH_YEAR = '^(\\d{1,2}\\.\\d{1,2}\\.\\d{4})?$';
+
+export const topicSchema: JsonSchema = {
+  type: 'object',
   properties: {
     coreTopic: {
-      type: Type.STRING,
+      type: 'string',
       description:
-        'What this conversation is about, in one or two sentences. These words are used to search stored '
-        + 'memory, so name anyone involved both ways: their name and their <@ID> mention.',
+        'What this conversation is about, in one or two sentences. Name anyone involved both ways: their '
+        + 'name and their <@ID> mention.',
     },
     whatTaggingMessageIsAbout: {
-      type: Type.STRING,
+      type: 'string',
       description:
         'What the person who tagged the bot is actually asking for. Name anyone involved both ways: '
         + 'their name and their <@ID> mention.',
     },
-    facts: factListSchema,
-    needsMoreContext: { type: Type.BOOLEAN },
+    searchQuery: {
+      type: 'string',
+      description:
+        'What to search stored memory for, written the way a stored fact is written: one or two plain '
+        + 'statements of the thing being looked for, never a question, in English. Keep every name, place and '
+        + 'specific term exactly as written; they carry most of the meaning. Leave mentions and dates out of it — '
+        + 'they go in people, channels, dateFrom and dateTo. Add nothing that was not asked for, and do not '
+        + 'answer the question.',
+    },
+    people: {
+      type: 'array',
+      items: { type: 'string' },
+      description:
+        'The Discord user ids of everyone the question is about: the digits from their <@ID> mention. '
+        + 'Empty when it is about nobody in particular.',
+    },
+    channels: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'The ids of any channels the question is about: the digits from <#ID>. Empty when none.',
+    },
+    dateFrom: {
+      type: 'string',
+      pattern: DAY_MONTH_YEAR,
+      description:
+        'When the question is about a particular time, its first day as day.month.year, like "3.10.2026", '
+        + 'worked out from the message timestamps. Empty otherwise.',
+    },
+    dateTo: {
+      type: 'string',
+      pattern: DAY_MONTH_YEAR,
+      description: 'The last day of that time, as day.month.year. The same as dateFrom for a single day. Empty otherwise.',
+    },
+    needsMoreContext: {
+      type: 'boolean',
+      description: 'True only if earlier conversation is genuinely required to work out what is being asked.',
+    },
     contextHint: {
-      type: Type.STRING,
-      description: 'What is missing, naming anyone involved by both their name and their <@ID> mention.',
+      type: 'string',
+      description:
+        'What is missing, naming anyone involved by both their name and their <@ID> mention. Empty when '
+        + 'nothing is missing.',
     },
   },
-  required: ['coreTopic', 'whatTaggingMessageIsAbout', 'facts', 'needsMoreContext'],
+  required: [
+    'coreTopic', 'whatTaggingMessageIsAbout', 'searchQuery', 'people', 'channels', 'dateFrom', 'dateTo',
+    'needsMoreContext', 'contextHint',
+  ],
+  additionalProperties: false,
 };
 
 export interface ExtractedFact {
@@ -77,37 +129,52 @@ export interface ExtractedFact {
 export interface ExtractionResult {
   facts: ExtractedFact[];
   needsMoreContext: boolean;
-  contextHint?: string;
+  contextHint: string;
 }
 
-export interface TopicResult extends ExtractionResult {
+export interface TopicResult {
   coreTopic: string;
   whatTaggingMessageIsAbout: string;
+  searchQuery: string;
+  people: string[];
+  channels: string[];
+  dateFrom: string;
+  dateTo: string;
+  needsMoreContext: boolean;
+  contextHint: string;
 }
 
-export const requestMoreContextDeclaration: FunctionDeclaration = {
+export const requestMoreContextDeclaration: ToolDeclaration = {
   name: 'request_more_context',
   description:
     'Ask for older messages from this channel and more stored facts before you answer. ' +
     'Call this when the question depends on something said earlier than what you can see. ' +
     'Never guess at what someone said — if it is not in front of you, ask for more or say you do not have it.',
-  parametersJsonSchema: {
+  parameters: {
     type: 'object',
     properties: {
       lookingFor: {
         type: 'string',
         description:
-          'What you need to find, in a sentence. Used to search stored facts. '
-          + 'Name every person both ways — their name as people say it and their <@ID> mention, like '
-          + '"what Someone <@123456> said about the trip". Stored facts refer to people by ID, while the '
-          + 'conversation refers to them by name, so a search carrying only one of the two finds half of what is there.',
+          'What you need to find, written the way a stored fact would say it: a plain statement, not a '
+          + 'question, like "Someone <@123456> said something about the trip". It is used to search stored facts. '
+          + 'Name every person both ways — their name as people say it and their <@ID> mention. Stored facts '
+          + 'refer to people by ID, while the conversation refers to them by name, so a search carrying only one '
+          + 'of the two finds half of what is there.',
+      },
+      people: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'The Discord ids of anyone it is about — the digits from their <@ID> mention. Memory knows who each '
+          + 'fact concerns, so naming them here finds what is about them even when the wording differs.',
       },
     },
     required: ['lookingFor'],
   },
 };
 
-export const listPeopleDeclaration: FunctionDeclaration = {
+export const listPeopleDeclaration: ToolDeclaration = {
   name: 'list_people',
   description:
     'List the people in this server the bot can currently see, with what each of them is doing right now. '
@@ -116,7 +183,7 @@ export const listPeopleDeclaration: FunctionDeclaration = {
     + 'typed as plain text. It does not read messages and cannot tell you what anyone said; for that, use '
     + 'request_more_context instead. The list is everyone visible, not the full membership, so somebody '
     + 'missing from it is not proof they are not in the server.',
-  parametersJsonSchema: {
+  parameters: {
     type: 'object',
     properties: {
       nameContains: {
@@ -129,14 +196,14 @@ export const listPeopleDeclaration: FunctionDeclaration = {
   },
 };
 
-export const readChannelDeclaration: FunctionDeclaration = {
+export const readChannelDeclaration: ToolDeclaration = {
   name: 'read_channel',
   description:
     'Read the recent messages of another channel in this server. Reach for it when what you are asked '
     + 'about happened somewhere else — somebody points at a channel, or asks what is going on in one. '
     + 'Only pass a channel id you were actually given; the channels you may read are listed for you. '
     + 'For older messages in the channel you are already in, use request_more_context instead.',
-  parametersJsonSchema: {
+  parameters: {
     type: 'object',
     properties: {
       channelId: {
@@ -146,15 +213,22 @@ export const readChannelDeclaration: FunctionDeclaration = {
       lookingFor: {
         type: 'string',
         description:
-          'What you are after in there, in a sentence. Also used to search what you remember about that '
-          + 'channel. Name people both ways, their name and their <@ID> mention.',
+          'What you are after in there, written as a plain statement rather than a question. Also used to '
+          + 'search what you remember about that channel. Name people both ways, their name and their <@ID> mention.',
+      },
+      people: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'The Discord ids of anyone it is about — the digits from their <@ID> mention. Memory knows who each '
+          + 'fact concerns, so naming them here finds what is about them even when the wording differs.',
       },
     },
     required: ['channelId'],
   },
 };
 
-export const replyToDeclaration: FunctionDeclaration = {
+export const replyToDeclaration: ToolDeclaration = {
   name: 'reply_to',
   description:
     'Attach your reply to a different message than the one that tagged you. You always reply to something, '
@@ -162,7 +236,7 @@ export const replyToDeclaration: FunctionDeclaration = {
     + 'Use it when the message that pinged you is not the one you are answering: somebody pulled you into '
     + 'a question another person asked and forgot to tag you in, so your answer belongs under theirs. '
     + 'Only pass a message id from this channel that you were actually shown.',
-  parametersJsonSchema: {
+  parameters: {
     type: 'object',
     properties: {
       messageId: {
@@ -175,14 +249,14 @@ export const replyToDeclaration: FunctionDeclaration = {
   },
 };
 
-export const deleteFactDeclaration: FunctionDeclaration = {
+export const deleteFactDeclaration: ToolDeclaration = {
   name: 'delete_fact',
   description:
     'Forget a stored fact permanently. Use it when a fact you were given is genuinely out of date or wrong: '
     + 'superseded by newer information, retracted, or the situation changed. When you know the corrected version, '
     + 'call save_fact as well so the memory is replaced rather than just emptied. '
     + 'Do not delete because someone dislikes a fact or simply asked you to. Only ever pass an id you were shown.',
-  parametersJsonSchema: {
+  parameters: {
     type: 'object',
     properties: {
       factId: { type: 'string', description: 'The factId of the fact to forget, exactly as given to you.' },
@@ -192,14 +266,14 @@ export const deleteFactDeclaration: FunctionDeclaration = {
   },
 };
 
-export const staySilentDeclaration: FunctionDeclaration = {
+export const staySilentDeclaration: ToolDeclaration = {
   name: 'stay_silent',
   description:
     'Say nothing at all. No message is sent. Use this when replying would only feed something pointless: '
     + 'someone baiting you for a reaction, or a slanging match that is going nowhere. '
     + 'If you have already said you are done with someone, this is how you actually be done. '
     + 'Do not use it just because a message is short or has no question in it — read the conversation first.',
-  parametersJsonSchema: {
+  parameters: {
     type: 'object',
     properties: {
       why: { type: 'string', description: 'One short line, for the logs. Nobody in the chat sees this.' },
@@ -208,14 +282,14 @@ export const staySilentDeclaration: FunctionDeclaration = {
   },
 };
 
-export const saveFactDeclaration: FunctionDeclaration = {
+export const saveFactDeclaration: ToolDeclaration = {
   name: 'save_fact',
   description:
     'Store something from your reply as a durable fact, so it can be recalled in future conversations. ' +
     'Only call this when your reply contains information worth remembering later — not for small talk. ' +
     'The fact is always written in English, whatever language you are replying in, and names people by ' +
     'their <@ID> mention rather than by a display name that will change.',
-  parametersJsonSchema: {
+  parameters: {
     type: 'object',
     properties: {
       text: {

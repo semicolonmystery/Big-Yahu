@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.hoisted(() => {
   vi.stubEnv('DISCORD_TOKEN', '');
   vi.stubEnv('DISCORD_GUILD_ID', '');
-  vi.stubEnv('GEMINI_API_KEY', '');
+  vi.stubEnv('OPENROUTER_API_KEY', '');
 });
 vi.mock('dotenv', () => ({ default: { config: vi.fn() } }));
 
@@ -15,9 +15,9 @@ describe('runtime configuration', () => {
   beforeEach(() => { env.discordGuildId = undefined; });
   afterEach(() => { env.discordGuildId = undefined; });
 
-  it('allows the admin panel without Discord or Gemini credentials', () => {
+  it('allows the admin panel without Discord or model credentials', () => {
     expect(parseEnvironment({})).toMatchObject({
-      discordToken: undefined, discordGuildId: undefined, geminiApiKey: undefined,
+      discordToken: undefined, discordGuildId: undefined, openrouterApiKey: undefined,
       port: 3000, chromaPort: 8000, trustedProxyHops: 0,
     });
     expect(isServedGuild(guildId)).toBe(false);
@@ -25,24 +25,24 @@ describe('runtime configuration', () => {
   });
 
   it('rejects a token without a guild before the bot starts', () => {
-    expect(() => parseEnvironment({ DISCORD_TOKEN: 'secret-token', GEMINI_API_KEY: 'secret-key' }))
+    expect(() => parseEnvironment({ DISCORD_TOKEN: 'secret-token', OPENROUTER_API_KEY: 'secret-key' }))
       .toThrow('DISCORD_GUILD_ID is required');
   });
 
-  it('rejects a token without a Gemini key', () => {
+  it('rejects a token without an OpenRouter key', () => {
     expect(() => parseEnvironment({ DISCORD_TOKEN: 'secret-token', DISCORD_GUILD_ID: guildId }))
-      .toThrow('GEMINI_API_KEY is required');
+      .toThrow('OPENROUTER_API_KEY is required');
   });
 
   it.each(['all', '123', '00000000000000000', '-12345678901234567', '18446744073709551616', '123456789012345678901'])
     ('rejects the malformed guild ID %s without exposing tokens', (id) => {
-      expect(() => parseEnvironment({ DISCORD_TOKEN: 'secret-token', DISCORD_GUILD_ID: id, GEMINI_API_KEY: 'secret-key' }))
+      expect(() => parseEnvironment({ DISCORD_TOKEN: 'secret-token', DISCORD_GUILD_ID: id, OPENROUTER_API_KEY: 'secret-key' }))
         .toThrow(/^DISCORD_GUILD_ID must be a valid Discord server ID$/);
     });
 
   it('trims copied credentials and allows exactly the configured guild', () => {
-    const parsed = parseEnvironment({ DISCORD_TOKEN: ' token ', DISCORD_GUILD_ID: ` ${guildId} `, GEMINI_API_KEY: ' key ' });
-    expect(parsed).toMatchObject({ discordToken: 'token', discordGuildId: guildId, geminiApiKey: 'key' });
+    const parsed = parseEnvironment({ DISCORD_TOKEN: ' token ', DISCORD_GUILD_ID: ` ${guildId} `, OPENROUTER_API_KEY: ' key ' });
+    expect(parsed).toMatchObject({ discordToken: 'token', discordGuildId: guildId, openrouterApiKey: 'key' });
     env.discordGuildId = parsed.discordGuildId;
     expect(isServedGuild(guildId)).toBe(true);
     expect(isServedGuild('223456789012345678')).toBe(false);
@@ -60,7 +60,7 @@ describe('runtime configuration', () => {
 describe('graceful shutdown', () => {
   const mockedModules = [
     '../../src/server/app', '../../src/server/env', '../../src/server/db/client',
-    '../../src/server/db/repositories/chatModelsRepo', '../../src/server/bot/client',
+    '../../src/server/bot/client',
     '../../src/server/bot/events/ready', '../../src/server/bot/events/messageCreate',
     '../../src/server/plugins/engine', '../../src/server/scheduler/hourlyCheck',
   ];
@@ -92,7 +92,6 @@ describe('graceful shutdown', () => {
     vi.doMock('../../src/server/app', () => ({ createApp: () => ({ listen: () => server }) }));
     vi.doMock('../../src/server/env', () => ({ env: { port: 3000 } }));
     vi.doMock('../../src/server/db/client', () => ({ runMigrations: vi.fn(), closeDatabase }));
-    vi.doMock('../../src/server/db/repositories/chatModelsRepo', () => ({ seedFromSettings: vi.fn() }));
     vi.doMock('../../src/server/bot/client', () => ({ discordClient: { destroy } }));
     vi.doMock('../../src/server/bot/events/ready', () => ({ registerReady: vi.fn() }));
     vi.doMock('../../src/server/bot/events/messageCreate', () => ({ registerMessageCreate: vi.fn(), drainMessageHandlers }));

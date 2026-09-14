@@ -13,7 +13,7 @@
  * reason, and none of its hooks, tools or pages are reachable.
  *
  * **This package's major version is the contract version.** Depend on
- * `"@big-yahu/plugin-sdk": "^3"` and you have declared which contract you
+ * `"@big-yahu/plugin-sdk": "^4"` and you have declared which contract you
  * speak — there is no second field to keep in step, and updating the SDK is
  * the whole of updating your declaration.
  *
@@ -22,7 +22,7 @@
  * against a contract the host does not speak may do anything at import time, and
  * running its top level to find out it should not have run is the wrong order.
  */
-export const PLUGIN_API_VERSION = 3;
+export const PLUGIN_API_VERSION = 4;
 
 /** What the bot reads out of a plugin's package.json. */
 export interface PluginManifest {

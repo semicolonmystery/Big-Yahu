@@ -29,11 +29,10 @@ vi.mock('../../src/server/db/client', async () => {
 });
 
 import { db } from '../../src/server/db/client';
-import { channelCheckpoints, channelSettings, settings, controllers, chatModels } from '../../src/server/db/schema';
+import { channelCheckpoints, channelSettings, settings, controllers } from '../../src/server/db/schema';
 import { invalidate } from '../../src/server/db/repositories/channelSettingsRepo';
 import { channelsRouter } from '../../src/server/api/routes/channels';
 import { settingsRouter } from '../../src/server/api/routes/settings';
-import { modelsRouter } from '../../src/server/api/routes/models';
 import { controllersRouter } from '../../src/server/api/routes/controllers';
 import { isController } from '../../src/server/db/repositories/controllersRepo';
 import { DEFAULT_SETTINGS } from '../../src/shared/constants';
@@ -46,7 +45,6 @@ beforeAll(async () => {
   app.use(express.json());
   app.use('/channels', channelsRouter);
   app.use('/settings', settingsRouter);
-  app.use('/models', modelsRouter);
   app.use('/controllers', controllersRouter);
   server = app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -63,7 +61,6 @@ beforeEach(() => {
   db.delete(channelSettings).run();
   db.delete(settings).run();
   db.delete(controllers).run();
-  db.delete(chatModels).run();
   invalidate();
 });
 
@@ -172,47 +169,5 @@ describe('controller administration', () => {
   ])('rejects invalid controller input: %j', async (body) => {
     expect((await send('POST', '/controllers', body)).status).toBe(400);
     expect(db.select().from(controllers).all()).toHaveLength(0);
-  });
-});
-
-describe('chat model administration', () => {
-  it('adds, reorders, changes weight and deletes model IDs including a slash', async () => {
-    const model = 'models/gemini-fast';
-    expect((await (await fetch(`${baseUrl}/models`)).json()).data).toEqual([]);
-    expect((await send('POST', '/models', { model, weight: 100 })).status).toBe(200);
-    expect((await send('POST', '/models', { model: 'gemini-careful', weight: 50 })).status).toBe(200);
-    let response = await send('PUT', '/models/order', { order: ['gemini-careful', model] });
-    expect(response.status).toBe(200);
-    expect((await response.json()).data.map((entry: { model: string }) => entry.model)).toEqual(['gemini-careful', model]);
-    response = await patch(`/models/${encodeURIComponent(model)}`, { weight: 1001 });
-    expect(response.status).toBe(200);
-    expect((await response.json()).data[0]).toMatchObject({ model, weight: 1000 });
-    expect((await send('DELETE', `/models/${encodeURIComponent(model)}`)).status).toBe(200);
-    expect((await send('DELETE', `/models/${encodeURIComponent(model)}`)).status).toBe(404);
-    expect((await patch(`/models/${encodeURIComponent(model)}`, { weight: 1 })).status).toBe(404);
-  });
-
-  it('revives all models by clearing their rest periods and errors', async () => {
-    await send('POST', '/models', { model: 'gemini-fast' });
-    await send('POST', '/models', { model: 'gemini-careful' });
-    db.update(chatModels).set({ consecutiveFailures: 3, restingUntil: Date.now() + 60_000, lastError: 'Provider overloaded' }).run();
-    const response = await send('POST', '/models/revive', {});
-    expect(response.status).toBe(200);
-    const revived = (await response.json()).data;
-    expect(revived).toHaveLength(2);
-    for (const model of revived) expect(model).toMatchObject({ consecutiveFailures: 0, restingUntil: null, lastError: null });
-  });
-
-  it.each([
-    {}, { model: 'contains spaces' }, { model: 'gemini-fast', weight: 1.5 }, { model: 'gemini-fast', weight: '100' },
-  ])('rejects invalid model input: %j', async (body) => {
-    expect((await send('POST', '/models', body)).status).toBe(400);
-    expect(db.select().from(chatModels).all()).toHaveLength(0);
-  });
-
-  it('rejects malformed order and weight updates', async () => {
-    expect((await send('PUT', '/models/order', { order: 'gemini-fast' })).status).toBe(400);
-    expect((await send('PUT', '/models/order', { order: [123] })).status).toBe(400);
-    expect((await patch('/models/gemini-fast', { weight: 0.5 })).status).toBe(400);
   });
 });

@@ -15,6 +15,8 @@ describe('image attachment limits', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('png', { headers: { 'content-type': 'image/png' } })));
     const result = await imagePartsFor(messages(5), 3);
     expect(result.images.map((image) => image.messageId)).toEqual(['0', '2', '4']);
+    // Neutral, so any model API can carry it: the type and the base64 bytes.
+    expect(result.images[0]).toEqual({ messageId: '0', mimeType: 'image/png', data: Buffer.from('png').toString('base64') });
     expect([...result.unseen.keys()]).toEqual(['1', '3']);
   });
   it('never downloads images with a zero budget', async () => {
@@ -22,12 +24,19 @@ describe('image attachment limits', () => {
     const result = await imagePartsFor(messages(2), 0);
     expect(result.images).toEqual([]); expect(result.unseen.size).toBe(2); expect(fetch).not.toHaveBeenCalled();
   });
-  it('converts GIF through the Discord image proxy and deduplicates URLs', async () => {
+  it('converts a phone photo through the Discord image proxy and deduplicates URLs', async () => {
     const fetch = vi.fn().mockImplementation(async () => new Response('png', { headers: { 'content-type': 'image/png' } }));
     vi.stubGlobal('fetch', fetch);
-    const [msg] = messages(1, 'image/gif');
+    const [msg] = messages(1, 'image/heic');
     const result = await imagePartsFor([msg, msg], 4);
     expect(result.images).toHaveLength(1); expect(fetch.mock.calls[0][0]).toContain('format=png');
+  });
+  it('sends a GIF as it is, rather than paying the proxy to flatten it', async () => {
+    const fetch = vi.fn().mockImplementation(async () => new Response('gif', { headers: { 'content-type': 'image/gif' } }));
+    vi.stubGlobal('fetch', fetch);
+    const result = await imagePartsFor(messages(1, 'image/gif'), 4);
+    expect(result.images[0].mimeType).toBe('image/gif');
+    expect(fetch.mock.calls[0][0]).not.toContain('format=png');
   });
   it('skips a stream exceeding the byte allowance and cancels it', async () => {
     const cancel = vi.fn();

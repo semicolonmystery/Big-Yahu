@@ -30,7 +30,6 @@
   "dependencies": {
     "@base-ui/react": "^1.8.0",
     "@fontsource-variable/geist": "^5.3.0",
-    "@google/genai": "^2.21.0",
     "@tailwindcss/vite": "^4.3.3",
     "adm-zip": "^0.6.0",
     "better-sqlite3": "^13.0.3",
@@ -47,6 +46,7 @@
     "lucide-react": "^1.42.0",
     "multer": "^2.3.0",
     "next-themes": "^0.4.6",
+    "openai": "^7.15.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.3",

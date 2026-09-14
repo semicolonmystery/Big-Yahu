@@ -1,7 +1,6 @@
 import { createApp } from './app';
 import { env } from './env';
 import { closeDatabase, runMigrations } from './db/client';
-import { seedFromSettings } from './db/repositories/chatModelsRepo';
 import { discordClient } from './bot/client';
 import { registerReady } from './bot/events/ready';
 import { drainMessageHandlers, registerMessageCreate } from './bot/events/messageCreate';
@@ -9,7 +8,6 @@ import { attachDiscordClient, loadPlugins } from './plugins/engine';
 import { startScheduler, stopScheduler } from './scheduler/hourlyCheck';
 
 runMigrations();
-seedFromSettings();
 await loadPlugins();
 
 const server = createApp().listen(env.port, () => {

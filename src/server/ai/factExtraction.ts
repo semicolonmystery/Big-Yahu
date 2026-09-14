@@ -8,7 +8,6 @@ import { cacheMessages } from '../db/repositories/cachedMessagesRepo';
 import { advanceCheckpoint, getCheckpoint } from '../db/repositories/checkpointRepo';
 import { collectExtractionAnnotations, runOnHourlyCheck } from '../plugins/engine';
 import { getSettings } from '../db/repositories/settingsRepo';
-import { formatNow } from '@shared/constants';
 import { normaliseFactMentions } from '@shared/discord';
 import { imagePartsFor } from '../bot/attachments';
 import { createTextAttachmentBudget, readTextAttachments } from '../bot/textAttachments';
@@ -91,14 +90,6 @@ async function extractPage(channel: TextBasedChannel, guildId: string, messages:
 
   const windowMessages = markUnseenImages(expandedMessages, unseen);
 
-  const imageNote =
-    images.length > 0
-      ? ` ${images.length} image(s) from these messages are attached, in order: `
-        + `${images.map((image, index) => `image ${index + 1} from [id=${image.messageId}]`).join(', ')}. `
-        + 'Read them as part of the message they belong to. A line marked "image not shown" had one you '
-        + 'were not given: do not guess at what it was.'
-      : '';
-
   // Plugins may put background beside the window — who "he" is, what "the thing"
   // refers to. Its own hook, not annotateContext: reaching the pass that writes
   // permanent memory is something a plugin has to opt into knowingly.
@@ -114,14 +105,23 @@ async function extractPage(channel: TextBasedChannel, guildId: string, messages:
   });
 
   const result = await runEscalatableExtraction<ExtractionResult>({
+    aiTask: 'factExtraction',
     schema: extractionSchema,
-    systemInstruction: buildFactExtractionInstruction(formatNow(settings.timezone)),
-    task: `Extract the facts worth remembering from this channel.${imageNote}`
-      + (background ? `\n\n${background}` : ''),
+    hint: (answer) => answer.facts.map((fact) => fact.text).join(' '),
+    systemInstruction: buildFactExtractionInstruction(),
+    task: 'Extract the facts worth remembering from this channel.',
+    material: {
+      channelId: channel.id,
+      // Which picture came from which message, in the order they are attached.
+      ...(images.length > 0
+        ? { images: images.map((image, index) => ({ index: index + 1, messageId: image.messageId })) }
+        : {}),
+      ...(background ? { pluginNotes: [background] } : {}),
+    },
     windowMessages,
     anchorMessage: newest,
     guildId,
-    imageParts: images.map((image) => image.part),
+    images,
     attachmentBudget,
   });
 

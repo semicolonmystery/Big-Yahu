@@ -1,9 +1,8 @@
 import type { Message } from 'discord.js';
-import type { Part } from '@google/genai';
 import { isDiscordImageUrl, readBoundedBody } from './boundedDownload';
 
-/** Gemini's inline image formats. Notably GIF is not among them. */
-const SUPPORTED = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif']);
+/** What may be sent as a data URI unchanged. A phone photo (HEIC) is not among them. */
+const SUPPORTED = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
 const MAX_BYTES = 5 * 1024 * 1024;
 // Base64 adds roughly one third; leave space below the inline request ceiling.
@@ -19,12 +18,14 @@ interface Candidate {
 /** A picture, and the message it was posted in, so the prompt can say which is which. */
 export interface MessageImage {
   messageId: string;
-  part: Part;
+  mimeType: string;
+  /** Base64. */
+  data: string;
 }
 
 /**
- * Discord's media proxy re-encodes on request, which is how an animated GIF
- * becomes something Gemini will accept — it has no GIF support at all.
+ * Discord's media proxy re-encodes on request, which is how a phone's HEIC
+ * photo becomes something a model will accept.
  */
 function asStillImage(url: string): string {
   const parsed = new URL(url);
@@ -51,7 +52,7 @@ function collect(message: Message): Candidate[] {
   return found;
 }
 
-async function download(candidate: Candidate, maxBytes: number): Promise<Part | null> {
+async function download(candidate: Candidate, maxBytes: number): Promise<Omit<MessageImage, 'messageId'> | null> {
   const needsReencoding = !candidate.mimeType || !SUPPORTED.has(candidate.mimeType);
   const url = needsReencoding ? asStillImage(candidate.url) : candidate.url;
 
@@ -65,7 +66,7 @@ async function download(candidate: Candidate, maxBytes: number): Promise<Part | 
   const buffer = Buffer.from(await readBoundedBody(response, Math.min(MAX_BYTES, maxBytes)));
   if (buffer.byteLength === 0 || buffer.byteLength > MAX_BYTES) return null;
 
-  return { inlineData: { mimeType, data: buffer.toString('base64') } };
+  return { mimeType, data: buffer.toString('base64') };
 }
 
 /** How many pictures a message has that the model was not given, by message id. */
@@ -135,8 +136,8 @@ export async function imagePartsFor(messages: (Message | null)[], limit: number)
   const bytesPerImage = Math.min(MAX_BYTES, Math.floor(MAX_WINDOW_BYTES / budgeted.length));
   for (let start = 0; start < budgeted.length; start += 4) {
     const group = await Promise.all(budgeted.slice(start, start + 4).map(async (candidate) => {
-      const part = await download(candidate, bytesPerImage).catch(() => null);
-      return part ? { messageId: candidate.messageId, part } : null;
+      const image = await download(candidate, bytesPerImage).catch(() => null);
+      return image ? { messageId: candidate.messageId, ...image } : null;
     }));
     downloaded.push(...group);
   }

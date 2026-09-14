@@ -2,7 +2,7 @@
 
 A Discord bot that remembers what a server talks about.
 
-On a timer it reads through each channel, has Gemini pick out the things worth
+On a timer it reads through each channel, has a model pick out the things worth
 remembering, and stores them as embeddings in ChromaDB alongside the messages
 they came from. When you mention it or reply to it, it looks up what is
 relevant, answers, and links back to the original messages.
@@ -41,7 +41,7 @@ how it behaves.
 - **Looks in other channels.** A channel mentioned alongside the ping is read
   automatically, and it can ask to read any channel it is allowed to. Channels
   with reading switched off stay off.
-- **Handles rate limits.** Retries transient Gemini errors with a configurable
+- **Handles rate limits.** Retries transient provider errors with a configurable
   count and delay, and falls back to a message you choose if it stays down.
   Per-user hourly reply caps are configurable too. Failures are sorted by the
   API's own status rather than lumped together, because one sentence for every
@@ -66,12 +66,10 @@ how it behaves.
   editable text, either typed in the panel or uploaded as a file. Edits apply to
   the next message, with no restart. Only your version is stored, so resetting
   deletes it and hands the prompt back to the shipped text, improvements
-  included. `{{now}}`, `{{language}}` and `{{guildId}}` are substituted at call
-  time and a prompt that drops one is refused when you save it, rather than
-  quietly leaving the bot with no idea what day it is. Nothing is appended
-  behind your back — what you save is exactly what the model is given. Gemini's
-  own safety filtering still applies to every call and is left at its defaults;
-  the bot sets no `safetySettings` of its own.
+  included. Nothing is substituted into a prompt and nothing is appended behind
+  your back — what you save is exactly what the model is given. Everything that
+  changes between calls, the date included, arrives in the JSON document sent
+  alongside it, which is what lets the prompt itself be cached.
 - **One guild.** `DISCORD_GUILD_ID` is required in bot mode. Every other guild
   is ignored before any work, and an absent guild never enables a global mode.
 - **Per-channel control.** Reading for facts and replying are separate switches
@@ -136,7 +134,8 @@ notice.
 
 - Docker and Docker Compose
 - A Discord bot token, with **Message Content** and **Presence** intents enabled
-- A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
+- An [OpenRouter](https://openrouter.ai/settings/keys) API key, which covers
+  both the chat model and embeddings
 
 For Discord Admin, give the bot only the Discord permissions for the switches
 you enable: **Manage Nicknames**, **Timeout Members**, **Kick Members**, **Ban
@@ -156,7 +155,7 @@ cd Big-Yahu
 cp .env.example .env
 ```
 
-Fill in `DISCORD_TOKEN`, `DISCORD_GUILD_ID` and `GEMINI_API_KEY` in `.env`, then:
+Fill in `DISCORD_TOKEN`, `DISCORD_GUILD_ID` and `OPENROUTER_API_KEY` in `.env`, then:
 
 ```bash
 docker compose up -d
@@ -176,7 +175,7 @@ Discord Developer Portal before starting the bot.
 | --- | --- |
 | `DISCORD_TOKEN` | Bot token from the Discord Developer Portal |
 | `DISCORD_GUILD_ID` | The server the bot runs in |
-| `GEMINI_API_KEY` | Google AI Studio API key |
+| `OPENROUTER_API_KEY` | OpenRouter API key, used for chat and embeddings alike |
 | `SQLITE_PATH` | Optional. Where the SQLite file is written |
 | `HOST_PORT` | Optional. Where Compose publishes the panel — `8080`, or `127.0.0.1:8080` to keep it off the network. Set this rather than editing `docker-compose.yml` |
 | `PORT` | Optional. Port the server listens on. Fixed at 3000 under Compose, so this only applies when running it directly |
@@ -186,7 +185,7 @@ on the project's private network, so it is never published to the host and its
 port cannot clash with anything.
 
 Everything else is edited in the admin panel and takes effect without a
-restart: the Gemini models and the order they are tried in, how often channels
+restart: the model list for each job and the order they are tried in, how often channels
 are scanned, how much context is read, how deep it may dig for history, how
 much of another channel it may pull in, vision and its image budget, reply
 language, rate limits, retry policy and the messages it sends when limits are
@@ -216,13 +215,13 @@ npm run check   # build, test typechecking, lint and coverage
 npm test        # offline unit, component and HTTP/SQLite regression tests
 npm run test:coverage
 npx playwright install chromium
-npm run test:e2e # real browser + isolated admin server, no Discord/Gemini calls
+npm run test:e2e # real browser + isolated admin server, no Discord or model calls
 ```
 
 Database migrations are generated with `npx drizzle-kit generate` and applied
 automatically when the server starts.
 
-The bot requires exactly one `DISCORD_GUILD_ID` and a Gemini key whenever a
+The bot requires exactly one `DISCORD_GUILD_ID` and an OpenRouter key whenever a
 Discord token is configured. Enable both Message Content and Presence intents
 in the Discord developer portal. With no Discord token, the admin panel can run
 on its own. `/api/health` checks SQLite and, in bot mode, Discord and Chroma.
@@ -239,7 +238,7 @@ Waiting for retries or queued memory writes also stops when that deadline expire
 
 For an isolated Chroma check, set `CHROMA_HOST` and `CHROMA_PORT` to a test server
 and run `npm run test:integration`. It uses deterministic embeddings and its own
-temporary collection, never a Gemini key or the bot's facts collection. CI runs
+temporary collection, never an API key or the bot's facts collection. CI runs
 Windows/Linux checks, the browser flow, a real Chroma check, and production
 image startup/shutdown.
 
@@ -304,7 +303,7 @@ from `docker compose logs bot`.
 src/client/    Admin panel (React, Vite, Tailwind, shadcn/ui)
 src/server/
   bot/         discord.js client, event handlers, reply pipeline
-  ai/          Gemini calls, prompts, schemas, embeddings, extraction
+  ai/          OpenRouter calls, prompts, schemas, embeddings, extraction
   db/          Drizzle schema and repositories, ChromaDB client
   plugins/     Plugin engine and installed plugins
   api/         Express routes and auth

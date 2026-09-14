@@ -8,6 +8,13 @@
       "when": 1788946895698,
       "tag": "0000_milky_shriek",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1789386137893,
+      "tag": "0001_minor_songbird",
+      "breakpoints": true
     }
   ]
 }

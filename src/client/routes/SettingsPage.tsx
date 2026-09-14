@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
-import { ArrowDown, ArrowUp, Check, ChevronsUpDown, GripVertical, Trash2 } from 'lucide-react';
+import { Check, ChevronsUpDown, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { AppSettings, ChannelPermission, ChatModel, Controller } from '@shared/types';
+import type { AppSettings, ChannelPermission, Controller } from '@shared/types';
 import { LANGUAGES } from '@shared/constants';
 import { api } from '@/lib/api';
+import { AiTasksSection } from '@/components/settings/AiTasksSection';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -16,7 +17,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from '@/components/ui/command';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table';
 import { Switch } from '@/components/ui/switch';
-import { Badge } from '@/components/ui/badge';
 import {
   Dialog,
   DialogContent,
@@ -125,292 +125,6 @@ const FIELDS: FieldSpec[] = [
     max: 60000,
   },
 ];
-
-function ChatModelsSection() {
-  const [models, setModels] = useState<ChatModel[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [newModel, setNewModel] = useState('');
-  const [adding, setAdding] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [dragging, setDragging] = useState<string | null>(null);
-  const [removeTarget, setRemoveTarget] = useState<ChatModel | null>(null);
-  // Rest periods expire on their own, so the row has to re-evaluate over time.
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .listModels()
-      .then((data) => {
-        if (!cancelled) setModels(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load models');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const persistOrder = async (ordered: ChatModel[]) => {
-    const previous = models;
-    setModels(ordered);
-    setBusy(true);
-    try {
-      setModels(await api.reorderModels(ordered.map((entry) => entry.model)));
-    } catch (err) {
-      setModels(previous);
-      toast.error(err instanceof Error ? err.message : 'Failed to save the order');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const move = (model: string, delta: number) => {
-    if (!models) return;
-    const from = models.findIndex((entry) => entry.model === model);
-    const to = from + delta;
-    if (from < 0 || to < 0 || to >= models.length) return;
-    const ordered = [...models];
-    const [moved] = ordered.splice(from, 1);
-    ordered.splice(to, 0, moved);
-    void persistOrder(ordered);
-  };
-
-  const handleDrop = (targetModel: string) => {
-    if (!models || !dragging || dragging === targetModel) return;
-    const from = models.findIndex((entry) => entry.model === dragging);
-    const to = models.findIndex((entry) => entry.model === targetModel);
-    if (from < 0 || to < 0) return;
-    const ordered = [...models];
-    const [moved] = ordered.splice(from, 1);
-    ordered.splice(to, 0, moved);
-    setDragging(null);
-    void persistOrder(ordered);
-  };
-
-  const handleAdd = async (event: FormEvent) => {
-    event.preventDefault();
-    const model = newModel.trim();
-    if (!model) return;
-    setAdding(true);
-    try {
-      await api.addModel(model);
-      setModels(await api.listModels());
-      setNewModel('');
-      toast.success(`${model} added`);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to add the model');
-    } finally {
-      setAdding(false);
-    }
-  };
-
-  const handleRemove = async () => {
-    if (!removeTarget) return;
-    setBusy(true);
-    try {
-      setModels(await api.removeModel(removeTarget.model));
-      toast.success(`${removeTarget.model} removed`);
-      setRemoveTarget(null);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove the model');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleRevive = async () => {
-    setBusy(true);
-    try {
-      setModels(await api.reviveModels());
-      toast.success('Every model is back in rotation');
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to revive the models');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const resting = (models ?? []).filter((entry) => (entry.restingUntil ?? 0) > now && !entry.retired);
-  // Retirement is only ever lifted here, so the button has to appear for it too
-  // — otherwise a pool of retired models has no way back at all.
-  const retired = (models ?? []).filter((entry) => entry.retired);
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Chat models</CardTitle>
-        <CardDescription>
-          Tried top to bottom. When one fails the next is used instead of retrying the same one; a model that keeps
-          failing is rested for a while. Drag to reorder, or use the arrows.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="flex flex-col gap-5">
-          {error && (
-            <Alert variant="destructive">
-              <AlertTitle>Couldn't load models</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-
-          {loading ? (
-            <Skeleton className="h-28 w-full" />
-          ) : !models || models.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No models configured. Without at least one the bot cannot reply at all.
-            </p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-10" />
-                  <TableHead>Model</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="w-28 text-right">Order</TableHead>
-                  <TableHead className="w-10" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {models.map((entry, index) => {
-                  const isResting = (entry.restingUntil ?? 0) > now;
-                  // Retired is not a heavier shade of resting: nothing lifts it
-                  // but Reset errors, so it must not read as "back shortly".
-                  const isRetired = entry.retired;
-                  return (
-                    <TableRow
-                      key={entry.model}
-                      draggable={!busy}
-                      onDragStart={() => setDragging(entry.model)}
-                      onDragOver={(event) => event.preventDefault()}
-                      onDrop={() => handleDrop(entry.model)}
-                      onDragEnd={() => setDragging(null)}
-                      className={cn(
-                        'cursor-grab',
-                        dragging === entry.model && 'opacity-50',
-                        (isResting || isRetired) && 'text-muted-foreground',
-                      )}
-                    >
-                      <TableCell className="text-muted-foreground">
-                        <GripVertical className="size-4" />
-                      </TableCell>
-                      <TableCell className="font-mono">
-                        {entry.model}
-                        {index === 0 && !isResting && !isRetired && (
-                          <Badge variant="secondary" className="ml-2">
-                            first choice
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {isRetired ? (
-                          <span className="text-xs">
-                            <Badge variant="destructive" className="mr-2">retired</Badge>
-                            the API says it does not exist — Reset errors to try it again
-                            {entry.lastError ? ` — ${entry.lastError.slice(0, 60)}` : ''}
-                          </span>
-                        ) : isResting ? (
-                          <span className="text-xs">
-                            resting until {new Date(entry.restingUntil ?? 0).toLocaleTimeString()}
-                            {entry.lastError ? ` — ${entry.lastError.slice(0, 60)}` : ''}
-                          </span>
-                        ) : entry.consecutiveFailures > 0 ? (
-                          <span className="text-xs">{entry.consecutiveFailures} recent failure(s)</span>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">ready</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={busy || index === 0}
-                          onClick={() => move(entry.model, -1)}
-                          aria-label={`Move ${entry.model} up`}
-                        >
-                          <ArrowUp className="size-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={busy || index === models.length - 1}
-                          onClick={() => move(entry.model, 1)}
-                          aria-label={`Move ${entry.model} down`}
-                        >
-                          <ArrowDown className="size-4" />
-                        </Button>
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={busy}
-                          onClick={() => setRemoveTarget(entry)}
-                          aria-label={`Remove ${entry.model}`}
-                        >
-                          <Trash2 className="size-4" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          )}
-
-          <form className="flex flex-wrap items-end gap-3" onSubmit={(event) => void handleAdd(event)}>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="newModel">Add a model</Label>
-              <Input
-                id="newModel"
-                value={newModel}
-                onChange={(event) => setNewModel(event.target.value)}
-                placeholder="gemini-3.1-flash-lite"
-                className="w-72 font-mono"
-              />
-            </div>
-            <Button type="submit" disabled={adding || !newModel.trim()}>
-              {adding ? 'Adding…' : 'Add'}
-            </Button>
-            {resting.length + retired.length > 0 && (
-              <Button type="button" variant="outline" disabled={busy} onClick={() => void handleRevive()}>
-                Reset errors on {resting.length + retired.length} model{resting.length + retired.length === 1 ? '' : 's'}
-                {retired.length > 0 && ` (${retired.length} retired)`}
-              </Button>
-            )}
-          </form>
-        </div>
-      </CardContent>
-
-      <Dialog open={removeTarget !== null} onOpenChange={(open) => !open && setRemoveTarget(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Remove {removeTarget?.model}?</DialogTitle>
-            <DialogDescription>
-              It will no longer be tried. If it is the only model, the bot cannot reply at all.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <DialogClose render={<Button variant="outline">Cancel</Button>} />
-            <Button variant="destructive" disabled={busy} onClick={() => void handleRemove()}>
-              {busy ? 'Removing…' : 'Remove'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </Card>
-  );
-}
 
 function ChannelPermissionsSection() {
   const [channels, setChannels] = useState<ChannelPermission[] | null>(null);
@@ -1024,7 +738,7 @@ export default function SettingsPage() {
         </Card>
       )}
 
-      <ChatModelsSection />
+      <AiTasksSection />
       <ChannelPermissionsSection />
       <ControllersSection />
     </div>

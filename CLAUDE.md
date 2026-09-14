@@ -58,7 +58,7 @@ This is a monolithic repository holding both a Vite-based React frontend (Admin 
 | `src/client/` | Vite/React frontend for the admin panel. |
 | `src/server/` | Node.js backend (Express + Discord bot + AI logic). |
 | `src/server/bot/` | Discord.js setup, commands, and event listeners. |
-| `src/server/ai/` | Gemini API calls, prompt building, and embeddings. |
+| `src/server/ai/` | OpenRouter API calls, prompt building, and embeddings. |
 | `src/server/db/` | SQLite models (users, stats, settings) and ChromaDB client for vector facts. |
 | `src/server/plugins/` | The plugin system engine and user-installed plugins. |
 | `src/server/api/` | Express routes serving the admin panel. |
@@ -83,7 +83,7 @@ Plugins live in `src/server/plugins/`. A `PLUGINS.md` file must be created to do
 - **Tailwind v4 has no `tailwind.config.*`** — config lives directly in CSS.
 - **Express 5** is used, which has built-in Promise handling for async routes (no need for `express-async-errors` or try/catch wrappers in routes).
 - **Discord.js v14** requires specific Gateway Intents to read message content (`GatewayIntentBits.MessageContent`).
-- **Google GenAI SDK** is `@google/genai` (v2), not the older `@google/generative-ai`.
+- **Every model call goes through OpenRouter**, using the `openai` package pointed at `https://openrouter.ai/api/v1`. There is no second provider.
 - **Monorepo setup**: `npm run dev` starts both Vite (`dev:ui`) and the Node server (`dev:server`) via `concurrently`.
 
 ---

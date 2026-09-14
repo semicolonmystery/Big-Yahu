@@ -5,9 +5,11 @@ import type { Client } from 'discord.js';
 import { mentionsIn, readMention } from '@shared/discord';
 import { getFactsCollection } from '../db/chroma';
 import { addFacts } from '../db/repositories/factsRepo';
-import { ai } from '../ai/client';
-import { generate } from '../ai/generate';
-import { getState, listStates, seedPlugin, setState } from '../db/repositories/pluginStateRepo';
+import { chat, userMessageWithImages, type ToolDeclaration } from '../ai/chat';
+import { structured } from '../ai/structured';
+import type { JsonSchema } from '../ai/jsonSchema';
+import { getState, listStates, seedPlugin, setState, usesSharedModels } from '../db/repositories/pluginStateRepo';
+import { SHARED_PLUGIN_TASK, pluginTaskId } from '@shared/aiTasks';
 import { isController } from '../db/repositories/controllersRepo';
 import { listEnvKeys, readEnv, setEnv } from '../db/repositories/pluginEnvRepo';
 import { storageFor } from '../db/repositories/pluginStorageRepo';
@@ -25,8 +27,12 @@ import { coerceConfig, isUsableField, isUsableSecret } from './configSchema';
 import { knownDisplayNames } from '../bot/identity';
 import { getUsernames } from '../db/repositories/cachedMessagesRepo';
 import type {
+  AfterReplyContext,
   AnnotateContextContext,
   AnnotateExtractionContext,
+  PluginAiTask,
+  PluginGenerateRequest,
+  PluginStructuredRequest,
   ContextAnnotations,
   PluginPage,
   PluginPageData,
@@ -48,7 +54,6 @@ import type {
   PluginToolContext,
   PluginToolInvocation,
 } from '@big-yahu/plugin-sdk';
-import type { FunctionDeclaration } from '@google/genai';
 import type {
   PluginSummary,
   PluginCell as WirePluginCell,
@@ -210,7 +215,8 @@ function isDraftPrompt(value: unknown): value is DraftPrompt {
   const candidate = value as Partial<DraftPrompt>;
   return (
     typeof candidate.systemInstruction === 'string'
-    && Array.isArray(candidate.conversation)
+    && typeof candidate.material === 'object' && candidate.material !== null
+    && Array.isArray(candidate.images)
     && Array.isArray(candidate.retrievedFacts)
     && Array.isArray(candidate.sourceMessages)
   );
@@ -249,6 +255,35 @@ function configFor(pluginId: string): Record<string, unknown> {
  * one `instanceof` here and every plugin carrying its own copy of that library
  * breaks, in a way that looks like the plugin's fault.
  */
+/**
+ * Which list answers a plugin's call: the shared one, or a list of its own for
+ * this job. The operator decides which, per plugin; the plugin only says what
+ * kind of work it is.
+ */
+function aiTaskFor(pluginId: string, task: string | undefined): string {
+  if (usesSharedModels(pluginId)) return SHARED_PLUGIN_TASK;
+  const declared = registry.get(pluginId)?.aiTasks ?? [];
+  const chosen = task && declared.some((entry) => entry.id === task) ? task : declared[0]?.id;
+  return chosen ? pluginTaskId(pluginId, chosen) : SHARED_PLUGIN_TASK;
+}
+
+/** Every job the enabled plugins declare, so the panel can offer a list for each. */
+export function listPluginAiTasks(): Array<{
+  pluginId: string;
+  pluginName: string;
+  useSharedModels: boolean;
+  tasks: PluginAiTask[];
+}> {
+  return enabledPlugins()
+    .filter((plugin) => (plugin.aiTasks?.length ?? 0) > 0)
+    .map((plugin) => ({
+      pluginId: plugin.id,
+      pluginName: plugin.name,
+      useSharedModels: usesSharedModels(plugin.id),
+      tasks: plugin.aiTasks ?? [],
+    }));
+}
+
 async function baseContext(pluginId: string): Promise<PluginContext>;
 async function baseContext(pluginId: string, invocation: PluginToolInvocation): Promise<PluginToolContext>;
 async function baseContext(
@@ -266,8 +301,25 @@ async function baseContext(
     factsCollection,
     saveFacts: addFacts,
     resolveUserNames,
-    generate,
-    ai,
+    generate: async (request: PluginGenerateRequest) => {
+      const answer = await chat(aiTaskFor(pluginId, request.task), {
+        system: request.instruction,
+        messages: [userMessageWithImages(request.prompt, request.images ?? [])],
+        hasImages: (request.images?.length ?? 0) > 0,
+        maxOutputTokens: request.maxOutputTokens,
+      });
+      return { text: answer.text };
+    },
+    generateStructured: async <T>(request: PluginStructuredRequest): Promise<T> => structured<T>(
+      aiTaskFor(pluginId, request.task),
+      {
+        system: request.instruction,
+        user: request.prompt,
+        images: request.images,
+        schema: request.schema as JsonSchema,
+        maxOutputTokens: request.maxOutputTokens,
+      },
+    ),
     discordClient,
     getConfig: <T = Record<string, unknown>>() => configFor(pluginId) as T,
     getEnv: () => readEnv(pluginId),
@@ -426,6 +478,19 @@ export async function collectExtractionAnnotations(
   );
 }
 
+/**
+ * After the reply has gone out. Each plugin is asked in turn and a thrown hook
+ * is logged and swallowed, exactly as the others are: nobody is waiting on this,
+ * and nothing here may take the pipeline down after a reply already succeeded.
+ */
+export async function runAfterReply(payload: Omit<AfterReplyContext, keyof PluginContext>): Promise<void> {
+  for (const plugin of enabledPlugins()) {
+    if (!plugin.afterReply) continue;
+    const ctx: AfterReplyContext = { ...(await baseContext(plugin.id)), ...payload };
+    await safely(plugin.id, 'afterReply', () => plugin.afterReply!(ctx));
+  }
+}
+
 export async function runBeforeReply(
   payload: Omit<BeforeReplyContext, keyof PluginContext>,
 ): Promise<{ draftPrompt: DraftPrompt; skipReply: boolean }> {
@@ -553,7 +618,7 @@ function qualifiedName(pluginId: string, tool: PluginTool): string {
 }
 
 export interface ResolvedTool {
-  declaration: FunctionDeclaration;
+  declaration: ToolDeclaration;
   pluginId: string;
   tool: PluginTool;
 }
@@ -610,7 +675,7 @@ export function collectTools(invocation: PluginToolInvocation): ResolvedTool[] {
         declaration: {
           name: qualifiedName(plugin.id, tool),
           description: tool.description,
-          parametersJsonSchema: tool.parameters,
+          parameters: tool.parameters,
         },
       });
     }

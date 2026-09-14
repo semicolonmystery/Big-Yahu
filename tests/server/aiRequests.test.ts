@@ -1,438 +1,217 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError } from '@google/genai';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { APIError } from 'openai';
 
-vi.mock('../../src/server/env', () => ({ env: { geminiApiKey: 'test-key-never-sent' } }));
-vi.mock('../../src/server/db/client', async () => {
-  const { default: Database } = await import('better-sqlite3');
-  const { drizzle } = await import('drizzle-orm/better-sqlite3');
-  const { migrate } = await import('drizzle-orm/better-sqlite3/migrator');
-  const schema = await import('../../src/server/db/schema');
-  const db = drizzle(new Database(':memory:'), { schema });
-  migrate(db, { migrationsFolder: './drizzle' });
-  return { db };
-});
+const client = vi.hoisted(() => ({
+  embeddings: [] as Array<(params: Record<string, any>, options: { signal?: AbortSignal }) => unknown>,
+  calls: [] as Array<{ params: Record<string, any>; signal?: AbortSignal }>,
+}));
+
+vi.mock('../../src/server/ai/openrouter', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/server/ai/openrouter')>(),
+  openrouter: () => ({
+    embeddings: {
+      create: async (params: Record<string, any>, options: { signal?: AbortSignal } = {}) => {
+        client.calls.push({ params, signal: options.signal });
+        options.signal?.throwIfAborted();
+        const next = client.embeddings.shift();
+        if (!next) throw new Error('no embedding reply queued');
+        return next(params, options);
+      },
+    },
+  }),
+}));
 
 import { db } from '../../src/server/db/client';
-import { chatModels, settings } from '../../src/server/db/schema';
-import { addModel, listModels, reviveAll } from '../../src/server/db/repositories/chatModelsRepo';
+import { aiUsage, settings } from '../../src/server/db/schema';
 import { updateSettings } from '../../src/server/db/repositories/settingsRepo';
-import { generate, OverloadedError } from '../../src/server/ai/generate';
-import { embedDocuments, embedQuery, geminiEmbeddingFunction } from '../../src/server/ai/embeddings';
-import { isRetryable, retryDelay } from '../../src/server/ai/retry';
+import { embedDocuments, embedQuery } from '../../src/server/ai/embeddings';
+import { BillingError, OverloadedError } from '../../src/server/ai/errors';
+import { retryDelay } from '../../src/server/ai/retry';
 import { AIRequestBudgetError, claimAIRequest, withAIRequestBudget } from '../../src/server/ai/requestBudget';
-import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL } from '../../src/shared/constants';
 
-const vector = () => [3, 4, ...Array<number>(EMBEDDING_DIMENSIONS - 2).fill(0)];
-const success = () => Response.json({ candidates: [{ content: { role: 'model', parts: [{ text: 'An answer' }] } }] });
-const unavailable = (status = 503) => Response.json({ error: { code: status, message: 'Model unavailable', status: 'UNAVAILABLE' } }, { status });
-/** Classification reads the canonical status, so a fixture's status must be one a 400 really carries. */
-const apiError = (status: number, canonical: string, message: string) =>
-  Response.json({ error: { code: status, message, status: canonical } }, { status });
-const transport = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => success());
-const payload = (index = 0): Record<string, any> => JSON.parse(String(transport.mock.calls[index][1]?.body));
+const DIMENSIONS = 1536;
+const vector = () => [3, 4, ...Array<number>(DIMENSIONS - 2).fill(0)];
+const answer = (count: number) => () => ({
+  data: Array.from({ length: count }, (_, index) => ({ index, embedding: vector() })),
+  usage: { prompt_tokens: 10, total_tokens: 10, cost: 0.0000001 },
+});
+const fails = (status: number, message: string) => () => {
+  throw APIError.generate(status, { error: { code: status, message } }, undefined, new Headers());
+};
+
+/**
+ * `AbortSignal.timeout` runs on Node's internal timers, which fake timers do not
+ * touch, so the deadlines are fired by hand instead of waited out.
+ */
+const deadlines: Array<{ ms: number; fire: () => void }> = [];
+function stubDeadlines(): void {
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+    const controller = new AbortController();
+    deadlines.push({ ms, fire: () => controller.abort(new DOMException('TimeoutError', 'TimeoutError')) });
+    return controller.signal;
+  });
+}
+/** The most recent one, so a second reply's deadline is not shadowed by the first. */
+const deadlineOf = (ms: number) => deadlines.findLast((entry) => entry.ms === ms);
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  transport.mockReset();
-  transport.mockImplementation(async () => success());
-  vi.stubGlobal('fetch', transport);
-  db.delete(chatModels).run();
+  deadlines.length = 0;
+  client.embeddings = [];
+  client.calls = [];
   db.delete(settings).run();
-  updateSettings({ retryAttempts: 0, retryDelayMs: 0, modelFailureThreshold: 20 });
-  addModel('model-primary', 100);
+  db.delete(aiUsage).run();
+  updateSettings({ retryAttempts: 0, retryDelayMs: 0 });
+  for (const level of ['log', 'warn', 'error'] as const) vi.spyOn(console, level).mockImplementation(() => {});
 });
-afterEach(() => { vi.useRealTimers(); });
-afterAll(() => db.$client.close());
-
-describe('Gemini requests through the real SDK', () => {
-  it('does not add hidden SDK retries when application retries are disabled', async () => {
-    transport.mockImplementation(async () => unavailable());
-    await expect(generate('Question', {})).rejects.toBeInstanceOf(OverloadedError);
-    expect(transport).toHaveBeenCalledTimes(1);
-    expect(listModels()[0].consecutiveFailures).toBe(1);
-  });
-
-  it('falls back to the next model and records failure/success against the correct model', async () => {
-    updateSettings({ modelFailureThreshold: 1 });
-    addModel('model-backup', 50);
-    transport.mockResolvedValueOnce(unavailable()).mockResolvedValueOnce(success());
-    expect((await generate('Question', {})).text).toBe('An answer');
-    expect(transport).toHaveBeenCalledTimes(2);
-    expect(String(transport.mock.calls[0][0])).toContain('model-primary:generateContent');
-    expect(String(transport.mock.calls[1][0])).toContain('model-backup:generateContent');
-    expect(listModels().map(({ model, consecutiveFailures }) => [model, consecutiveFailures]))
-      .toEqual([['model-primary', 1], ['model-backup', 0]]);
-    expect(listModels()[0].restingUntil).toBeGreaterThan(Date.now());
-    await generate('Another question', {});
-    expect(String(transport.mock.calls[2][0])).toContain('model-backup:generateContent');
-  });
-
-  it('performs exactly the configured attempts and reports all exhausted models', async () => {
-    updateSettings({ retryAttempts: 2 });
-    transport.mockImplementation(async () => unavailable());
-    await expect(generate('Question', {})).rejects.toMatchObject({
-      name: 'OverloadedError', attempts: 3, triedModels: ['model-primary', 'model-primary', 'model-primary'],
-    });
-    expect(transport).toHaveBeenCalledTimes(3);
-  });
-
-  it('does not retry a bad request or put its model to rest', async () => {
-    updateSettings({ retryAttempts: 2 });
-    addModel('model-backup', 50);
-    transport.mockImplementation(async () => apiError(400, 'INVALID_ARGUMENT', 'Request contains an invalid argument.'));
-    await expect(generate('Question', {})).rejects.toMatchObject({ status: 400 });
-    expect(transport).toHaveBeenCalledTimes(1);
-    expect(listModels().every((model) => model.consecutiveFailures === 0)).toBe(true);
-  });
-
-  it('fails before a paid request when the model pool is empty', async () => {
-    db.delete(chatModels).run();
-    await expect(generate('Question', {})).rejects.toThrow('No chat models are configured');
-    expect(transport).not.toHaveBeenCalled();
-  });
-
-  // 4096 is the default, not a ceiling: extraction answers a schema over a
-  // whole page and needs more, and on thinking models the budget also pays for
-  // thinking. Only the runaway bound is fixed.
-  it.each([[undefined, 4096], [512, 512], [10_000, 10_000], [32_768, 32_768], [1_000_000, 65_536]])(
-    'bounds output tokens (%s → %s)',
-    async (requested, expected) => {
-      await generate('Question', { maxOutputTokens: requested });
-      expect(payload().generationConfig.maxOutputTokens).toBe(expected);
-      expect(transport.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
-    },
-  );
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
-describe('embedding requests and validation', () => {
-  it('uses document batches of at most 100 and normalizes reduced-dimension embeddings', async () => {
-    transport.mockImplementation(async (_input, init) => {
-      const body = JSON.parse(String(init?.body));
-      const count = body.requests?.length ?? 1;
-      return Response.json({ embeddings: Array.from({ length: count }, () => ({ values: vector() })) });
-    });
-    const result = await embedDocuments(Array.from({ length: 201 }, (_, index) => `Fact ${index}`));
-    expect(transport).toHaveBeenCalledTimes(3);
-    expect([0, 1, 2].map((index) => payload(index).requests.length)).toEqual([100, 100, 1]);
-    expect(result).toHaveLength(201);
-    expect(result[0]).toHaveLength(EMBEDDING_DIMENSIONS);
-    expect(result[0].slice(0, 2)).toEqual([0.6, 0.8]);
-    expect(payload().requests[0]).toMatchObject({
-      taskType: 'RETRIEVAL_DOCUMENT', outputDimensionality: EMBEDDING_DIMENSIONS,
-    });
-    expect(String(transport.mock.calls[0][0])).toContain(EMBEDDING_MODEL);
+describe('embedding requests', () => {
+  it('asks for the configured width and hands back unit vectors in the order given', async () => {
+    client.embeddings.push(() => ({
+      data: [{ index: 1, embedding: vector() }, { index: 0, embedding: [0, 5, ...Array<number>(DIMENSIONS - 2).fill(0)] }],
+      usage: { cost: 0.0000002 },
+    }));
+    const [first, second] = await embedDocuments(['one', 'two']);
+
+    expect(client.calls[0].params).toMatchObject({ model: 'openai/text-embedding-3-large', dimensions: DIMENSIONS, input: ['one', 'two'] });
+    // Answers come back by index, not by arrival: pairing them wrongly would
+    // silently file every fact under somebody else's vector.
+    expect(first[1]).toBeCloseTo(1);
+    expect(Math.hypot(...second)).toBeCloseTo(1);
   });
 
-  it('uses query task type and exposes the cosine embedding-function contract', async () => {
-    transport.mockResolvedValueOnce(Response.json({ embeddings: [{ values: vector() }] }));
-    expect((await embedQuery('Who won?')).slice(0, 2)).toEqual([0.6, 0.8]);
-    expect(payload().requests[0].taskType).toBe('RETRIEVAL_QUERY');
-    expect(geminiEmbeddingFunction.defaultSpace?.()).toBe('cosine');
-    expect(geminiEmbeddingFunction.supportedSpaces?.()).toEqual(['cosine']);
-    expect(geminiEmbeddingFunction.getConfig?.()).toEqual({ model: EMBEDDING_MODEL, dimensions: EMBEDDING_DIMENSIONS });
+  it('splits a long batch and records what each request was billed', async () => {
+    client.embeddings.push(answer(100), answer(20));
+    await embedDocuments(Array.from({ length: 120 }, (_, index) => `fact ${index}`));
+
+    expect(client.calls.map((call) => call.params.input.length)).toEqual([100, 20]);
+    expect(db.select().from(aiUsage).all()).toHaveLength(2);
   });
 
-  it('does no paid work for an empty embedding batch', async () => {
+  it('does no paid work for an empty batch', async () => {
     expect(await embedDocuments([])).toEqual([]);
-    expect(transport).not.toHaveBeenCalled();
+    expect(client.calls).toHaveLength(0);
   });
 
-  it('retries transient embedding failures without nested SDK retries', async () => {
-    updateSettings({ retryAttempts: 1 });
-    transport.mockResolvedValueOnce(unavailable(429)).mockResolvedValueOnce(Response.json({ embeddings: [{ values: vector() }] }));
-    expect(await embedQuery('Question')).toHaveLength(EMBEDDING_DIMENSIONS);
-    expect(transport).toHaveBeenCalledTimes(2);
-    expect(listModels()[0].consecutiveFailures).toBe(0);
+  it('refuses an answer that is the wrong width, or not a number', async () => {
+    client.embeddings.push(() => ({ data: [{ index: 0, embedding: [1, 2, 3] }] }));
+    await expect(embedQuery('short')).rejects.toThrow('unusable embedding');
+
+    client.embeddings.push(() => ({ data: [{ index: 0, embedding: [Number.NaN, ...Array<number>(DIMENSIONS - 1).fill(1)] }] }));
+    await expect(embedQuery('not a number')).rejects.toThrow('unusable embedding');
   });
 
-  it('reports exhausted embeddings as overload and never retries a 400', async () => {
-    updateSettings({ retryAttempts: 1 });
-    transport.mockImplementation(async () => unavailable());
-    await expect(embedQuery('Question')).rejects.toMatchObject({ name: 'OverloadedError', attempts: 2 });
-    expect(transport).toHaveBeenCalledTimes(2);
-    transport.mockClear();
-    transport.mockImplementation(async () => apiError(400, 'INVALID_ARGUMENT', 'Request contains an invalid argument.'));
-    await expect(embedQuery('Question')).rejects.toMatchObject({ status: 400 });
-    expect(transport).toHaveBeenCalledTimes(1);
+  it('retries a transient failure and gives up as overload', async () => {
+    updateSettings({ retryAttempts: 1, retryDelayMs: 0 });
+    client.embeddings.push(fails(503, 'busy'), answer(1));
+    expect(await embedQuery('once more')).toHaveLength(DIMENSIONS);
+
+    client.embeddings.push(fails(503, 'busy'), fails(503, 'busy'));
+    await expect(embedQuery('never')).rejects.toBeInstanceOf(OverloadedError);
   });
 
-  it.each([{}, { embeddings: [] }, { embeddings: [{ values: vector() }, { values: vector() }] }])
-    ('rejects a missing or mismatched embedding count %#', async (response) => {
-      transport.mockResolvedValueOnce(Response.json(response));
-      await expect(embedQuery('Question')).rejects.toThrow('Expected 1 embeddings');
-    });
+  it('stops at once when the key is out of credit, and never retries a bad request', async () => {
+    client.embeddings.push(fails(402, 'Insufficient credits'));
+    await expect(embedQuery('no money')).rejects.toBeInstanceOf(BillingError);
 
-  it.each([
-    undefined, [], [1, 2], Array(EMBEDDING_DIMENSIONS).fill(0),
-    [null, ...Array(EMBEDDING_DIMENSIONS - 1).fill(1)],
-  ])('rejects invalid embedding dimensions or values %#', async (values) => {
-    transport.mockResolvedValueOnce(Response.json({ embeddings: [{ values }] }));
-    await expect(embedQuery('Question')).rejects.toThrow('invalid embedding');
-  });
-
-  it.each([1e300, 1e-300])('normalizes extreme but finite vectors without overflow or underflow (%s)', async (value) => {
-    transport.mockResolvedValueOnce(Response.json({ embeddings: [{ values: [value, ...Array(EMBEDDING_DIMENSIONS - 1).fill(0)] }] }));
-    const result = await embedQuery('Question');
-    expect(result[0]).toBeCloseTo(1, 10);
-  });
-
-  it('rejects a non-finite component received as a JSON number', async () => {
-    const body = `{"embeddings":[{"values":[1e999,${Array(EMBEDDING_DIMENSIONS - 1).fill(0).join(',')}]}]}`;
-    transport.mockResolvedValueOnce(new Response(body, { headers: { 'Content-Type': 'application/json' } }));
-    await expect(embedQuery('Question')).rejects.toThrow('invalid embedding');
+    updateSettings({ retryAttempts: 3 });
+    client.embeddings.push(fails(400, 'Model openai/nope does not exist'));
+    await expect(embedQuery('bad model')).rejects.toMatchObject({ status: 400 });
+    // One attempt each: neither is worth waiting out.
+    expect(client.calls).toHaveLength(2);
   });
 });
 
-describe('retry classification and delays', () => {
-  it.each([429, 500, 502, 503, 504])('retries transient SDK status %s', (status) => {
-    expect(isRetryable(new ApiError({ status, message: 'failure' }))).toBe(true);
-  });
-
-  it.each([400, 401, 403, 404])('does not retry permanent SDK status %s', (status) => {
-    expect(isRetryable(new ApiError({ status, message: 'unavailable 503 in a bad request' }))).toBe(false);
-  });
-
-  it.each(['fetch failed', 'ECONNRESET', 'ETIMEDOUT', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE'])('recognizes transient transport errors: %s', (message) => {
-    expect(isRetryable(new Error(message))).toBe(true);
-  });
-
-  it('does not retry arbitrary application or admission errors', () => {
-    expect(isRetryable(new Error('Malformed payload'))).toBe(false);
-    expect(isRetryable(new AIRequestBudgetError('The AI request budget for this reply is exhausted'))).toBe(false);
-  });
-
-  it.each(['TimeoutError', 'AbortError'])('recognizes attempt timeout/abort errors: %s', (name) => {
-    expect(isRetryable(new DOMException('Attempt stopped', name))).toBe(true);
-  });
-
-  it('backs off exponentially and caps an individual wait at 60 seconds', async () => {
-    vi.useFakeTimers();
-    let complete = false;
-    const delay = retryDelay(10_000, 4).then(() => { complete = true; });
-    await vi.advanceTimersByTimeAsync(59_999);
-    expect(complete).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
-    await delay;
-    expect(complete).toBe(true);
-  });
-});
-
-describe('per-reply request admission and abort signals', () => {
-  it('admits exactly 24 attempts across asynchronous work', async () => {
+describe('per-reply admission and deadlines', () => {
+  it('admits a bounded number of paid attempts across asynchronous work', async () => {
     await withAIRequestBudget(async () => {
-      for (let index = 0; index < 24; index += 1) {
-        await Promise.resolve();
-        expect(claimAIRequest()).toBeInstanceOf(AbortSignal);
-      }
+      for (let attempt = 0; attempt < 24; attempt += 1) claimAIRequest();
       expect(() => claimAIRequest()).toThrow(AIRequestBudgetError);
     });
   });
 
-  it('keeps simultaneous reply budgets independent', async () => {
-    await Promise.all(Array.from({ length: 2 }, () => withAIRequestBudget(async () => {
-      for (let index = 0; index < 24; index += 1) { claimAIRequest(); await Promise.resolve(); }
-      expect(() => claimAIRequest()).toThrow(AIRequestBudgetError);
-    })));
+  it('keeps simultaneous replies independent', async () => {
+    await Promise.all([
+      withAIRequestBudget(async () => {
+        for (let attempt = 0; attempt < 24; attempt += 1) claimAIRequest();
+      }),
+      withAIRequestBudget(async () => {
+        expect(() => claimAIRequest()).not.toThrow();
+      }),
+    ]);
   });
 
-  it('shares admission between embeddings and chat without a 25th paid HTTP call', async () => {
-    transport.mockResolvedValueOnce(Response.json({ embeddings: [{ values: vector() }] }));
+  it('shares one budget between embeddings and everything else', async () => {
+    client.embeddings.push(answer(1));
     await withAIRequestBudget(async () => {
-      for (let index = 0; index < 23; index += 1) claimAIRequest();
-      await embedQuery('Question');
-      await expect(generate('Question', {})).rejects.toBeInstanceOf(AIRequestBudgetError);
+      await embedQuery('one');
+      for (let attempt = 1; attempt < 24; attempt += 1) claimAIRequest();
+      expect(() => claimAIRequest()).toThrow(AIRequestBudgetError);
     });
-    expect(transport).toHaveBeenCalledTimes(1);
   });
 
-  it('caps fallback and retry attempts at 24 paid HTTP calls', async () => {
-    updateSettings({ retryAttempts: 5 });
-    for (let index = 0; index < 4; index += 1) addModel(`model-backup-${index}`, 90 - index);
-    transport.mockImplementation(async () => unavailable());
-    await expect(withAIRequestBudget(() => generate('Question', {}))).rejects.toBeInstanceOf(AIRequestBudgetError);
-    expect(transport).toHaveBeenCalledTimes(24);
+  it('separates running out of time from running out of attempts', async () => {
+    stubDeadlines();
+    await expect(withAIRequestBudget(async () => {
+      deadlineOf(120_000)?.fire();
+      claimAIRequest();
+    })).rejects.toThrow('ran out of time');
+
+    await expect(withAIRequestBudget(async () => {
+      for (let attempt = 0; attempt < 24; attempt += 1) claimAIRequest();
+      claimAIRequest();
+    })).rejects.toThrow('exhausted');
   });
 
-  it('combines a two-minute reply deadline with a 45-second attempt timeout', async () => {
-    const deadlines: Array<{ ms: number; controller: AbortController }> = [];
-    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
-      const controller = new AbortController();
-      deadlines.push({ ms, controller });
-      return controller.signal;
+  it('combines the reply deadline with a shorter per-attempt one', async () => {
+    stubDeadlines();
+    await withAIRequestBudget(async () => {
+      const signal = claimAIRequest();
+      expect(signal.aborted).toBe(false);
+      // The attempt gives up long before the reply does, and either one ends it.
+      deadlineOf(45_000)?.fire();
+      expect(signal.aborted).toBe(true);
     });
     await withAIRequestBudget(async () => {
       const signal = claimAIRequest();
-      expect(deadlines.map((deadline) => deadline.ms)).toEqual([120_000, 45_000]);
-      deadlines[0].controller.abort(new DOMException('deadline reached', 'TimeoutError'));
+      deadlineOf(120_000)?.fire();
       expect(signal.aborted).toBe(true);
-      expect(() => claimAIRequest()).toThrow(AIRequestBudgetError);
     });
   });
 
-  it('passes caller cancellation through to the SDK transport', async () => {
-    updateSettings({ retryAttempts: 2 });
-    const controller = new AbortController();
-    transport.mockImplementation(async (_input, init) => {
-      controller.abort(new Error('Caller cancelled'));
-      expect(init?.signal?.aborted).toBe(true);
-      throw init?.signal?.reason;
+  it('passes the reply deadline into the embedding request itself', async () => {
+    client.embeddings.push(answer(1));
+    await withAIRequestBudget(async () => {
+      await embedQuery('inside a reply');
     });
-    await expect(generate('Question', { abortSignal: controller.signal })).rejects.toThrow('Caller cancelled');
-    expect(transport).toHaveBeenCalledTimes(1);
-    expect(listModels()[0].consecutiveFailures).toBe(0);
+    expect(client.calls[0].signal).toBeInstanceOf(AbortSignal);
   });
+});
 
-  it('does not admit or send an already cancelled request', async () => {
-    const controller = new AbortController();
-    controller.abort(new Error('Already cancelled'));
-    await expect(generate('Question', { abortSignal: controller.signal })).rejects.toThrow('Already cancelled');
-    expect(transport).not.toHaveBeenCalled();
-    expect(listModels()[0].consecutiveFailures).toBe(0);
-  });
-
-  it('cancels a backoff immediately without spending another paid attempt', async () => {
+describe('retry backoff', () => {
+  it('grows exponentially and is capped', async () => {
     vi.useFakeTimers();
-    updateSettings({ retryAttempts: 2, retryDelayMs: 60_000 });
-    const controller = new AbortController();
-    transport.mockImplementation(async () => unavailable());
-    const attempt = generate('Question', { abortSignal: controller.signal });
-    const assertion = expect(attempt).rejects.toThrow('Cancelled during backoff');
-    await vi.advanceTimersByTimeAsync(100);
-    expect(transport).toHaveBeenCalledTimes(1);
-    controller.abort(new Error('Cancelled during backoff'));
-    await assertion;
-    expect(transport).toHaveBeenCalledTimes(1);
-  });
-
-  it('shares the reply deadline with retry backoff', async () => {
-    const controller = new AbortController();
-    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal);
-    await withAIRequestBudget(async () => {
-      const waiting = retryDelay(60_000, 0);
-      const assertion = expect(waiting).rejects.toThrow('Reply deadline');
-      controller.abort(new Error('Reply deadline'));
-      await assertion;
-      await expect(retryDelay(60_000, 0)).rejects.toThrow('Reply deadline');
-    });
-  });
-});
-
-describe('request budget refusals name their cause', () => {
-  it('separates running out of time from running out of attempts', async () => {
-    const { withAIRequestBudget, claimAIRequest, AIRequestBudgetError } =
-      await import('../../src/server/ai/requestBudget');
-    const controller = new AbortController();
-    const original = AbortSignal.timeout.bind(AbortSignal);
-    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => (ms === 120_000 ? controller.signal : original(ms)));
-    try {
-      await withAIRequestBudget(async () => {
-        controller.abort(new Error('deadline'));
-        // Both refusals shared one message, so a reply killed by the deadline
-        // was logged as having exhausted its attempts.
-        expect(() => claimAIRequest()).toThrow(AIRequestBudgetError);
-        expect(() => claimAIRequest()).toThrow(/ran out of time/);
-      });
-    } finally {
-      vi.mocked(AbortSignal.timeout).mockImplementation(original);
+    const waits: number[] = [];
+    for (const attempt of [0, 1, 2, 10]) {
+      const started = Date.now();
+      const pending = retryDelay(1000, attempt).then(() => waits.push(Date.now() - started));
+      await vi.advanceTimersByTimeAsync(70_000);
+      await pending;
     }
+    expect(waits[0]).toBe(1000);
+    expect(waits[1]).toBe(2000);
+    expect(waits[2]).toBe(4000);
+    expect(waits[3]).toBe(60_000);
   });
 
-  it('does not spend an attempt on a refused claim', async () => {
-    const { withAIRequestBudget, claimAIRequest } = await import('../../src/server/ai/requestBudget');
-    await withAIRequestBudget(async () => {
-      for (let attempt = 0; attempt < 24; attempt += 1) expect(() => claimAIRequest()).not.toThrow();
-      // Every later refusal must report the same state rather than counting down
-      // past zero on an error path.
-      expect(() => claimAIRequest()).toThrow(/exhausted/);
-      expect(() => claimAIRequest()).toThrow(/exhausted/);
-    });
-  });
-});
-
-describe('what the pool does about each API status', () => {
-  const CREDITS = 'Your prepayment credits are depleted. Please go to AI Studio to manage your billing.';
-  const RATE = 'Quota exceeded for quota metric requests per minute.';
-
-  it('cuts out on depleted credits without trying another model or blaming one', async () => {
-    addModel('model-backup', 50);
-    transport.mockImplementation(async () => apiError(429, 'RESOURCE_EXHAUSTED', CREDITS));
-
-    await expect(generate('Question', {})).rejects.toMatchObject({ name: 'BillingError' });
-    // The second model shares the key, so trying it is guaranteed waste.
-    expect(transport).toHaveBeenCalledTimes(1);
-    // And the model did nothing wrong, so nothing is recorded against it.
-    expect(listModels().every((entry) => entry.consecutiveFailures === 0)).toBe(true);
-    expect(listModels().every((entry) => entry.restingUntil === null)).toBe(true);
-  });
-
-  it('treats an ordinary rate limit as a reason to try the next model', async () => {
-    addModel('model-backup', 50);
-    transport
-      .mockResolvedValueOnce(apiError(429, 'RESOURCE_EXHAUSTED', RATE))
-      .mockResolvedValueOnce(success());
-
-    expect((await generate('Question', {})).text).toBe('An answer');
-    expect(transport).toHaveBeenCalledTimes(2);
-    expect(listModels().find((entry) => entry.model === 'model-primary')?.consecutiveFailures).toBe(1);
-  });
-
-  it('also calls billing-not-enabled a billing failure, under its own status', async () => {
-    transport.mockImplementation(async () =>
-      apiError(400, 'FAILED_PRECONDITION', 'Gemini API free tier is not available in your country. Enable billing.'));
-    await expect(generate('Question', {})).rejects.toMatchObject({ name: 'BillingError' });
-    expect(transport).toHaveBeenCalledTimes(1);
-  });
-
-  it('retires a model the API says does not exist, rather than resting it', async () => {
-    addModel('model-backup', 50);
-    transport
-      .mockResolvedValueOnce(apiError(404, 'NOT_FOUND', 'models/model-primary is not found or no longer available.'))
-      .mockResolvedValueOnce(success());
-
-    expect((await generate('Question', {})).text).toBe('An answer');
-    const primary = listModels().find((entry) => entry.model === 'model-primary');
-    expect(primary?.retired).toBe(true);
-    // Not a countdown: nothing lifts this but Reset errors.
-    expect(primary?.restingUntil).toBeNull();
-  });
-
-  it('never tries a retired model again, even when every other model is resting', async () => {
-    addModel('model-backup', 50);
-    updateSettings({ modelFailureThreshold: 1 });
-    transport.mockResolvedValueOnce(apiError(404, 'MODEL_NOT_FOUND', 'no longer available')).mockResolvedValue(success());
-    await generate('Question', {});
-    transport.mockClear();
-
-    // Rest the only live model. With nothing else live this call cannot
-    // succeed, which is the point: the fallback runs on the call after it.
-    transport.mockImplementation(async () => unavailable());
-    await expect(generate('Another', {})).rejects.toBeInstanceOf(OverloadedError);
-    expect(listModels().find((entry) => entry.model === 'model-backup')?.restingUntil)
-      .toBeGreaterThan(Date.now());
-    transport.mockClear();
-    transport.mockImplementation(async () => success());
-
-    await generate('A third', {});
-    for (const call of transport.mock.calls) {
-      expect(String(call[0])).not.toContain('model-primary:generateContent');
-    }
-    expect(listModels().find((entry) => entry.model === 'model-primary')?.retired).toBe(true);
-  });
-
-  it('says so plainly when every model in the pool has been retired', async () => {
-    transport.mockImplementation(async () => apiError(404, 'NOT_FOUND', 'gone'));
-    await expect(generate('Question', {})).rejects.toBeInstanceOf(OverloadedError);
-    await expect(generate('Question', {})).rejects.toThrow('retired for not existing');
-  });
-
-  it('brings a retired model back only when the errors are reset', async () => {
-    transport.mockImplementationOnce(async () => apiError(404, 'NOT_FOUND', 'gone'));
-    await expect(generate('Question', {})).rejects.toBeInstanceOf(OverloadedError);
-    expect(listModels()[0].retired).toBe(true);
-
-    reviveAll();
-    expect(listModels()[0].retired).toBe(false);
-    transport.mockImplementation(async () => success());
-    expect((await generate('Question', {})).text).toBe('An answer');
+  it('gives up the moment the reply is cancelled, rather than sleeping it out', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const pending = retryDelay(60_000, 0, controller.signal);
+    controller.abort(new Error('cancelled'));
+    await expect(pending).rejects.toThrow('cancelled');
   });
 });

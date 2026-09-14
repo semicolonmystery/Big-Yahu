@@ -14,7 +14,13 @@ export function getSettings(): AppSettings {
     db.insert(settings).values({ id: ROW_ID, ...DEFAULT_SETTINGS, updatedAt: Date.now() }).run();
     return { ...DEFAULT_SETTINGS };
   }
-  const { id: _id, updatedAt: _updatedAt, ...values } = row;
+  // What the live collection was built with is server-managed, not part of what
+  // an operator sends back: `getActiveEmbedding` is how anything reads it.
+  const {
+    id: _id, updatedAt: _updatedAt,
+    activeEmbeddingModel: _model, activeEmbeddingDimensions: _dimensions,
+    ...values
+  } = row;
   return values;
 }
 
@@ -38,6 +44,8 @@ const BOUNDS: Record<NumericSetting, { min: number; max: number }> = {
   retryAttempts: { min: 0, max: 5 },
   retryDelayMs: { min: 0, max: 60_000 },
   duplicateDistance: { min: 1, max: DUPLICATE_DISTANCE_MAX },
+  // The narrowest and widest an embedding model will shorten to.
+  embeddingDimensions: { min: 128, max: 3072 },
   modelFailureThreshold: { min: 1, max: 20 },
   modelRestMinutes: { min: 1, max: 24 * 60 },
   maxImages: { min: 0, max: 16 },
@@ -49,7 +57,7 @@ const BOUNDS: Record<NumericSetting, { min: number; max: number }> = {
 const BOOLEAN_SETTINGS: BooleanSetting[] = ['visionEnabled'];
 
 const TEXT_LIMITS: Record<TextSetting, number> = {
-  chatModel: 100,
+  embeddingModel: 100,
   timezone: 64,
   replyLanguage: 10,
   rateLimitMessage: 500,
@@ -58,6 +66,26 @@ const TEXT_LIMITS: Record<TextSetting, number> = {
   errorMessage: 500,
   noCreditsMessage: 500,
 };
+
+/**
+ * What the live facts collection was actually built with.
+ *
+ * Deliberately not part of `AppSettings`: the operator configures what they want
+ * and this records what exists, and letting a request set it would let the panel
+ * claim the collection is something it is not. Only a finished re-embed moves it.
+ */
+export function getActiveEmbedding(): { model: string; dimensions: number } {
+  const row = db.select().from(settings).where(eq(settings.id, ROW_ID)).get();
+  return { model: row?.activeEmbeddingModel ?? '', dimensions: row?.activeEmbeddingDimensions ?? 0 };
+}
+
+export function setActiveEmbedding(model: string, dimensions: number): void {
+  getSettings();
+  db.update(settings)
+    .set({ activeEmbeddingModel: model, activeEmbeddingDimensions: dimensions, updatedAt: Date.now() })
+    .where(eq(settings.id, ROW_ID))
+    .run();
+}
 
 export function updateSettings(patch: Partial<AppSettings>): AppSettings {
   const next = { ...getSettings() };

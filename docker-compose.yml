@@ -32,7 +32,7 @@ services:
     #   HOST_PORT=127.0.0.1:8080  reachable only from this machine
     ports:
       - "${HOST_PORT:-3000}:3000"
-    # DISCORD_TOKEN, DISCORD_GUILD_ID and GEMINI_API_KEY come from here.
+    # DISCORD_TOKEN, DISCORD_GUILD_ID and OPENROUTER_API_KEY come from here.
     env_file:
       - .env
     environment:

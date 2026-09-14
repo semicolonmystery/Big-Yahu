@@ -4,6 +4,28 @@ export function buildJumpLink(guildId: string, channelId: string, messageId: str
 
 const JUMP_LINK_PATTERN = /https:\/\/discord\.com\/channels\/(\d+)\/(\d+)\/(\d+)/g;
 
+const LINK_MARKER = /<link:(\d+)>/g;
+
+/**
+ * Turns `<link:messageId>` into a real jump link.
+ *
+ * The model is never given the server id, and never needs it: it names the
+ * message it means and the bot builds the URL, which is the only way a link
+ * cannot come out pointing at the wrong server or at a message that does not
+ * exist. A marker naming a message it was not shown is dropped, exactly as an
+ * invented URL would be.
+ */
+export function expandLinkMarkers(
+  text: string,
+  guildId: string,
+  channelOf: (messageId: string) => string | undefined,
+): string {
+  return text.replace(LINK_MARKER, (_match, messageId: string) => {
+    const channelId = channelOf(messageId);
+    return channelId ? buildJumpLink(guildId, channelId, messageId) : '';
+  });
+}
+
 /**
  * Removes jump links pointing at message IDs the model was never shown, so a
  * hallucinated ID cannot reach Discord as a dead link.
@@ -34,12 +56,10 @@ export function stripUnknownMentions(
 }
 
 /**
- * Notation the prompt uses to describe messages to the model, which has no
- * business in a Discord message. Every line of a transcript carries `[id=...]`
- * and a reply carries `[replying to id=...]`, and the model periodically copies
- * the shape of what it is reading straight into what it writes — it had just
- * answered somebody and tacked `[replying to id=1547182311924039710]` onto the
- * end, which reads as the bot leaking its own plumbing.
+ * Bracket notation that has no business in a Discord message. The material is
+ * JSON now, so nothing shown to the model is written this way any more, but a
+ * model asked about a message id will still reach for `[replying to id=...]`
+ * of its own accord, which reads as the bot leaking its own plumbing.
  *
  * Told not to, it mostly does not. Told not to is not a guarantee, and this is
  * the same argument as stripping invented jump links: the prompt asks, the

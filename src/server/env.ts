@@ -16,20 +16,20 @@ export function parseEnvironment(values: NodeJS.ProcessEnv) {
   };
   const discordToken = optional('DISCORD_TOKEN');
   const discordGuildId = optional('DISCORD_GUILD_ID');
-  const geminiApiKey = optional('GEMINI_API_KEY');
+  const openrouterApiKey = optional('OPENROUTER_API_KEY');
   if (discordGuildId && (!/^[1-9]\d{16,19}$/.test(discordGuildId) || BigInt(discordGuildId) > 18446744073709551615n)) {
     throw new Error('DISCORD_GUILD_ID must be a valid Discord server ID');
   }
   if (discordToken && !discordGuildId) {
     throw new Error('DISCORD_GUILD_ID is required when DISCORD_TOKEN is set; this bot serves one server only');
   }
-  if (discordToken && !geminiApiKey) {
-    throw new Error('GEMINI_API_KEY is required when DISCORD_TOKEN is set');
+  if (discordToken && !openrouterApiKey) {
+    throw new Error('OPENROUTER_API_KEY is required when DISCORD_TOKEN is set');
   }
   return {
     discordToken,
     discordGuildId,
-    geminiApiKey,
+    openrouterApiKey,
     chromaHost: optional('CHROMA_HOST') ?? 'localhost',
     chromaPort: integer('CHROMA_PORT', 8000, 1, 65535),
     sqlitePath: optional('SQLITE_PATH') ?? './data/big-yahu.sqlite3',

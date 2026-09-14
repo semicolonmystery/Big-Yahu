@@ -37,7 +37,13 @@ export type {
 export { HOOK_NAMES } from './contract';
 
 export type {
+  AfterReplyContext,
   AnnotateContextContext,
+  DraftImage,
+  PluginAiTask,
+  PluginGenerateRequest,
+  PluginJsonSchema,
+  PluginStructuredRequest,
   AnnotateExtractionContext,
   BeforeReplyContext,
   BeforeReplyResult,

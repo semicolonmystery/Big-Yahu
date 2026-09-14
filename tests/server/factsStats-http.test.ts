@@ -10,7 +10,9 @@ const state = vi.hoisted(() => ({
   search: vi.fn(), page: vi.fn(), all: vi.fn(), count: vi.fn(), remove: vi.fn(),
   names: { '222': 'Bob Gateway', '999': 'Big Yahu' } as Record<string, string>,
 }));
-vi.mock('../../src/server/db/repositories/factsRepo', () => ({
+vi.mock('../../src/server/db/repositories/factsRepo', async (importOriginal) => ({
+  // peopleIn is pure and the point of this route, so it is the real one.
+  peopleIn: (await importOriginal<typeof import('../../src/server/db/repositories/factsRepo')>()).peopleIn,
   searchFacts: state.search, listFactsPage: state.page, listAllFacts: state.all, countFacts: state.count, deleteFact: state.remove,
 }));
 vi.mock('../../src/server/bot/identity', () => ({ knownDisplayNames: () => state.names }));
@@ -39,9 +41,9 @@ let server: Server;
 let baseUrl: string;
 let cookie: string;
 const errors: unknown[] = [];
-const fact = (id: string, text: string, messageIds: string[], authorIds: string[]): Fact => ({
-  id, text, metadata: { guildId: 'guild', channelId: 'channel', messageIds, authorIds, referencedFactIds: [],
-    timePeriodStart: 100, timePeriodEnd: 200, source: 'auto', createdAt: 200 },
+const fact = (id: string, text: string, messageIds: string[], authorIds: string[], subjectIds: string[] = []): Fact => ({
+  id, text, metadata: { guildId: 'guild', channelId: 'channel', messageIds, authorIds, subjectIds, channelRefs: [],
+    referencedFactIds: [], timePeriodStart: 100, timePeriodEnd: 200, source: 'auto', createdAt: 200 },
 });
 
 beforeAll(async () => {
@@ -70,9 +72,9 @@ beforeEach(() => {
   cookie = `${SESSION_COOKIE}=${createSession()}`;
   updateSettings({ factSearchTopK: 7 });
   state.facts = [
-    fact('first', '<@111> and <@222> agreed.', ['2', '1', 'missing'], ['111', '222']),
-    fact('second', '<@111> owns a dog.', ['1'], ['111']),
-    fact('third', '<@999> monitors this channel.', [], ['999']),
+    fact('first', '<@111> and <@222> agreed.', ['2', '1', 'missing'], ['111'], ['111', '222']),
+    fact('second', '<@111> owns a dog.', ['1'], ['111'], ['111']),
+    fact('third', '<@999> monitors this channel.', [], [], ['999']),
   ];
   state.search.mockImplementation(async () => state.facts.map((entry) => ({ ...entry, distance: 0.1 })));
   state.page.mockImplementation(async ({ page, pageSize, authorId }: { page: number; pageSize: number; authorId?: string }) => {

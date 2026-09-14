@@ -97,7 +97,7 @@ describe('periodic fact extraction', () => {
     expect(state.images).toHaveBeenCalledExactlyOnceWith([picture], 0);
     expect(download).not.toHaveBeenCalled();
     expect(state.markUnseen).toHaveBeenCalledWith(expect.any(Array), new Map([['1', 1]]));
-    expect(state.extract).toHaveBeenCalledWith(expect.objectContaining({ windowMessages: marked, imageParts: [] }));
+    expect(state.extract).toHaveBeenCalledWith(expect.objectContaining({ windowMessages: marked, images: [] }));
     expect(state.checkpoint).toBe('1');
   });
 
@@ -136,7 +136,7 @@ describe('periodic fact extraction', () => {
     expect(state.checkpoint).toBe('150');
   });
 
-  it('advances through bot-only pages without asking Gemini', async () => {
+  it('advances through bot-only pages without asking a model', async () => {
     state.checkpoint = '0';
     const { object } = channel([message(1, 'Bot noise', true)]);
     await runExtractionForChannel(object, 'guild');

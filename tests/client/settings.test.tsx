@@ -11,7 +11,6 @@ afterEach(cleanup);
 describe('attachment size setting', () => {
   it('shows the default budget and saves 0 to disable text attachments', async () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({ ...DEFAULT_SETTINGS });
-    vi.spyOn(api, 'listModels').mockResolvedValue([]);
     vi.spyOn(api, 'listChannels').mockResolvedValue({ channels: [], botOnline: true });
     vi.spyOn(api, 'listControllers').mockResolvedValue([]);
     vi.spyOn(api, 'updateSettings').mockImplementation(async (patch) => ({ ...DEFAULT_SETTINGS, ...patch }));

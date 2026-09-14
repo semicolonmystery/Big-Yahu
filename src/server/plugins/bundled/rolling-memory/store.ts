@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { asc, eq, inArray, lte, sql } from 'drizzle-orm';
+import { asc, eq, inArray, lte, or, sql } from 'drizzle-orm';
 import type { Database } from 'better-sqlite3';
 import { rollingMemories, rollingMemoryChannels } from './schema';
 import type { MemoryRow, MemoryView } from './memories';
@@ -28,9 +28,18 @@ export function open(database: Database): Db {
   return db;
 }
 
-/** Every memory, with its channels, freshest first. One query for the links, not one per row. */
+/**
+ * Every memory still being held, with its channels, freshest first. Anything on
+ * its way out is left off: it is no longer something the bot is holding in mind,
+ * it is something waiting to be asked about before it goes.
+ */
 export function listMemories(db: Db): MemoryView[] {
-  const rows = db.select().from(rollingMemories).orderBy(asc(rollingMemories.id)).all();
+  const rows = db
+    .select()
+    .from(rollingMemories)
+    .where(eq(rollingMemories.leaving, false))
+    .orderBy(asc(rollingMemories.id))
+    .all();
   if (rows.length === 0) return [];
 
   const channelsByMemory = new Map<number, string[]>();
@@ -44,6 +53,24 @@ export function listMemories(db: Db): MemoryView[] {
     channelsByMemory.set(link.memoryId, existing);
   }
 
+  return rows
+    .map((row) => ({ ...row, channelIds: channelsByMemory.get(row.id) ?? [] }))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/** The named memories, whether or not they are still being held. */
+function withChannels(db: Db, ids: number[]): MemoryView[] {
+  const rows = db.select().from(rollingMemories).where(inArray(rollingMemories.id, ids)).all();
+  const channelsByMemory = new Map<number, string[]>();
+  for (const link of db
+    .select()
+    .from(rollingMemoryChannels)
+    .where(inArray(rollingMemoryChannels.memoryId, ids))
+    .all()) {
+    const existing = channelsByMemory.get(link.memoryId) ?? [];
+    existing.push(link.channelId);
+    channelsByMemory.set(link.memoryId, existing);
+  }
   return rows
     .map((row) => ({ ...row, channelIds: channelsByMemory.get(row.id) ?? [] }))
     .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -98,19 +125,30 @@ export function tick(db: Db): void {
     .run();
 }
 
-export function expiredMemories(db: Db): MemoryView[] {
-  const expiredIds = db
+/**
+ * Everything on its way out: run out of life, forgotten by the bot, or dropped
+ * by compaction. Each is offered for promotion before it goes, so the one
+ * durable fact inside a memory is never lost simply because it stopped being
+ * current.
+ */
+export function departingMemories(db: Db): MemoryView[] {
+  const ids = db
     .select({ id: rollingMemories.id })
     .from(rollingMemories)
-    .where(lte(rollingMemories.remaining, 0))
+    .where(or(eq(rollingMemories.leaving, true), lte(rollingMemories.remaining, 0)))
     .all()
     .map((row) => row.id);
-  if (expiredIds.length === 0) return [];
-  const wanted = new Set(expiredIds);
-  return listMemories(db).filter((memory) => wanted.has(memory.id));
+  if (ids.length === 0) return [];
+  return withChannels(db, ids);
 }
 
-export function clearAll(db: Db): void {
-  db.delete(rollingMemoryChannels).run();
-  db.delete(rollingMemories).run();
+/** Marks memories as on their way out. They stop being shown and wait for the next upkeep. */
+export function markLeaving(db: Db, ids: number[]): number {
+  if (ids.length === 0) return 0;
+  return db
+    .update(rollingMemories)
+    .set({ leaving: true })
+    .where(inArray(rollingMemories.id, ids))
+    .run().changes;
 }
+
