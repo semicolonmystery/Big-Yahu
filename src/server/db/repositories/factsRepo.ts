@@ -5,7 +5,8 @@ import { activeEmbedding } from '../../ai/embeddings';
 import { getSettings } from './settingsRepo';
 import { dropFromSnapshot, noteFactsChanged, recallIsPaused } from './reembedRepo';
 import { embedDocuments, embedQuery } from '../../ai/embeddings';
-import { hasUnresolvedRelativeDate, resolveRelativeDates } from '../../ai/dateEnforcement';
+import { duplicateDistanceFor } from './factTypesRepo';
+import { clearFactIndex, indexFacts, indexedCount, pageOfFactIds, unindexFact } from './factIndexRepo';
 import { mentionedUserIds } from '@shared/discord';
 import { getAIRequestSignal } from '../../ai/requestBudget';
 
@@ -31,6 +32,7 @@ function toFact(id: string, document: string | null | undefined, metadata: Metad
       authorIds: meta.authorIds ?? [],
       subjectIds: meta.subjectIds ?? [],
       channelRefs: meta.channelRefs ?? [],
+      types: meta.types ?? [],
       ...(meta.dateMin !== undefined ? { dateMin: meta.dateMin } : {}),
       ...(meta.dateMax !== undefined ? { dateMax: meta.dateMax } : {}),
       referencedFactIds: meta.referencedFactIds ?? [],
@@ -301,6 +303,12 @@ function metadataFor(candidate: FactCandidate, previous?: Fact, identical = fals
   if (subjectIds.length > 0) metadata.subjectIds = subjectIds;
   const channelRefs = [...new Set([...(previous?.metadata.channelRefs ?? []), ...channelIdsIn(candidate.text)])];
   if (channelRefs.length > 0) metadata.channelRefs = channelRefs;
+  // A merge widens the types rather than replacing them: the older record was
+  // sorted against the same list and its reading is not worth less than this
+  // one's. Left off entirely when there are none, because Chroma rejects an
+  // empty array — and that absence is what marks a fact nobody has typed.
+  const types = [...new Set([...(previous?.metadata.types ?? []), ...(candidate.types ?? [])])];
+  if (types.length > 0) metadata.types = types;
   // The days the fact talks about, as opposed to when it was said.
   if (dates.length > 0) {
     metadata.dateMin = Math.min(...dates);
@@ -315,41 +323,9 @@ function sameSubjects(first: string, second: string): boolean {
   return firstIds.size === secondIds.length && secondIds.every((id) => firstIds.has(id));
 }
 
-/**
- * Both write paths are only *asked* to resolve "tomorrow" into a real date, and
- * asking has never been enough — the same lesson as `<@id>` mentions. This is
- * the single choke point where it can be enforced, and it runs before the dedupe
- * loop below so the stored text, the embedding and the similarity comparison all
- * see the same corrected wording.
- *
- * A candidate that still reads as relative afterwards is stored and named in the
- * log rather than dropped: losing a real fact is worse than a fuzzy date.
- */
-async function enforceAbsoluteDates(candidates: FactCandidate[]): Promise<void> {
-  const offending = candidates.filter((candidate) => hasUnresolvedRelativeDate(candidate.text));
-  if (offending.length === 0) return;
-
-  // The end of the fact's own time period is what "tomorrow" was said relative to.
-  const resolved = await resolveRelativeDates(
-    offending.map((candidate) => ({ text: candidate.text, anchor: candidate.timePeriodEnd })),
-  );
-
-  offending.forEach((candidate, position) => {
-    const text = resolved[position];
-    if (text && text !== candidate.text) {
-      console.log(`[facts] resolved a relative date: "${candidate.text.slice(0, 60)}" -> "${text.slice(0, 60)}"`);
-      candidate.text = text;
-    }
-    if (hasUnresolvedRelativeDate(candidate.text)) {
-      console.warn(`[facts] storing a fact that still reads as relative: ${candidate.text.slice(0, 120)}`);
-    }
-  });
-}
-
 export async function addFacts(candidates: FactCandidate[]): Promise<string[]> {
   const pending = candidates.filter((candidate) => candidate.text.trim()).map((candidate) => ({ ...candidate }));
   if (pending.length === 0) return [];
-  await enforceAbsoluteDates(pending);
   // Finish embedding before touching existing records. In particular, an outage
   // must never remove the old wording of a fact being replaced.
   // Ids and dates are stripped before embedding, and matched exactly through
@@ -357,30 +333,43 @@ export async function addFacts(candidates: FactCandidate[]): Promise<string[]> {
   const embeddings = await embedDocuments(pending.map((candidate) => embeddingText(candidate.text)));
 
   return mutateFacts(async () => {
-    const threshold = getSettings().duplicateDistance / 100;
     const collection = await getFactsCollection();
     const savedIds = new Set<string>();
+    const saved: Fact[] = [];
 
     for (const [index, candidate] of pending.entries()) {
-      // Source overlap alone proves nothing: one message can contain several
-      // independent facts. Each completed write is visible to the next candidate.
-      // The candidate's own vector is already in hand, so this costs no second
-      // embedding of the same sentence.
-      const [nearest] = await recallWith(collection, embeddings[index], {
-        // No recall ceiling here: this comparison has its own threshold, and a
-        // tighter search ceiling would hide a real duplicate and store it twice.
-        query: candidate.text, topK: 1, guildId: candidate.guildId, maxDistance: 0,
-      });
+      // How close counts as the same fact is the candidate's own types' business:
+      // a rule restated is a duplicate, two people saying much the same thing on
+      // different days is not. The tightest of its types wins, and 0 means never.
+      const threshold = duplicateDistanceFor(candidate.types) / 100;
+      // At 0 the nearest-neighbour search is skipped outright rather than run and
+      // then failed. That query is per candidate, which is the difference between
+      // cheap and expensive once `message` is keeping most of the channel.
+      const [nearest] = threshold > 0
+        // Source overlap alone proves nothing: one message can contain several
+        // independent facts. Each completed write is visible to the next candidate.
+        // The candidate's own vector is already in hand, so this costs no second
+        // embedding of the same sentence.
+        ? await recallWith(collection, embeddings[index], {
+          // No recall ceiling here: this comparison has its own threshold, and a
+          // tighter search ceiling would hide a real duplicate and store it twice.
+          query: candidate.text, topK: 1, guildId: candidate.guildId, maxDistance: 0,
+        })
+        : [];
       const identical = nearest && normalise(nearest.text) === normalise(candidate.text);
       // Similar sentences about different people are independent facts, not
       // updates to each other. Source authors are not a substitute for subjects.
       if (nearest && (identical || (nearest.distance !== null && nearest.distance < threshold
         && sameSubjects(nearest.text, candidate.text)))) {
+        const metadata = metadataFor(candidate, nearest, identical);
         await collection.update({
           ids: [nearest.id],
-          metadatas: [metadataFor(candidate, nearest, identical)],
+          metadatas: [metadata],
           ...(!identical ? { documents: [candidate.text], embeddings: [embeddings[index]] } : {}),
         });
+        // Even an identical candidate can widen the types or the sources, so the
+        // index is refreshed either way; only a rewording counts as a save.
+        saved.push(toFact(nearest.id, identical ? nearest.text : candidate.text, metadata));
         if (!identical) {
           // Updating one record keeps its ID and references intact. There is no
           // delete-before-add gap, even if the request fails or the process exits.
@@ -391,11 +380,16 @@ export async function addFacts(candidates: FactCandidate[]): Promise<string[]> {
       }
 
       const id = randomUUID();
+      const metadata = metadataFor(candidate);
       await collection.add({
-        ids: [id], documents: [candidate.text], embeddings: [embeddings[index]], metadatas: [metadataFor(candidate)],
+        ids: [id], documents: [candidate.text], embeddings: [embeddings[index]], metadatas: [metadata],
       });
+      saved.push(toFact(id, candidate.text, metadata));
       savedIds.add(id);
     }
+    // Chroma cannot order or offset a `get`, so what was just written is
+    // mirrored into SQLite for the screens that page and count.
+    indexFacts(saved);
     // A job copies the store as it was when it started, so anything written
     // since has to join its snapshot or the swap would leave it behind.
     noteFactsChanged(collectionNameFor(activeEmbedding()), [...savedIds]);
@@ -409,6 +403,7 @@ export async function deleteFact(id: string): Promise<boolean> {
     const existing = await collection.get({ ids: [id] });
     if (existing.ids.length === 0) return false;
     await collection.delete({ ids: [id] });
+    unindexFact(id);
     // Otherwise an open job would copy it back out of the source it was deleted
     // from, and a forgotten fact would return at the swap.
     dropFromSnapshot(id);
@@ -416,23 +411,70 @@ export async function deleteFact(id: string): Promise<boolean> {
   });
 }
 
+/** The facts behind a set of ids, in the order the ids were given. */
+export async function factsByIds(ids: string[]): Promise<Fact[]> {
+  if (ids.length === 0) return [];
+  const collection = await getFactsCollection();
+  const result = await collection.get({ ids, include: ['documents', 'metadatas'] });
+  const byId = new Map(result.rows().map((row) => [row.id, toFact(row.id, row.document, row.metadata)]));
+  return ids.map((id) => byId.get(id)).filter((fact): fact is Fact => fact !== undefined);
+}
+
 /**
- * Facts newest first, optionally narrowed to one person. Chroma cannot order
- * `get` by createdAt, so the collection is sorted and paged here; the fact store
- * is small enough for that to be the simpler trade.
+ * Facts newest first, optionally narrowed to one person.
+ *
+ * The ordering and the count come from the SQLite mirror, because Chroma's `get`
+ * offers neither; only the page itself is fetched from the store. This used to
+ * pull the whole collection over HTTP and sort it in memory, which was a fair
+ * trade at a few thousand facts and stopped being one the moment `message`
+ * started keeping most of the channel.
  */
 export async function listFactsPage(options: {
   page: number;
   pageSize: number;
   authorId?: string;
 }): Promise<{ facts: Fact[]; total: number }> {
-  const all = await listAllFacts();
-  // Somebody a fact is about counts as much as somebody whose message it came
-  // from: "facts about Alice" should not mean "facts Alice was in the room for".
-  const filtered = options.authorId
-    ? all.filter((fact) => peopleIn(fact).includes(options.authorId!))
-    : all;
-  const sorted = filtered.sort((a, b) => b.metadata.createdAt - a.metadata.createdAt);
-  const start = (options.page - 1) * options.pageSize;
-  return { facts: sorted.slice(start, start + options.pageSize), total: sorted.length };
+  await ensureFactIndex();
+  const { ids, total } = pageOfFactIds(options);
+  return { facts: await factsByIds(ids), total };
+}
+
+/**
+ * Brings the mirror back in step when it has drifted.
+ *
+ * Nothing here is the truth, so the cheapest correct answer to "are these the
+ * same?" is to count both and rebuild if they differ. It is local and free — no
+ * embeddings, no model — so unlike the re-embed it does not wait for somebody to
+ * press a button. Facts written before the mirror existed are what it is for.
+ */
+let indexCheck: Promise<void> | null = null;
+
+export function ensureFactIndex(): Promise<void> {
+  indexCheck ??= rebuildIfStale().finally(() => { indexCheck = null; });
+  return indexCheck;
+}
+
+async function rebuildIfStale(): Promise<void> {
+  try {
+    const collection = await getFactsCollection();
+    const [stored, indexed] = [await collection.count(), indexedCount()];
+    if (stored === indexed) return;
+    console.log(`[facts] the fact index has ${indexed} of ${stored} facts — rebuilding it`);
+    clearFactIndex();
+    const PAGE = 500;
+    for (let offset = 0; ; offset += PAGE) {
+      const page = await collection.get({ limit: PAGE, offset, include: ['documents', 'metadatas'] });
+      const rows = page.rows();
+      if (rows.length > 0) indexFacts(rows.map((row) => toFact(row.id, row.document, row.metadata)));
+      // A short page is the last one. Stopping on that rather than on an empty
+      // one also ends the loop if the store ever ignores the offset, instead of
+      // re-reading the same page until the process is killed.
+      if (rows.length < PAGE) break;
+    }
+    console.log(`[facts] the fact index is rebuilt with ${indexedCount()} facts`);
+  } catch (error) {
+    // A browse that pages a little wrongly is better than a screen that will not
+    // open, and the next call tries again.
+    console.warn(`[facts] could not rebuild the fact index: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }

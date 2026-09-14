@@ -1136,12 +1136,22 @@ export interface PluginContext {
   private to a plugin, so this is the one thing here that is *not* scoped. Reading is
   what it is for.
 - `saveFacts` — how to *write* one. It embeds the text, dedupes it against what is
-  already stored, supersedes an older wording rather than leaving both, resolves any
-  relative date, and writes the metadata shape the rest of the bot expects. Going at
-  `factsCollection.add` directly skips all of that, so anything meant to last should
-  come through here. It returns the ids actually created, which is fewer than you passed
-  whenever a candidate duplicated something already known — that is the feature, not a
-  failure.
+  already stored, supersedes an older wording rather than leaving both, and writes the
+  metadata shape the rest of the bot expects. Going at `factsCollection.add` directly
+  skips all of that, so anything meant to last should come through here. It returns the
+  ids actually created, which is fewer than you passed whenever a candidate duplicated
+  something already known — that is the feature, not a failure.
+  - A candidate may carry `types`, from the list the operator defines in Settings
+    (`rule`, `person`, `preference`, `event`, `decision`, `message`, `info` ship). Give it
+    every type that applies rather than one; anything that records something said is also
+    a `message`. A type nobody has defined is dropped rather than stored.
+  - The types decide how the candidate is deduped: each carries its own duplicate
+    distance, the tightest of a candidate's types wins, and a type set to 0 — `message`
+    ships that way — is never merged at all. A candidate with no types is judged by the
+    global setting, and comes back from every type-filtered search rather than none.
+  - Dates are yours to write correctly: nothing rewrites them afterwards any more. Write
+    `day.month.year`, resolved against the message it came from, and leave the date out
+    entirely when nobody actually said when.
 - `resolveUserNames` — display names for Discord user ids, gateway first and message cache
   behind it. Ids nothing can name are simply absent from the result. Page cells of kind
   `user` are resolved for you; this is for everything else.

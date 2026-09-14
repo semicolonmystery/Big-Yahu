@@ -33,8 +33,11 @@ const state = vi.hoisted(() => {
   };
 
   const collection = {
-    get: vi.fn(async ({ ids }: { ids?: string[] } = {}) => {
-      const found = [...rows.values()].filter((row) => !ids || ids.includes(row.id));
+    get: vi.fn(async ({ ids, limit, offset = 0 }: { ids?: string[]; limit?: number; offset?: number } = {}) => {
+      const matching = [...rows.values()].filter((row) => !ids || ids.includes(row.id));
+      // Chroma pages a `get`, and the index rebuild walks it — a stub that
+      // ignored these would loop over the first page forever.
+      const found = limit === undefined ? matching : matching.slice(offset, offset + limit);
       return { ids: found.map((row) => row.id), rows: () => found };
     }),
     query: vi.fn(async (
@@ -71,6 +74,7 @@ const state = vi.hoisted(() => {
       }
     }),
     delete: vi.fn(async ({ ids }: { ids: string[] }) => { for (const id of ids) rows.delete(id); }),
+    count: vi.fn(async () => rows.size),
   };
   return {
     rows, distance, distances, collection, index,
@@ -97,12 +101,14 @@ vi.mock('../../src/server/ai/embeddings', () => ({
   embedDocuments: state.embedDocuments,
   embedQuery: async (text: string) => [state.index(text)],
 }));
-vi.mock('../../src/server/ai/dateEnforcement', () => ({ hasUnresolvedRelativeDate: () => false }));
 
 import {
   addFacts, deleteFact, embeddingText, listFactsPage, recallFacts,
 } from '../../src/server/db/repositories/factsRepo';
 import { withAIRequestBudget } from '../../src/server/ai/requestBudget';
+import { db } from '../../src/server/db/client';
+import { factIndex, factTypes } from '../../src/server/db/schema';
+import { addFactType, listFactTypes, updateFactType } from '../../src/server/db/repositories/factTypesRepo';
 
 const candidate = (text: string, overrides: Partial<FactCandidate> = {}): FactCandidate => ({
   text, messageIds: ['message-1'], authorIds: ['author-1'], guildId: 'guild', channelId: 'channel',
@@ -123,6 +129,10 @@ beforeEach(() => {
   state.settings.duplicateDistance = 25;
   state.settings.factSearchMaxDistance = 0;
   state.recallPaused = false;
+  // The SQLite mirror is real here; the Chroma stub is what is emptied above, so
+  // the two have to be cleared together or the index describes facts that are gone.
+  db.delete(factIndex).run();
+  db.delete(factTypes).run();
 });
 
 describe('fact persistence', () => {
@@ -418,5 +428,115 @@ describe('recall', () => {
     state.distance.different = 0.5;
     const found = await recallFacts({ query: 'anything', topK: 5, guildId: 'guild' });
     expect(found.map((fact) => fact.text)).toEqual(['Ours']);
+  });
+});
+
+describe('types decide what counts as a duplicate', () => {
+  const typed = (text: string, types: string[], overrides: Partial<FactCandidate> = {}) =>
+    candidate(text, { types, ...overrides });
+
+  it('merges a rule restated, at the distance that type carries', async () => {
+    state.distance.different = 0.2;
+    await addFacts([typed('<@111> hosts on Fridays', ['rule'])]);
+    await addFacts([typed('<@111> hosts on Saturdays', ['rule'], { messageIds: ['m2'] })]);
+    expect(state.rows.size).toBe(1);
+  });
+
+  // Deliberately the only facts in the store, and about the same person: with
+  // anything else in there a tie could hand the comparison to a fact that merely
+  // has different subjects, and the test would pass without the types mattering.
+  it('keeps two things somebody said apart, because message ships with the check off', async () => {
+    state.distance.different = 0.2;
+    await addFacts([typed('<@222> said the server is down', ['message'])]);
+    await addFacts([typed('<@222> said the server is up', ['message'], { messageIds: ['m3'] })]);
+    expect(state.rows.size).toBe(2);
+  });
+
+  it('takes the tightest of a fact’s several types, so message keeps them apart', async () => {
+    state.distance.different = 0.2;
+    await addFacts([typed('<@111> said we play at eight', ['decision', 'message'])]);
+    await addFacts([typed('<@111> said we play at nine', ['decision', 'message'], { messageIds: ['m2'] })]);
+    // `decision` alone would have merged these at 0.2. `message` is on both and
+    // switches the check off, and the most conservative type wins.
+    expect(state.rows.size).toBe(2);
+  });
+
+  it('skips the neighbour search entirely when the check is off, rather than running and failing it', async () => {
+    await addFacts([typed('<@111> said something', ['message'])]);
+    state.collection.query.mockClear();
+    await addFacts([typed('<@111> said something else', ['message'], { messageIds: ['m2'] })]);
+    // The query is per candidate, which is what makes it expensive once `message`
+    // is keeping most of the channel.
+    expect(state.collection.query).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the global setting for a fact nobody has typed', async () => {
+    state.distance.different = 0.2;
+    await addFacts([candidate('<@111> owns a dog')]);
+    await addFacts([candidate('<@111> owns a cat', { messageIds: ['m2'] })]);
+    expect(state.rows.size).toBe(1);
+  });
+
+  it('widens the types on a merge instead of replacing them', async () => {
+    state.distance.different = 0.2;
+    const [id] = await addFacts([typed('<@111> hosts on Fridays', ['rule'])]);
+    await addFacts([typed('<@111> hosts on Saturdays', ['rule', 'decision'], { messageIds: ['m2'] })]);
+    expect(state.rows.get(id)!.metadata.types).toEqual(['rule', 'decision']);
+  });
+
+  it('follows a type whose distance the operator has retuned', async () => {
+    state.distance.different = 0.2;
+    updateFactType('message', { duplicateDistance: 30 });
+    await addFacts([typed('<@111> said one thing', ['message'])]);
+    await addFacts([typed('<@111> said another', ['message'], { messageIds: ['m2'] })]);
+    expect(state.rows.size).toBe(1);
+  });
+
+  it('leaves the types off a fact given none, so every type search still finds it', async () => {
+    const [id] = await addFacts([candidate('<@111> owns a dog')]);
+    // Chroma rejects an empty array, and that absence is what marks it untyped.
+    expect(state.rows.get(id)!.metadata.types).toBeUndefined();
+  });
+
+  it('ignores a type nobody defined', async () => {
+    expect(listFactTypes().map((type) => type.id)).toContain('rule');
+    addFactType({ id: 'project', label: 'Project', description: 'An ongoing thing the server is doing.' });
+    const [id] = await addFacts([typed('<@111> runs the modpack', ['project', 'invented'])]);
+    expect(state.rows.get(id)!.metadata.types).toEqual(['project', 'invented']);
+  });
+});
+
+describe('browsing without reading the whole store', () => {
+  it('pages newest first out of SQLite and fetches only that page', async () => {
+    // Stamped rather than slept: `createdAt` is what the mirror orders by, and
+    // three writes in the same millisecond would tie.
+    const clock = vi.spyOn(Date, 'now');
+    for (const [position, text] of ['oldest', 'middle', 'newest'].entries()) {
+      clock.mockReturnValue(1_000_000 + position * 1000);
+      await addFacts([candidate(text, { messageIds: [`m${position}`] })]);
+    }
+    clock.mockRestore();
+    const first = await listFactsPage({ page: 1, pageSize: 2 });
+    expect(first.facts.map((fact) => fact.text)).toEqual(['newest', 'middle']);
+    expect(first.total).toBe(3);
+    expect((await listFactsPage({ page: 2, pageSize: 2 })).facts.map((fact) => fact.text)).toEqual(['oldest']);
+  });
+
+  it('rebuilds the mirror when it does not describe the store', async () => {
+    await addFacts([candidate('Alice owns a dog')]);
+    // As though the facts predated the mirror entirely.
+    db.delete(factIndex).run();
+    expect((await listFactsPage({ page: 1, pageSize: 10 })).total).toBe(1);
+    // And again, to prove the rebuild does not double-count.
+    expect((await listFactsPage({ page: 1, pageSize: 10 })).total).toBe(1);
+  });
+
+  it('forgets a deleted fact rather than paging a gap', async () => {
+    const [id] = await addFacts([candidate('Alice owns a dog')]);
+    await addFacts([candidate('Alice teaches physics', { messageIds: ['m2'] })]);
+    await deleteFact(id);
+    const page = await listFactsPage({ page: 1, pageSize: 10 });
+    expect(page.total).toBe(1);
+    expect(page.facts.map((fact) => fact.text)).toEqual(['Alice teaches physics']);
   });
 });

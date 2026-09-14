@@ -159,3 +159,54 @@ describe('periodic fact extraction', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('what extraction does with types and dates', () => {
+  it('passes the types the model chose through, dropping any it invented', async () => {
+    state.extract.mockResolvedValueOnce({
+      facts: [{ text: '<@111> runs the server', types: ['person', 'message', 'not_a_type'], messageIds: ['1'] }],
+      needsMoreContext: false,
+    } as never);
+    await runExtractionForChannel(channel([message(1)]).object, 'guild');
+    expect(state.addFacts).toHaveBeenCalledWith([
+      expect.objectContaining({ types: ['person', 'message'] }),
+    ]);
+  });
+
+  it('shows the model the types it must choose from', async () => {
+    await runExtractionForChannel(channel([message(1)]).object, 'guild');
+    const { material, schema } = state.extract.mock.calls[0][0] as unknown as {
+      material: { factTypes: Array<{ id: string; description: string }> };
+      schema: { properties: { facts: { items: { properties: { types: { items: { enum?: string[] } } } } } } };
+    };
+    // In the material, not the prompt: editing a description must not break the
+    // cached system prefix on every call.
+    expect(material.factTypes.map((type) => type.id)).toContain('message');
+    expect(material.factTypes.every((type) => type.description.length > 0)).toBe(true);
+    // And as an enum on the answer, so it cannot invent one in the first place.
+    expect(schema.properties.facts.items.properties.types.items.enum).toContain('rule');
+  });
+
+  // Observed: told "matěj říkal že je teplej", with nobody saying when, it stored
+  // a fact claiming he said it today. The prompt is what stops the model doing
+  // it; this is the other half — nothing on the way in may add a date either.
+  it('stores no date when the model wrote none', async () => {
+    state.extract.mockResolvedValueOnce({
+      facts: [{ text: '<@111> said <@222> is gay', types: ['message'], messageIds: ['1'] }],
+      needsMoreContext: false,
+    } as never);
+    await runExtractionForChannel(channel([message(1, 'matěj říkal že je teplej')]).object, 'guild');
+    const [[[candidate]]] = state.addFacts.mock.calls as unknown as [[[{ text: string }]]];
+    expect(candidate.text).toBe('<@111> said <@222> is gay');
+    expect(candidate.text).not.toMatch(/\d{1,2}\.\d{1,2}\.\d{4}/);
+  });
+
+  it('keeps a date the model did write', async () => {
+    state.extract.mockResolvedValueOnce({
+      facts: [{ text: '<@111> is away on 20.9.2026', types: ['event'], messageIds: ['1'] }],
+      needsMoreContext: false,
+    } as never);
+    await runExtractionForChannel(channel([message(1)]).object, 'guild');
+    const [[[candidate]]] = state.addFacts.mock.calls as unknown as [[[{ text: string }]]];
+    expect(candidate.text).toContain('20.9.2026');
+  });
+});

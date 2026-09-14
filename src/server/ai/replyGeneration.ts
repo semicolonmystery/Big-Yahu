@@ -16,14 +16,14 @@ import {
   readChannelDeclaration,
   replyToDeclaration,
   requestMoreContextDeclaration,
-  saveFactDeclaration,
-  staySilentDeclaration,
+  saveFactDeclarationFor,
 } from './schemas';
 import { resolveReadableChannel } from '../bot/channelAccess';
 import { addFacts, deleteFact, recallFacts } from '../db/repositories/factsRepo';
 import { cacheMessages, getMessages } from '../db/repositories/cachedMessagesRepo';
 import { getSettings } from '../db/repositories/settingsRepo';
 import { canExtractFrom } from '../db/repositories/channelSettingsRepo';
+import { factTypeIds, knownTypes } from '../db/repositories/factTypesRepo';
 import type { TextAttachmentBudget } from '../bot/textAttachments';
 import { DISCORD_MESSAGE_LIMIT } from '@shared/constants';
 import {
@@ -77,6 +77,7 @@ export interface ReplyContext {
 
 interface SaveFactArgs {
   text?: unknown;
+  types?: unknown;
   referencedFactIds?: unknown;
 }
 
@@ -110,6 +111,32 @@ const NARRATION_PATTERNS = [
 ];
 
 /**
+ * The model saying a tool's name instead of calling it.
+ *
+ * `stay silent` went out as a Discord message: the model had decided to say
+ * nothing and typed that decision rather than making it. Whether to answer is
+ * now settled before this call, as a field on the topic answer, so the reply has
+ * no silence tool to reach for and nothing to name — but a model carrying the
+ * habit can still type the words, and posting them is the one outcome nobody
+ * wants. So a reply that is *nothing but* a silence phrase still sends nothing.
+ *
+ * Deliberately only the whole message: anything with a sentence around it is a
+ * reply that happens to mention a tool, and posting that is right. The same
+ * shape catches a bare `save_fact`, which is narration rather than an answer.
+ */
+const SPOKEN_SILENCE = /^(?:stay|stays|staying|remain|remains|remaining)[ _-]?silent|^silence$|^no[ _-]repl(?:y|ies)$|^no response$/i;
+
+const DECORATION = /^[\s"'`*_([]+|[\s"'`*_).\]!]+$/g;
+
+export function spokenTool(text: string, offered: readonly string[]): string | null {
+  const bare = text.trim().replace(DECORATION, '').trim();
+  if (!bare || bare.length > 40) return null;
+  if (SPOKEN_SILENCE.test(bare)) return 'stay_silent';
+  const asName = bare.toLowerCase().replace(/[ -]+/g, '_');
+  return offered.includes(asName) ? asName : null;
+}
+
+/**
  * The last net under the reply, for the model narrating its own tool use instead
  * of answering — "no fact to save, reputation assessed, all done." It is only
  * cast on a turn that answered a tool call, which is the only place that text
@@ -128,7 +155,7 @@ function looksLikeToolNarration(text: string): boolean {
  * and everything it called was one of these, the reply is finished: asking it to
  * carry on only buys a round trip and a chance to narrate what it just did.
  */
-const HOST_EFFECT_TOOLS = new Set(['save_fact', 'delete_fact', 'reply_to', 'stay_silent']);
+const HOST_EFFECT_TOOLS = new Set(['save_fact', 'delete_fact', 'reply_to']);
 
 /** Discord ids a tool named, ignoring anything that is not one. */
 function readPeople(value: unknown): string[] {
@@ -390,6 +417,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
         const created = await addFacts([
           {
             text: factText,
+            types: knownTypes(args.types),
             messageIds: [context.taggedMessage.id],
             authorIds: [context.taggedMessage.author.id],
             guildId: context.guildId,
@@ -411,6 +439,9 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     return responses;
   };
 
+  // The operator owns the type list, so it is read per reply and travels in the
+  // material; only the enum on `save_fact` reaches the tool declaration.
+  const typeIds = factTypeIds();
   let answeredTools = false;
   let finalText = '';
   // Budgets apply to actual invocations, including repeated names in one response.
@@ -418,8 +449,8 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
   const MAX_TOTAL_CALLS = 20;
   for (let turn = 0; turn < MAX_TURNS; turn += 1) {
     const lastTurn = turn === MAX_TURNS - 1;
-    const declarations: ToolDeclaration[] = [staySilentDeclaration, replyToDeclaration];
-    if (canExtractFrom(context.channelId)) declarations.push(saveFactDeclaration, deleteFactDeclaration);
+    const declarations: ToolDeclaration[] = [replyToDeclaration];
+    if (canExtractFrom(context.channelId)) declarations.push(saveFactDeclarationFor(typeIds), deleteFactDeclaration);
     // Keep declarations present for tool calls already in conversation history.
     declarations.push(requestMoreContextDeclaration, listPeopleDeclaration, readChannelDeclaration,
       ...pluginTools.map((tool) => tool.declaration));
@@ -434,6 +465,19 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     });
     const calls = answer.toolCalls;
     let text = answer.text;
+    // A model that types a tool's name meant to call it. Honour what it meant,
+    // rather than posting the name and looking broken.
+    if (calls.length === 0) {
+      const spoken = spokenTool(text, declarations.map((declaration) => declaration.name));
+      if (spoken === 'stay_silent') {
+        console.warn(`[bot] ${context.taggedMessage.id}: the model answered with ${JSON.stringify(text.trim())} — sending nothing rather than posting that`);
+        return { text: '', savedFactIds, deletedFactIds, contextRequests, silent: true, replyToMessageId };
+      }
+      if (spoken) {
+        console.warn(`[bot] the model wrote the name of ${spoken} instead of calling it: ${JSON.stringify(text)}`);
+        text = '';
+      }
+    }
     if (answeredTools && looksLikeToolNarration(text)) {
       // Promised by the comment on that function and previously not done, which
       // is why a reply that vanished here could not be explained afterwards.
@@ -447,7 +491,6 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
       continue;
     }
     const responses = new Map<ChatToolCall, Record<string, unknown>>();
-    let silent = false;
     let needsResult = false;
     let saveFailed = false;
     // Replacement is durable before any requested deletion, even when the model
@@ -461,10 +504,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
           if (name === 'save_fact') saveFailed = true;
           continue;
         }
-        if (name === 'stay_silent') {
-          silent = true;
-          responses.set(call, { silent: true });
-        } else if (['save_fact', 'delete_fact', 'reply_to'].includes(name)) {
+        if (['save_fact', 'delete_fact', 'reply_to'].includes(name)) {
           if (name === 'delete_fact' && saveFailed) {
             responses.set(call, { deleted: false, error: 'Replacement was not saved; the original is retained.' });
             continue;
@@ -545,7 +585,6 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
         needsResult = true;
       }
     }
-    if (silent) return { text: '', savedFactIds, deletedFactIds, contextRequests, silent: true, replyToMessageId };
     const rejected = [...responses.values()].some((result) => result.error || result.success === false
       || result.saved === false || (result.deleted === false && result.replaced !== true) || result.attached === false);
     if (rejected || needsResult) pendingText = '';

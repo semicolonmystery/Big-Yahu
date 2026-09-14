@@ -48,6 +48,12 @@ export interface FactCandidate {
   guildId: string;
   channelId: string;
   referencedFactIds?: string[];
+  /**
+   * What kind of thing this is, from the types the host defines. Several are
+   * expected: nearly anything that says something is also a `message`. Leave it
+   * out and the fact is untyped, which every type search still finds.
+   */
+  types?: string[];
   source: 'auto' | 'reply';
   timePeriodStart: number;
   timePeriodEnd: number;

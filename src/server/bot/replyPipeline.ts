@@ -10,6 +10,7 @@ import {
   windowMessagesWithAttachments,
 } from '../ai/context';
 import { factsMaterial, messagesMaterial, peopleMaterial, renderMaterial } from '../ai/material';
+import { factTypesForModel } from '../db/repositories/factTypesRepo';
 import type { WindowMessage } from '../ai/context';
 import type { ForeignChannelMessages } from '../ai/replyGeneration';
 import { readableChannelRoster, resolveReadableChannel } from './channelAccess';
@@ -212,6 +213,16 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
     readMentionedChannels(message, guildId, settings.crossChannelMessages, attachmentBudget),
   ]);
 
+  // Whether to answer at all is the topic call's, as a field on its answer rather
+  // than a tool the reply has to remember to call. Deciding it here means a reply
+  // nobody wanted costs one model call instead of two, and the model that stays
+  // quiet has no way to post the words "stay silent" by mistake.
+  if (topic.staySilent) {
+    console.log(`[bot] staying quiet on ${message.id} in #${message.channelId}: ${topic.whatTaggingMessageIsAbout || topic.coreTopic}`);
+    await runAfterReply({ taggedMessage: message, sentMessageId: null, silent: true });
+    return;
+  }
+
   if (canExtractFrom(message.channelId)) cacheMessages(
     windowMessages
       .filter((windowMessage) => !windowMessage.isSelf)
@@ -306,6 +317,10 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
     }));
   }
   material.memory = { facts: factsMaterial(retrievedFacts, sourceMessages) };
+  // The kinds of fact the operator has defined, and what each is for. Here
+  // rather than in the prompt: an operator editing a description must not
+  // invalidate the cached system prefix on every call.
+  material.factTypes = factTypesForModel();
   if (readableChannels.length > 0) material.readableChannels = readableChannels;
 
   // Everyone the material actually refers to, read back out of it. Every

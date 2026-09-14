@@ -126,6 +126,34 @@ describe('complete reply pipeline boundaries', () => {
     await handleMention(msg as unknown as Message);
     expect(m.after).toHaveBeenCalledWith({ taggedMessage: msg, sentMessageId: null, silent: true });
   });
+  // Silence is the topic call's decision, as a field on its answer: the reply is
+  // never composed, so a quiet turn costs one model call instead of two and the
+  // model that stays quiet has no way to post the words by mistake.
+  it('says nothing, and never composes a reply, when the topic call asks for silence', async () => {
+    m.extract.mockResolvedValueOnce({
+      topic: { coreTopic: 'bait', whatTaggingMessageIsAbout: 'nothing', searchQuery: '', people: [], staySilent: true },
+      windowMessages: [window], discordMessages: [],
+    });
+    const msg = message();
+    await handleMention(msg as unknown as Message);
+    expect(m.generate).not.toHaveBeenCalled();
+    expect(m.facts).not.toHaveBeenCalled();
+    expect(msg.reply).not.toHaveBeenCalled();
+    expect(m.log).not.toHaveBeenCalled();
+    expect(m.after).toHaveBeenCalledWith({ taggedMessage: msg, sentMessageId: null, silent: true });
+    expect(m.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers normally when it is false', async () => {
+    m.extract.mockResolvedValueOnce({
+      topic: { coreTopic: 'topic', whatTaggingMessageIsAbout: 'question', searchQuery: 'q', people: [], staySilent: false },
+      windowMessages: [window], discordMessages: [],
+    });
+    const msg = message();
+    await handleMention(msg as unknown as Message);
+    expect(msg.reply).toHaveBeenCalled();
+  });
+
   it('propagates the controller result as authoritative reply context', async () => {
     m.controller.mockReturnValueOnce(true);
     const msg = message(); await handleMention(msg as unknown as Message);

@@ -23,8 +23,8 @@ request data.
 |---|---|---|
 | OpenRouter as the only provider | IMPL | The client (`ai/openrouter.ts`, built on first use, SDK retries off) and error classification (`ai/openrouterErrors.ts`, from the probe's real error bodies: 402 out of credit, a 400 naming a missing model retires it, a routing block never does). `OPENROUTER_API_KEY` is required whenever a Discord token is set, and it is the only key the bot has |
 | Per-call usage and cost | WIP | In: the `ai_usage` table (migration 0021), `recordCall`, and the dashboard's AI spend card (24 hours, 7 days, by task, model and serving host), recording the cost OpenRouter actually billed rather than a price table of our own. Still to come: the 90-day fold into daily totals |
-| One model list per task | IMPL | `task_models` and `ai_tasks` (reasoning effort), seeded once by migration with `deepseek/deepseek-v4.1-flash` pinned to `deepseek`; OpenRouter's catalog (`ai/catalog.ts`: capabilities per host, prices, peak windows, cached hourly); `/api/ai-tasks`, which refuses a model whose host cannot do the task and pins new rows to the cheapest host that can; and the Settings tab per task with a host picker showing prices. Tasks: reply, fact extraction, topic extraction, date repair, the shared plugins list, and one per plugin-declared job. The single global pool it replaced is gone |
-| Structured calls | IMPL | `ai/structured.ts` walks a task's list in JSON mode, at that task's own reasoning effort, pinned to each row's host; the saved prompt is sent untouched and the answer's shape as a separate message; every answer is validated against its schema (`ai/jsonSchema.ts`) and re-asked once with the problem quoted; a truncated answer goes to the existing narrowing retry. Topic extraction (now with searchQuery/people/channels/dates), fact extraction and date repair run on it; the query-rewrite call is deleted. DeepSeek's endpoint can neither force a tool call nor enforce a schema through OpenRouter, which is why the shape is described and then checked here |
+| One model list per task | IMPL | `task_models` and `ai_tasks` (reasoning effort), seeded once by migration with `deepseek/deepseek-v4.1-flash` pinned to `deepseek`; OpenRouter's catalog (`ai/catalog.ts`: capabilities per host, prices, peak windows, cached hourly); `/api/ai-tasks`, which refuses a model whose host cannot do the task and pins new rows to the cheapest host that can; and the Settings tab per task with a host picker showing prices. Tasks: reply, fact extraction, topic extraction, the shared plugins list, and one per plugin-declared job. The single global pool it replaced is gone |
+| Structured calls | IMPL | `ai/structured.ts` walks a task's list in JSON mode, at that task's own reasoning effort, pinned to each row's host; the saved prompt is sent untouched and the answer's shape as a separate message; every answer is validated against its schema (`ai/jsonSchema.ts`) and re-asked once with the problem quoted; a truncated answer goes to the existing narrowing retry. Topic extraction and fact extraction run on it; the query-rewrite and date-repair calls are both deleted. DeepSeek's endpoint can neither force a tool call nor enforce a schema through OpenRouter, which is why the shape is described and then checked here |
 | JSON material and a cache-stable system prompt | IMPL | Everything that changes per call is one compact JSON document (`ai/material.ts`): the time, who is asking and whether they are a controller, the messages with `replyTo` and `unseenImages`, the people with live presence, remembered facts with their sources, other channels, readable channels, images and plugin notes. Nothing is substituted into a prompt any more — no `{{placeholders}}` at all, and a prompt containing them saves fine because nothing will fill them. Message text is JSON-escaped, so nobody can type their way into the structure. The three shipped prompts describe fields instead of bracket notation, and the Prompts screen flags an override still written for the old one |
 | The model never gets the server id | IMPL | It asks for a link by naming a message (`<link:MESSAGE_ID>`) and the bot builds the URL from the channel that message is actually in, so a link cannot come out pointing at the wrong server or an invented message |
 | Fewer calls per reply | IMPL | The query-rewrite call is gone (topic extraction's `searchQuery` does its job), topic extraction no longer generates facts nobody reads, a turn whose tools were all fire-and-forget ends the reply, the topic call, the quoted message and any mentioned channel are fetched together instead of in turn, and rolling-memory upkeep runs after the reply has been sent — as one call now, not two |
@@ -198,6 +198,61 @@ comparing counts — two collections can hold the same number of different facts
 source is deleted immediately afterwards. If anything is missing the job fails with what
 was missing, keeps the old collection, and can be continued.
 
+### What kind of thing a fact is
+
+A fact carries **types** — `rule`, `person`, `preference`, `event`, `decision`,
+`message`, `info` ship, and an operator can add more in Settings. Each type
+carries a description written *at the model*, because a bare label is not enough
+for it to sort a fact correctly or to choose which type to search; the
+description is the working part. They travel in the JSON material rather than in
+the system prompt, so editing one never breaks the cached prefix, and they reach
+the answer schema as an enum so a type nobody defined cannot be invented.
+
+**A fact has several types, not one.** Nearly anything that says something is
+also a `message`, on top of whatever else it is, which is what makes it findable
+later as something somebody actually said. The alternative — one type each, and
+a second copy of the sentence when it is both a decision and a thing said — costs
+more and leaves two records to keep in step.
+
+A fact with **no** types is one nobody has sorted yet, and it comes back from
+*every* type search rather than disappearing. That is the whole population of the
+store as it stood before types existed; the cleanup pass is what sorts them.
+Chroma rejects an empty metadata array, so "untyped" is the absence of the field
+rather than a value, and the SQLite mirror is what can still count and find them.
+
+Each type also carries **its own copy of the three fact settings**. What counts
+as a duplicate of a one-line message record is not what counts as a duplicate of
+a rule, and one global number could only be wrong for one of them. `message`
+ships with `duplicateDistance` at **0**, which now means *never merge* rather
+than *merge nothing*: message records are short, numerous and often
+near-identical, two people saying much the same thing on different days is
+exactly the shape that merged wrongly, and a merge overwrites the older wording.
+At 0 the nearest-neighbour search is skipped outright rather than run and then
+failed — that query is per candidate, which is the difference between cheap and
+expensive once `message` is keeping most of the channel.
+
+A candidate is judged by the **most conservative** of its types: the tightest
+duplicate distance, and no dedupe at all if any of them switches the check off.
+Since `message` is on nearly everything, that is usually what decides. The three
+global settings stay, as the seed for a newly created type and the fallback for a
+fact that has no types.
+
+### Counting and paging the store
+
+Chroma's `get` offers neither ordering nor an offset, so browsing facts used to
+pull the whole collection over HTTP and sort it in memory. That was a fair trade
+at a few thousand facts and stops being one the moment `message` starts keeping
+most of the channel — near-total retention makes the store one or two orders of
+magnitude bigger.
+
+`fact_index` is a SQLite mirror of what is in the store: id, when it was created,
+which guild, its types, everyone it is about or came from, and the messages it
+cites. The facts screen orders and counts there and fetches only the page it is
+showing; the authors filter and the dashboard's message counter read it instead
+of every fact. It is a cache and never the truth, so when its count disagrees
+with the collection's it is rebuilt from scratch — local, free, no embeddings and
+no model, which is why it does not wait for a button the way the re-embed does.
+
 ### Not writing the same fact twice
 
 Embeddings are prepared before existing data is changed. Mutations are serialized, so each completed write is visible to the next candidate, including candidates from the same batch. Sharing source messages alone never drops a fact: one message can contain several independent facts. Identical text merges source metadata. A sufficiently similar candidate about the same mentioned people updates the original record in place, preserving its ID and references. Different mentioned people cannot overwrite one another merely because their sentences are similar. Source IDs, authors, mentioned people and time spans are merged.
@@ -288,16 +343,14 @@ able to remember agreeing to it.
 
 ### Searching the fact store
 
-A query is restated as fact-shaped statements before it is embedded
-(`ai/queryRewrite.ts`). Facts are stored as declarative sentences, and a
-question embeds poorly against those; the rewrite keeps names and specifics
-verbatim and never tries to answer. If the rewrite call fails the raw query is
-used, since a worse search beats no search.
+The topic call restates the question as something fact-shaped before it is
+embedded — facts are stored as declarative sentences and a question embeds
+poorly against those — keeping names and specifics verbatim and never trying to
+answer. It is the same call that says who and when the question is about, which
+is why the separate query-rewrite request was deleted rather than kept.
 
-Facts carry `authorIds`, so the admin panel can list everyone facts exist about
-and filter to one person. Browsing pages in memory rather than in Chroma, whose
-`get` offers neither ordering nor offset — fine at this scale, worth revisiting
-past a few thousand facts.
+Facts carry `authorIds` and `subjectIds`, so the admin panel can list everyone
+facts exist about and filter to one person.
 
 ### What the bot can see
 
@@ -709,17 +762,29 @@ being used as a page.
 
 ### Saying nothing
 
-`stay_silent` is a tool like any other: when the model calls it, nothing is
-posted and nothing is written to `reply_log`, which records replies that
-actually happened. It exists because the model would otherwise announce it was
-done with someone and then keep replying, which reads worse than either
-answering or shutting up.
+Whether to answer at all is a **field on the topic call's answer**, `staySilent`,
+not a tool the reply has to remember to call. Set, nothing is posted and nothing
+is written to `reply_log`, which records replies that actually happened — and the
+reply call never happens either, so a turn nobody wanted costs one model call
+instead of two.
 
-The prompt reserves it for noise — bait, a stalled slanging match — and states
-that a real question always gets an answer. A bare mention is explicitly not
-treated as noise: people split the ping from the message, so it reads the
-surrounding conversation and answers that. A silent turn still costs
-the model calls that produced it, so it saves face rather than quota.
+It was a tool, and the tool failed in the way a tool can: the model decided to
+say nothing and **typed `stay silent` into the channel** instead of calling it.
+A field cannot be typed. It is part of a schema-validated answer that the
+operator's own prompt describes, so the decision is made where it is checked
+rather than where it can be narrated.
+
+The rules moved with it, into the topic prompt: silence is for bait and for a
+slanging match going nowhere, a real question always gets an answer even if the
+answer is not knowing, and a bare mention is explicitly not noise — people split
+the ping from the message, so it reads what is above and answers that. The reply
+prompt now says the opposite, plainly: the decision to answer has already been
+taken, so write a reply.
+
+A backstop survives, because a model carrying the old habit can still type the
+words. A reply that is *nothing but* a silence phrase — or nothing but a tool's
+name — sends nothing rather than posting it. Only the whole message counts: a
+sentence that happens to mention a tool is a reply, and posting that is right.
 
 ### The reply and the tool call belong to the same turn
 
@@ -777,32 +842,31 @@ model was actually shown, since Discord cannot hang a reply under a message
 somewhere else, and anything unrecognised falls back to the ping rather than
 failing the send.
 
-### Dates in a fact are always absolute
+### Dates in a fact are always absolute, and never invented
 
 A fact saying "the meeting moved to tomorrow" is worthless the day after it is
-written. Both write paths were only *asked* to resolve relative dates, and asking
-has never been enough — the same lesson as `<@id>` mentions. Every candidate now
-passes a detector on its way into `addFacts`, covering English, Czech and Slovak,
-skipping double-quoted runs because a quotation is verbatim by design. When it
-fires, one corrective model call rewrites just the offending facts against the
-time they were written. A fact that still reads as relative afterwards is stored
-and named in the log rather than dropped: losing a real fact is worse than a
-fuzzy date.
+written, so both write paths resolve a relative date as they write it: the reply
+and the periodic extraction each work "tomorrow" out against the message's own
+`at` and put `day.month.year` in the fact.
 
-Nothing sweeps the existing store. Old facts are left to age out, and the reply
-prompt tells the bot that a recalled fact carrying a relative date has already
-gone stale — replace it where the real date can be worked out.
+This used to be enforced rather than asked. Every candidate passed a fuzzy
+detector on its way into `addFacts` — folded text, stems, bounded edit distance,
+English, Czech and Slovak — and anything that still read as relative went to a
+corrective model call. That whole mechanism is gone, detector and call together.
+The rules moved into the system prompts of both writing sites instead, on the
+grounds that whichever model writes a fact is the one that knows what the
+sentence meant, and so is always right about it in a way a pattern cannot be.
+The backstop is no longer a regex but the cleanup pass, which can be re-run over
+the store whenever the rules change.
 
-Detection is fuzzy on purpose. A list of literal patterns caught `zítra` and
-missed `zitra`, caught `zejtra` and missed `zejtraa`, which is most of how people
-actually type. Text is folded first — lowercased, unaccented, punctuation reduced
-to spaces — and matched three ways on top of that: stems, because Slavic words
-inflect at the end and the front is the reliable part; whole words with a bounded
-edit distance, so `tommorow` and `yestrday` still land; and phrases like "next
-friday" or "za tejden". A bare weekday counts only when the sentence carries no
-absolute date, since inside one it is describing that date rather than floating
-free — and the absolute-date check runs before punctuation is folded away, or
-`12.9.2026` reads as three loose numbers.
+The other half is newer and is the opposite failure. Told "matěj říkal že je
+teplej", with nobody saying when he said it, the bot stored a fact claiming he
+said it **today** — read off the message's own timestamp. A message's `at` is
+when that message was sent; it is not when the thing in it happened, and it is
+not evidence that anybody said when. Both prompts now say so outright, and say
+that a fact whose date was guessed is worse than one carrying no date at all,
+because nobody can tell afterwards which it was. Nothing on the way in adds a
+date either, which is the half that can be tested.
 
 ### Reading another channel
 
@@ -906,7 +970,7 @@ does not queue or invoke AI.
 | Split failure messages | IMPL | five configurable messages, chosen by the API's own status: rate limit, overload, spent budget, no credit, bug. Every failure still logged in full with its status |
 | Billing cut-out | IMPL | a 402 throws `BillingError` on the first request — no next model, no failure recorded, since one key pays for everything. Other 429s stay ordinary rate limits |
 | Retiring dead models | IMPL | a 400 saying the model id is not valid retires it permanently instead of resting it; excluded from the pool and from the "everything is resting" revive, and cleared only by Reset errors. A routing block (404 with the account's ineligibility reasons) moves to the next model and never retires one |
-| Choosing not to reply | IMPL | `stay_silent` tool; nothing sent, nothing logged |
+| Choosing not to reply | IMPL | `staySilent` on the topic answer — a validated field, not a tool that can be typed instead of called. Nothing sent, nothing logged, and the reply call never made |
 | Controller accounts | IMPL | Discord IDs in Settings; may add and delete facts |
 | Plugin tools + panels | IMPL | JSON-schema tools, declarative admin screens |
 | Plugin tool invocation and access gates | IMPL | host-owned turn metadata; `requiresController` and `enabledByConfig`, with live config/controller rechecks before execution |
@@ -924,6 +988,11 @@ does not queue or invoke AI.
 | Reply-stage `request_more_context` tool | IMPL | the reply can pull more history when the window is not enough |
 | Retry + overload message | IMPL | attempts, delay and message all in Settings |
 | Configurable model lists | IMPL | one ordered list per job, edited in Settings, applies to the next request |
+| Fact types | IMPL | `fact_types`, seven shipped and operator-extendable in Settings; a fact carries several at once and nearly anything informative is also a `message`. Each type owns its own duplicate distance, result count and search ceiling, with the globals as the seed and the fallback; 0 now means "never merge" and skips the neighbour query outright. The list reaches the model in the material and as a schema enum, never in the prompt |
+| Facts paged out of SQLite | IMPL | `fact_index` mirrors id, createdAt, types, people and source messages, so browsing, the authors filter and the dashboard's counter stop reading the whole collection. Rebuilt whenever its count disagrees with the store's — local and free, so it needs no button |
+| Date repair deleted, rules moved into the prompts | IMPL | `ai/dateEnforcement.ts` and `ai/relativeDates.ts` are gone with the `dateRepair` task and its rows. Both fact-writing prompts resolve relative dates as they write, and the cleanup pass is the backstop instead of a regex |
+| Facts never invent when something was said | IMPL | a message's `at` is when it was sent, never when the thing happened; with nobody saying when, a fact carries no date rather than a guessed one. Both prompts say so, and nothing on the way in adds one |
+| A spoken tool name is never posted | IMPL | the model typed "stay silent" into the channel instead of calling the tool, which is why that decision is a field now. A reply that is nothing but a silence phrase or a tool's name still sends nothing rather than posting it |
 | Reasoning on every task | IMPL | effort is the task's own setting for structured calls as well as the reply, default `none`; an endpoint that refuses to have it switched off is asked again without the field and remembered, rather than killing the reply |
 | Anti-fabrication (prompt + mention/link sanitising) | IMPL | strips unknown channels, users and message links |
 | Reply voice (vulgar, room-matching, light gen-z) | IMPL | in the reply system instruction |
@@ -1002,8 +1071,11 @@ Engine and reply-pipeline tests verify that host-owned invocation metadata is
 frozen and that current controller, plugin-enabled and config state are
 rechecked before a previously exposed tool can execute.
 
-The relative-date detector and the prompt-marker stripper are unit-checked in
-isolation, because the interesting cases are the ones nobody types on purpose.
+The prompt-marker stripper is unit-checked in isolation, because the interesting
+cases are the ones nobody types on purpose. The fact-writing prompts are checked
+for the rules they are now solely responsible for — absolute dates, and never
+inventing when something was said — since the detector that used to enforce the
+first of those is gone.
 
 Known gaps:
 
@@ -1012,16 +1084,16 @@ Known gaps:
   but not clicked through.
 - **The reputation plugin against a live guild.** The scoring is simulated and
   correct; whether the model reliably *calls* `reputation__assess` is unproven.
-- **Load.** `listFactsPage` reads the whole collection and pages in memory to
-  sort newest-first, since Chroma does not provide that ordering. Worth
-  revisiting past a few thousand facts.
+- **Recall at message volume.** Paging and counting moved to SQLite, but recall
+  itself still runs one Chroma query per facet. Whether that holds up once
+  `message` has filled the store is unmeasured.
 
 ---
 
 ## Running it
 
 ```bash
-cp .env.example .env      # fill in DISCORD_TOKEN, DISCORD_GUILD_ID, GEMINI_API_KEY
+cp .env.example .env      # fill in DISCORD_TOKEN, DISCORD_GUILD_ID, OPENROUTER_API_KEY
 docker compose up -d chromadb
 npm run dev               # Vite on 5173 (proxying /api), server on 3000
 ```

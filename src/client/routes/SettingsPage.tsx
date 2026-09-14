@@ -6,6 +6,7 @@ import type { AppSettings, ChannelPermission, Controller } from '@shared/types';
 import { DUPLICATE_DISTANCE_MAX, FACT_SEARCH_MAX_DISTANCE_MAX, LANGUAGES } from '@shared/constants';
 import { api } from '@/lib/api';
 import { AiTasksSection } from '@/components/settings/AiTasksSection';
+import { FactTypesSection } from '@/components/settings/FactTypesSection';
 import { EmbeddingSection } from '@/components/settings/EmbeddingSection';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -759,6 +760,7 @@ export default function SettingsPage() {
         </Card>
       )}
 
+      <FactTypesSection />
       <AiTasksSection />
       <EmbeddingSection />
       <ChannelPermissionsSection />

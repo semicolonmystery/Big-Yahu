@@ -47,14 +47,6 @@ export const BUILT_IN_AI_TASKS: readonly AiTaskDefinition[] = [
     structured: true,
   },
   {
-    id: 'dateRepair',
-    label: 'Date repair',
-    description: 'Rewrites the rare fact that still says "tomorrow" into a real date.',
-    usesImages: false,
-    usesTools: false,
-    structured: true,
-  },
-  {
     id: 'plugins',
     label: 'Plugins',
     description: 'The shared list every plugin uses unless it has been given lists of its own.',

@@ -271,3 +271,54 @@ export const reembedJobItems = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.jobId, table.factId] })],
 );
+
+/**
+ * The kinds of thing a fact can be, and each kind's own fact settings.
+ *
+ * Operator-owned: the seven shipped types are seeded on first read from
+ * `BUILT_IN_FACT_TYPES`, and more can be added. The three settings live here
+ * rather than only in `settings` because what counts as a duplicate of a
+ * one-line message record is not what counts as a duplicate of a rule — the
+ * global values stay as the seed for a new type and the fallback for a fact
+ * that has no type yet.
+ */
+export const factTypes = sqliteTable('fact_types', {
+  id: text('id').primaryKey(),
+  label: text('label').notNull(),
+  /** Read by the model, so it can sort a fact into this type and search it. */
+  description: text('description').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+  builtIn: integer('built_in', { mode: 'boolean' }).notNull().default(false),
+  /** Hundredths of a vector distance. 0 means never merge two facts of this type. */
+  duplicateDistance: integer('duplicate_distance').notNull(),
+  factSearchTopK: integer('fact_search_top_k').notNull(),
+  factSearchMaxDistance: integer('fact_search_max_distance').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+/**
+ * What is in the fact store, in a shape SQLite can order and count.
+ *
+ * Chroma can neither sort a `get` by anything nor offset one, so browsing facts
+ * used to mean pulling the entire collection over HTTP and sorting it in
+ * memory. That was a fair trade at a few thousand facts and stops being one the
+ * moment `message` starts keeping most of the channel. Nothing here is the
+ * truth — Chroma is — so a mismatched count rebuilds it from scratch.
+ *
+ * `types` and `people` are space-delimited with a space at each end, so
+ * `LIKE '% id %'` matches a whole id rather than the middle of a longer one.
+ * An empty `types` is a fact nobody has typed yet, which every type search
+ * includes.
+ */
+export const factIndex = sqliteTable('fact_index', {
+  factId: text('fact_id').primaryKey(),
+  guildId: text('guild_id').notNull().default(''),
+  createdAt: integer('created_at').notNull(),
+  types: text('types').notNull().default(' '),
+  people: text('people').notNull().default(' '),
+  /** The source messages, so the dashboard can count them without reading every fact. */
+  messages: text('messages').notNull().default(' '),
+}, (table) => [
+  index('fact_index_created_at').on(table.createdAt),
+  index('fact_index_types').on(table.types),
+]);

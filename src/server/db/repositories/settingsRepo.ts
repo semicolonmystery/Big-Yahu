@@ -49,7 +49,10 @@ const BOUNDS: Record<NumericSetting, { min: number; max: number }> = {
   rateLimitPerHour: { min: 0, max: 1000 },
   retryAttempts: { min: 0, max: 5 },
   retryDelayMs: { min: 0, max: 60_000 },
-  duplicateDistance: { min: 1, max: DUPLICATE_DISTANCE_MAX },
+  // 0 is meaningful: it switches the duplicate check off, the same way it
+  // switches the recall ceiling off below. This is the value a fact with no type
+  // yet is compared at; a type carries its own.
+  duplicateDistance: { min: 0, max: DUPLICATE_DISTANCE_MAX },
   // 0 is meaningful: it switches the recall ceiling off entirely.
   factSearchMaxDistance: { min: 0, max: FACT_SEARCH_MAX_DISTANCE_MAX },
   // The narrowest and widest an embedding model will shorten to.

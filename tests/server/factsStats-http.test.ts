@@ -14,6 +14,9 @@ vi.mock('../../src/server/db/repositories/factsRepo', async (importOriginal) => 
   // peopleIn is pure and the point of this route, so it is the real one.
   peopleIn: (await importOriginal<typeof import('../../src/server/db/repositories/factsRepo')>()).peopleIn,
   searchFacts: state.search, listFactsPage: state.page, listAllFacts: state.all, countFacts: state.count, deleteFact: state.remove,
+  // The store itself is mocked here; the SQLite mirror these routes read is real
+  // and seeded below, so there is never anything for a rebuild to reconcile.
+  ensureFactIndex: async () => {},
 }));
 vi.mock('../../src/server/bot/identity', () => ({ knownDisplayNames: () => state.names }));
 vi.mock('../../src/server/db/client', async () => {
@@ -27,11 +30,12 @@ vi.mock('../../src/server/db/client', async () => {
 });
 
 import { db } from '../../src/server/db/client';
-import { cachedMessages, replyLog, sessions, settings } from '../../src/server/db/schema';
+import { cachedMessages, factIndex, replyLog, sessions, settings } from '../../src/server/db/schema';
 import { createSession } from '../../src/server/db/repositories/authRepo';
 import { cacheMessages } from '../../src/server/db/repositories/cachedMessagesRepo';
 import { updateSettings } from '../../src/server/db/repositories/settingsRepo';
 import { logReply } from '../../src/server/db/repositories/replyLogRepo';
+import { indexFacts } from '../../src/server/db/repositories/factIndexRepo';
 import { requireAuth } from '../../src/server/api/middleware/requireAuth';
 import { factsRouter } from '../../src/server/api/routes/facts';
 import { statsRouter } from '../../src/server/api/routes/stats';
@@ -68,7 +72,7 @@ afterAll(async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   errors.length = 0;
-  for (const table of [cachedMessages, replyLog, sessions, settings]) db.delete(table).run();
+  for (const table of [cachedMessages, factIndex, replyLog, sessions, settings]) db.delete(table).run();
   cookie = `${SESSION_COOKIE}=${createSession()}`;
   updateSettings({ factSearchTopK: 7 });
   state.facts = [
@@ -84,6 +88,9 @@ beforeEach(() => {
   state.all.mockImplementation(async () => state.facts);
   state.count.mockImplementation(async () => state.facts.length);
   state.remove.mockImplementation(async (id: string) => state.facts.some((entry) => entry.id === id));
+  // The authors list and the dashboard's message counter are answered from the
+  // mirror rather than by reading every fact out of Chroma.
+  indexFacts(state.facts);
   cacheMessages([
     { messageId: '1', channelId: 'channel', guildId: 'guild', authorId: '111', authorUsername: 'Alice Old', content: 'First source', messageCreatedAt: 1000 },
     { messageId: '2', channelId: 'channel', guildId: 'guild', authorId: '111', authorUsername: 'Alice Current', content: 'Second source', messageCreatedAt: 2000 },
@@ -217,6 +224,7 @@ describe('dashboard statistics HTTP API', () => {
 
   it('returns empty statistics consistently', async () => {
     state.facts = [];
+    db.delete(factIndex).run();
     expect(await (await request('/stats')).json()).toEqual({ success: true, data: {
       totalFacts: 0, totalMessagesReferenced: 0, totalReplies: 0, latestReplies: [],
     } });

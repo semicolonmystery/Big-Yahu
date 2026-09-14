@@ -75,6 +75,8 @@ export interface MaterialFact {
   id: string;
   channelId: string;
   text: string;
+  /** What kinds of thing it is. Absent means nobody has sorted it yet. */
+  types?: string[];
   /** The messages it came from, where they are still cached. */
   sources?: MaterialSource[];
   notes?: string[];
@@ -98,6 +100,7 @@ export function factsMaterial(facts: Fact[], sourceMessages: SourceMessage[] = [
       id: fact.id,
       channelId: fact.metadata.channelId,
       text: fact.text,
+      ...(fact.metadata.types?.length ? { types: fact.metadata.types } : {}),
       ...(sources.length > 0 ? { sources } : {}),
       ...(factNotes?.length ? { notes: factNotes } : {}),
     };

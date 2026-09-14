@@ -1,6 +1,7 @@
 import { Router } from 'express';
+import { factCountsByPerson } from '../../db/repositories/factIndexRepo';
 import {
-  peopleIn, searchFacts, listFactsPage, listAllFacts, deleteFact } from '../../db/repositories/factsRepo';
+  searchFacts, listFactsPage, ensureFactIndex, deleteFact } from '../../db/repositories/factsRepo';
 import { getMessages, getUsernames } from '../../db/repositories/cachedMessagesRepo';
 import { getSettings } from '../../db/repositories/settingsRepo';
 import { mentionedUserIds } from '@shared/discord';
@@ -120,14 +121,10 @@ factsRouter.get('/', async (req, res) => {
 });
 
 factsRouter.get('/authors', async (_req, res) => {
-  const facts = await listAllFacts();
-
-  const counts = new Map<string, number>();
-  for (const fact of facts) {
-    for (const authorId of peopleIn(fact)) {
-      counts.set(authorId, (counts.get(authorId) ?? 0) + 1);
-    }
-  }
+  // Counted in SQLite rather than by reading every fact out of Chroma: this
+  // screen is a filter list, and it used to cost the whole collection to draw.
+  await ensureFactIndex();
+  const counts = factCountsByPerson();
 
   // A fact can be about someone who did not write any of its source messages.
   // Resolve all indexed people from the full cache and Discord, just as the

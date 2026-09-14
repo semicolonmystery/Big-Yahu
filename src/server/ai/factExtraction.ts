@@ -1,6 +1,7 @@
 import type { Message, TextBasedChannel } from 'discord.js';
 import { markUnseenImages, mentionRoster, runEscalatableExtraction, toWindowMessage } from './context';
-import { extractionSchema } from './schemas';
+import { extractionSchemaFor } from './schemas';
+import { factTypesForModel, knownTypes } from '../db/repositories/factTypesRepo';
 import type { ExtractionResult } from './schemas';
 import { buildFactExtractionInstruction } from './prompts/build';
 import { addFacts } from '../db/repositories/factsRepo';
@@ -104,14 +105,19 @@ async function extractPage(channel: TextBasedChannel, guildId: string, messages:
     })),
   });
 
+  // The list is the operator's, so it is read per pass rather than baked into
+  // the prompt: it goes in the material, which keeps the cached prefix intact.
+  const types = factTypesForModel();
+  const typeIds = types.map((type) => type.id);
   const result = await runEscalatableExtraction<ExtractionResult>({
     aiTask: 'factExtraction',
-    schema: extractionSchema,
+    schema: extractionSchemaFor(typeIds),
     hint: (answer) => answer.facts.map((fact) => fact.text).join(' '),
     systemInstruction: buildFactExtractionInstruction(),
     task: 'Extract the facts worth remembering from this channel.',
     material: {
       channelId: channel.id,
+      factTypes: types,
       // Which picture came from which message, in the order they are attached.
       ...(images.length > 0
         ? { images: images.map((image, index) => ({ index: index + 1, messageId: image.messageId })) }
@@ -137,6 +143,7 @@ async function extractPage(channel: TextBasedChannel, guildId: string, messages:
         const authorIds = messageIds.map((id) => authorByMessageId.get(id)).filter((id) => id !== undefined);
         return {
           text: normaliseFactMentions(fact.text, roster),
+          types: knownTypes(fact.types),
           messageIds,
           authorIds: [...new Set(authorIds)],
           guildId,

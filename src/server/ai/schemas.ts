@@ -7,7 +7,26 @@ import type { JsonSchema } from './jsonSchema';
  * string or an empty list, never missing. The descriptions are the instructions
  * the model reads for each field, so they carry the rules, not just the type.
  */
-const factList: JsonSchema = {
+/**
+ * What a fact is, as the model must answer it.
+ *
+ * The type list is not a constant, because an operator owns it: the enum is
+ * built from `fact_types` per call. That does change the schema message a
+ * structured call sends, which costs the same as toggling a plugin — worth it,
+ * since an enum is the difference between the model choosing from the list and
+ * inventing a type nobody defined.
+ */
+const typesField = (typeIds: string[]): JsonSchema => ({
+  type: 'array',
+  items: typeIds.length > 0 ? { type: 'string', enum: typeIds } : { type: 'string' },
+  description:
+    'What kinds of thing this fact is, from the `factTypes` list you were given — several, not one. '
+    + 'Nearly anything that says something is also "message", on top of whatever else it is: that is what '
+    + 'makes it findable later as something somebody said. Read each type\'s description and pick every '
+    + 'one that genuinely applies.',
+});
+
+const factList = (typeIds: string[]): JsonSchema => ({
   type: 'array',
   description: 'The facts worth remembering. An empty array is a perfectly good answer.',
   items: {
@@ -20,24 +39,27 @@ const factList: JsonSchema = {
           + '<@ID> mention rather than their display name. Write dates absolutely — never "tomorrow" or '
           + '"zítra", always the real date worked out from the message timestamp, and always as '
           + 'day.month.year: "10.9.2026 21:00", never 9/10/2026 and never 2026-09-10. '
+          + 'Only say when something happened or was said if the messages actually say when — if nobody said, '
+          + 'write the fact with no date at all rather than guessing one. '
           + 'Put anything whose exact wording is the point — a nickname, a quoted phrase — in double quotes, '
           + 'and it is kept verbatim.',
       },
+      types: typesField(typeIds),
       messageIds: {
         type: 'array',
         items: { type: 'string' },
         description: 'IDs of the messages this fact came from. Copy them exactly.',
       },
     },
-    required: ['text', 'messageIds'],
+    required: ['text', 'types', 'messageIds'],
     additionalProperties: false,
   },
-};
+});
 
-export const extractionSchema: JsonSchema = {
+export const extractionSchemaFor = (typeIds: string[]): JsonSchema => ({
   type: 'object',
   properties: {
-    facts: factList,
+    facts: factList(typeIds),
     needsMoreContext: {
       type: 'boolean',
       description: 'True only if earlier conversation is genuinely required to understand these messages.',
@@ -51,7 +73,7 @@ export const extractionSchema: JsonSchema = {
   },
   required: ['facts', 'needsMoreContext', 'contextHint'],
   additionalProperties: false,
-};
+});
 
 const DAY_MONTH_YEAR = '^(\\d{1,2}\\.\\d{1,2}\\.\\d{4})?$';
 
@@ -103,6 +125,15 @@ export const topicSchema: JsonSchema = {
       pattern: DAY_MONTH_YEAR,
       description: 'The last day of that time, as day.month.year. The same as dateFrom for a single day. Empty otherwise.',
     },
+    staySilent: {
+      type: 'boolean',
+      description:
+        'True to send no reply at all, and nothing else happens. Set it only when answering would just feed '
+        + 'something pointless: somebody fishing for a reaction, a slanging match that has stopped going '
+        + 'anywhere, or somebody needling the bot about whether it will respond. A real question always gets '
+        + 'an answer, and a bare mention is almost never noise — people split the ping from the message, or '
+        + 'what they want is in the lines just above. False in every other case.',
+    },
     needsMoreContext: {
       type: 'boolean',
       description: 'True only if earlier conversation is genuinely required to work out what is being asked.',
@@ -116,13 +147,15 @@ export const topicSchema: JsonSchema = {
   },
   required: [
     'coreTopic', 'whatTaggingMessageIsAbout', 'searchQuery', 'people', 'channels', 'dateFrom', 'dateTo',
-    'needsMoreContext', 'contextHint',
+    'staySilent', 'needsMoreContext', 'contextHint',
   ],
   additionalProperties: false,
 };
 
 export interface ExtractedFact {
   text: string;
+  /** Validated against the live list on the way in: a type nobody defined is dropped. */
+  types: string[];
   messageIds: string[];
 }
 
@@ -140,6 +173,8 @@ export interface TopicResult {
   channels: string[];
   dateFrom: string;
   dateTo: string;
+  /** Send nothing at all. Decided here, as a field, rather than by the reply calling a tool. */
+  staySilent: boolean;
   needsMoreContext: boolean;
   contextHint: string;
 }
@@ -266,23 +301,7 @@ export const deleteFactDeclaration: ToolDeclaration = {
   },
 };
 
-export const staySilentDeclaration: ToolDeclaration = {
-  name: 'stay_silent',
-  description:
-    'Say nothing at all. No message is sent. Use this when replying would only feed something pointless: '
-    + 'someone baiting you for a reaction, or a slanging match that is going nowhere. '
-    + 'If you have already said you are done with someone, this is how you actually be done. '
-    + 'Do not use it just because a message is short or has no question in it — read the conversation first.',
-  parameters: {
-    type: 'object',
-    properties: {
-      why: { type: 'string', description: 'One short line, for the logs. Nobody in the chat sees this.' },
-    },
-    required: ['why'],
-  },
-};
-
-export const saveFactDeclaration: ToolDeclaration = {
+export const saveFactDeclarationFor = (typeIds: string[]): ToolDeclaration => ({
   name: 'save_fact',
   description:
     'Store something from your reply as a durable fact, so it can be recalled in future conversations. ' +
@@ -299,15 +318,18 @@ export const saveFactDeclaration: ToolDeclaration = {
           + 'Write dates absolutely — never "tomorrow" or "zítra", always the real date worked out from '
           + 'the current time and the message it came from, and always as day.month.year: '
           + '"10.9.2026 21:00", never 9/10/2026 and never 2026-09-10. '
+          + 'Only say when something happened or was said if the messages actually say when — if nobody '
+          + 'said, write the fact with no date at all rather than guessing one. '
           + 'Wording that matters — a nickname, a phrase someone actually used — goes in double quotes '
           + 'and is kept exactly, in whatever language it was said.',
       },
+      types: typesField(typeIds),
       referencedFactIds: {
         type: 'array',
         items: { type: 'string' },
         description: 'IDs of existing facts this one builds on, if any were provided to you.',
       },
     },
-    required: ['text'],
+    required: ['text', 'types'],
   },
-};
+});

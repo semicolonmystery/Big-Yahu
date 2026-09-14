@@ -36,7 +36,11 @@ import {
 import { factsMaterial, messageMaterial, messagesMaterial } from '../../src/server/ai/material';
 import { extractTopic } from '../../src/server/ai/topicExtraction';
 import { UnreadableAnswerError } from '../../src/server/ai/structured';
-import { extractionSchema, topicSchema } from '../../src/server/ai/schemas';
+import { extractionSchemaFor, topicSchema } from '../../src/server/ai/schemas';
+
+// The type list is the operator's, so the schema is built per call; these tests
+// only care that the same shape reaches the model each time.
+const extractionSchema = extractionSchemaFor([]);
 import { HOST_FAILURE_NOTICE } from '../../src/shared/constants';
 import { REPLY_DEFAULT, TOPIC_EXTRACTION_DEFAULT } from '../../src/server/ai/prompts/systemInstructions';
 

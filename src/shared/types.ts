@@ -1,3 +1,5 @@
+import type { FactType } from './factTypes';
+
 export interface FactMetadata {
   guildId: string;
   channelId: string;
@@ -12,6 +14,12 @@ export interface FactMetadata {
   subjectIds?: string[];
   /** Channels the fact names. */
   channelRefs?: string[];
+  /**
+   * What kind of thing this fact is — several at once, since nearly anything
+   * that says something is also a `message`. Absent means nobody has typed it
+   * yet, which every type search includes rather than skipping.
+   */
+  types?: string[];
   /** The first and last day the fact talks about, in whole days since the epoch. */
   dateMin?: number;
   dateMax?: number;
@@ -360,4 +368,19 @@ export interface EmbeddingStatus {
     pausesRecall: boolean;
     lastError: string | null;
   } | null;
+}
+
+export interface FactTypesOverview {
+  types: FactType[];
+  /** Facts nobody has sorted yet. They surface in every type search until the cleanup pass runs. */
+  untypedFacts: number;
+}
+
+export interface FactTypeInput {
+  id: string;
+  label: string;
+  description: string;
+  duplicateDistance?: number;
+  factSearchTopK?: number;
+  factSearchMaxDistance?: number;
 }

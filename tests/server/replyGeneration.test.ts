@@ -223,10 +223,42 @@ describe('the reply protocol', () => {
     expect(warn.mock.calls.flat().join(' ')).toContain('all done');
   });
 
-  it('honours silence while still executing the requested plugin tool', async () => {
-    m.chat.mockResolvedValueOnce(answer('', [{ name: 'stay_silent' }, { name: 'example__assess' }]));
-    expect((await generateReply(draft(), context())).silent).toBe(true);
-    expect(m.runTool).toHaveBeenCalledTimes(1);
+  // Whether to answer is settled by the topic call before this one runs, so the
+  // reply has no silence tool to reach for — and nothing to name by mistake.
+  it('offers no silence tool at all', async () => {
+    m.chat.mockResolvedValue(answer('odpověď'));
+    await generateReply(draft(), context());
+    const offered = m.chat.mock.calls[0][1].tools.map((tool: { name: string }) => tool.name);
+    expect(offered).not.toContain('stay_silent');
+    expect(offered).toContain('reply_to');
+  });
+
+  // Observed: it posted the words "stay silent" to the channel. The model had
+  // decided to say nothing and typed the decision instead of making it, which is
+  // the loudest possible way to say nothing.
+  it('stays silent when the model writes the words instead of calling the tool', async () => {
+    for (const spoken of ['stay silent', 'stay_silent', 'Staying silent.', '*stays silent*', 'no reply']) {
+      m.chat.mockReset();
+      m.chat.mockResolvedValue(answer(spoken));
+      const result = await generateReply(draft(), context());
+      expect(result.silent, spoken).toBe(true);
+      expect(result.text, spoken).toBe('');
+    }
+  });
+
+  it('still posts a real reply that happens to talk about staying silent', async () => {
+    m.chat.mockResolvedValue(answer('nah i could stay silent but ur wrong'));
+    const result = await generateReply(draft(), context());
+    expect(result.silent).toBe(false);
+    expect(result.text).toBe('nah i could stay silent but ur wrong');
+  });
+
+  it('drops a bare tool name rather than posting it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    m.canExtract.mockReturnValue(true);
+    m.chat.mockResolvedValue(answer('save_fact'));
+    expect((await generateReply(draft(), context())).text).toBe('');
+    expect(warn.mock.calls.flat().join(' ')).toContain('save_fact');
   });
 
   it('never falls back to prose claiming a rejected save succeeded', async () => {

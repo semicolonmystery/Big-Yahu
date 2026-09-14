@@ -12,6 +12,8 @@ import type {
   EmbeddingStatus,
   FactAuthor,
   FactPage,
+  FactTypesOverview,
+  FactTypeInput,
   FactWithSources,
   PluginSummary,
   PromptSummary,
@@ -20,6 +22,7 @@ import type {
   PanelView,
   PanelActionResult,
 } from '@shared/types';
+import type { FactType } from '@shared/factTypes';
 
 export const AUTH_REQUIRED_EVENT = 'big-yahu:auth-required';
 
@@ -102,6 +105,12 @@ export const api = {
   listChannels: () => request<{ channels: ChannelPermission[]; botOnline: boolean }>('/channels'),
   updateChannel: (channelId: string, values: { canReply?: boolean; canExtract?: boolean }) =>
     patch<ChannelPermission>(`/channels/${channelId}`, values),
+
+  listFactTypes: () => request<FactTypesOverview>('/fact-types'),
+  addFactType: (values: FactTypeInput) => post<FactType>('/fact-types', values),
+  updateFactType: (id: string, values: Partial<FactTypeInput>) => patch<FactType>(`/fact-types/${id}`, values),
+  removeFactType: (id: string) => del<{ id: string }>(`/fact-types/${id}`),
+  resetFactTypes: () => post<FactType[]>('/fact-types/reset'),
 
   listControllers: () => request<Controller[]>('/controllers'),
   addController: (userId: string, label: string) => post<Controller>('/controllers', { userId, label }),

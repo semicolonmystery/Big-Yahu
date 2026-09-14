@@ -152,9 +152,10 @@ describe('settings API validation', () => {
 
   it('takes a hand-calibrated duplicate distance and holds it inside its bounds', async () => {
     expect((await (await patch('/settings', { duplicateDistance: 40 })).json()).data.duplicateDistance).toBe(40);
-    // A distance of 0 would compare nothing; an unbounded one would fold
-    // unrelated facts into each other.
-    expect((await (await patch('/settings', { duplicateDistance: 0 })).json()).data.duplicateDistance).toBe(1);
+    // 0 is meaningful now: it switches the duplicate check off, the same way it
+    // switches the recall ceiling off. An unbounded one would fold unrelated
+    // facts into each other, so only the ceiling is clamped.
+    expect((await (await patch('/settings', { duplicateDistance: 0 })).json()).data.duplicateDistance).toBe(0);
     expect((await (await patch('/settings', { duplicateDistance: 500 })).json()).data.duplicateDistance)
       .toBe(DUPLICATE_DISTANCE_MAX);
   });
