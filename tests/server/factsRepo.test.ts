@@ -74,13 +74,26 @@ const state = vi.hoisted(() => {
   };
   return {
     rows, distance, distances, collection, index,
+    settings: { duplicateDistance: 25, factSearchMaxDistance: 0 },
+    recallPaused: false,
+    noteFactsChanged: vi.fn(),
+    dropFromSnapshot: vi.fn(),
     embedDocuments: vi.fn(async (texts: string[]) => texts.map((text) => [index(text)])),
   };
 });
 
-vi.mock('../../src/server/db/chroma', () => ({ getFactsCollection: async () => state.collection }));
-vi.mock('../../src/server/db/repositories/settingsRepo', () => ({ getSettings: () => ({ duplicateDistance: 25 }) }));
+vi.mock('../../src/server/db/chroma', () => ({
+  getFactsCollection: async () => state.collection,
+  collectionNameFor: (config: { model: string; dimensions: number }) => `facts__${config.model}__${config.dimensions}`,
+}));
+vi.mock('../../src/server/db/repositories/reembedRepo', () => ({
+  recallIsPaused: () => state.recallPaused,
+  noteFactsChanged: state.noteFactsChanged,
+  dropFromSnapshot: state.dropFromSnapshot,
+}));
+vi.mock('../../src/server/db/repositories/settingsRepo', () => ({ getSettings: () => state.settings }));
 vi.mock('../../src/server/ai/embeddings', () => ({
+  activeEmbedding: () => ({ model: 'test/embeddings', dimensions: 3 }),
   embedDocuments: state.embedDocuments,
   embedQuery: async (text: string) => [state.index(text)],
 }));
@@ -107,6 +120,9 @@ beforeEach(() => {
   state.rows.clear();
   state.distances.clear();
   state.distance.different = 1;
+  state.settings.duplicateDistance = 25;
+  state.settings.factSearchMaxDistance = 0;
+  state.recallPaused = false;
 });
 
 describe('fact persistence', () => {
@@ -215,6 +231,56 @@ describe('fact persistence', () => {
   });
 });
 
+describe('the duplicate distance setting', () => {
+  // The operator calibrates this by hand, so the number has to reach the
+  // comparison rather than sit in Settings looking like it does.
+  const pair = async () => {
+    await addFacts([candidate('<@111> is going on Monday')]);
+    state.distance.different = 0.3;
+    await addFacts([candidate('<@111> is going on Tuesday', { messageIds: ['message-2'] })]);
+    return state.rows.size;
+  };
+
+  it('keeps a pair apart when they are further off than the setting allows', async () => {
+    state.settings.duplicateDistance = 25;
+    expect(await pair()).toBe(2);
+  });
+
+  it('merges that same pair once the setting is widened past their distance', async () => {
+    state.settings.duplicateDistance = 35;
+    expect(await pair()).toBe(1);
+    expect([...state.rows.values()][0].document).toBe('<@111> is going on Tuesday');
+  });
+});
+
+describe('while a re-embed is running', () => {
+  it('says it remembers nothing rather than answering out of a half-filled collection', async () => {
+    await addFacts([candidate('Alice owns a dog')]);
+    state.distance.different = 0.1;
+    state.recallPaused = true;
+    // Only what recall does from here matters; the write above searched too.
+    state.collection.query.mockClear();
+    expect(await recallFacts({ query: 'pets', topK: 5, guildId: 'guild' })).toEqual([]);
+    expect(state.collection.query).not.toHaveBeenCalled();
+  });
+
+  it('adds a newly written fact to the job, so the swap cannot leave it behind', async () => {
+    const [id] = await addFacts([candidate('Written during the move')]);
+    expect(state.noteFactsChanged).toHaveBeenCalledWith('facts__test/embeddings__3', [id]);
+  });
+
+  it('takes a deleted fact out of the job, so it cannot come back at the swap', async () => {
+    const [id] = await addFacts([candidate('Deleted during the move')]);
+    expect(await deleteFact(id)).toBe(true);
+    expect(state.dropFromSnapshot).toHaveBeenCalledWith(id);
+  });
+
+  it('does not take a fact out of the job when nothing was deleted', async () => {
+    expect(await deleteFact('never-existed')).toBe(false);
+    expect(state.dropFromSnapshot).not.toHaveBeenCalled();
+  });
+});
+
 describe('what is embedded', () => {
   it('drops the ids and dates that an embedding cannot mean anything by', () => {
     expect(embeddingText('<@111> is meeting <@222> in <#333> on 03.04.2026'))
@@ -306,6 +372,44 @@ describe('recall', () => {
     // A fact about days outside the span gets no lift from the date search.
     const narrowed = await recallFacts({ query: 'anything', topK: 2, guildId: 'guild', dateFrom: '1.1.2020', dateTo: '2.1.2020' });
     expect(narrowed.every((fact) => fact.distance === 0.5)).toBe(true);
+  });
+
+  it('drops anything past the configured distance ceiling, and returns nothing when all of it is', async () => {
+    await addFacts([about('<@222> owns a dog')]);
+    await addFacts([about('Somebody owns a cat')]);
+    state.distances.set('<@222> owns a dog', 0.3);
+    state.distances.set('Somebody owns a cat', 0.8);
+
+    state.settings.factSearchMaxDistance = 50;
+    const near = await recallFacts({ query: 'pets', topK: 5, guildId: 'guild' });
+    expect(near.map((fact) => fact.text)).toEqual(['<@222> owns a dog']);
+
+    // A question with nothing behind it comes back empty rather than with the
+    // least-bad match, which is the whole point of the ceiling.
+    state.settings.factSearchMaxDistance = 10;
+    expect(await recallFacts({ query: 'pets', topK: 5, guildId: 'guild' })).toEqual([]);
+
+    state.settings.factSearchMaxDistance = 0;
+    expect(await recallFacts({ query: 'pets', topK: 5, guildId: 'guild' })).toHaveLength(2);
+  });
+
+  it('will not let a facet match smuggle in something past the ceiling', async () => {
+    await addFacts([about('<@222> owns a dog')]);
+    state.distances.set('<@222> owns a dog', 0.8);
+    state.settings.factSearchMaxDistance = 50;
+    // Named in the question, but nowhere near it: the bonus reorders what got
+    // in, it does not raise the ceiling.
+    expect(await recallFacts({ query: 'pets', topK: 5, guildId: 'guild', people: ['222'] })).toEqual([]);
+  });
+
+  it('never applies the ceiling to the duplicate comparison', async () => {
+    state.settings.factSearchMaxDistance = 5;
+    await addFacts([about('<@111> is going on Monday')]);
+    state.distance.different = 0.2;
+    // 0.2 is past the search ceiling but inside the duplicate threshold, and
+    // dedupe has to see it or the same fact gets stored twice.
+    await addFacts([about('<@111> is going on Tuesday', { messageIds: ['message-2'] })]);
+    expect(state.rows.size).toBe(1);
   });
 
   it('keeps another server out of the answer', async () => {

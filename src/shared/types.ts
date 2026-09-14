@@ -159,6 +159,8 @@ export interface AppSettings {
   retryAttempts: number;
   retryDelayMs: number;
   duplicateDistance: number;
+  /** Hundredths of a vector distance; 0 means no ceiling. */
+  factSearchMaxDistance: number;
   /** What new facts are embedded with; changing either rebuilds the collection. */
   embeddingModel: string;
   embeddingDimensions: number;
@@ -341,3 +343,22 @@ export interface AuthStatus {
 }
 
 export type ApiResponse<T> = { success: true; data: T } | { success: false; error: string };
+
+/** The embedding model the fact store is on, against the one that is configured. */
+export interface EmbeddingStatus {
+  upToDate: boolean;
+  source: { model: string; dimensions: number; collection: string; exists: boolean; facts: number };
+  target: { model: string; dimensions: number; collection: string };
+  job: {
+    id: number;
+    status: 'running' | 'failed' | 'complete';
+    total: number;
+    copied: number;
+    sourceModel: string;
+    targetModel: string;
+    targetDimensions: number;
+    /** Recall answers nothing while this is true. */
+    pausesRecall: boolean;
+    lastError: string | null;
+  } | null;
+}

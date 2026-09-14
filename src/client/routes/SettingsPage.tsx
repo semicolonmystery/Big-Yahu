@@ -3,9 +3,10 @@ import { toast } from 'sonner';
 import { Check, ChevronsUpDown, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AppSettings, ChannelPermission, Controller } from '@shared/types';
-import { LANGUAGES } from '@shared/constants';
+import { DUPLICATE_DISTANCE_MAX, FACT_SEARCH_MAX_DISTANCE_MAX, LANGUAGES } from '@shared/constants';
 import { api } from '@/lib/api';
 import { AiTasksSection } from '@/components/settings/AiTasksSection';
+import { EmbeddingSection } from '@/components/settings/EmbeddingSection';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -85,6 +86,26 @@ const FIELDS: FieldSpec[] = [
     max: 50,
   },
   {
+    key: 'factSearchMaxDistance',
+    label: 'Fact search maximum distance',
+    help: 'How far a fact may be from the question and still be recalled, in the same hundredths as the '
+      + 'duplicate distance. It caps what the top-K search returns, so a question with nothing relevant '
+      + 'behind it comes back empty instead of with the least-bad matches. 0 switches the ceiling off.',
+    type: 'number',
+    min: 0,
+    max: FACT_SEARCH_MAX_DISTANCE_MAX,
+  },
+  {
+    key: 'duplicateDistance',
+    label: 'Duplicate fact distance',
+    help: 'How close two facts must be before a new one replaces the old instead of being stored beside it. '
+      + 'Hundredths of a vector distance, so 25 means 0.25: lower keeps more separate facts, higher merges more. '
+      + 'What counts as close depends on the embedding model, so re-tune this after changing it.',
+    type: 'number',
+    min: 1,
+    max: DUPLICATE_DISTANCE_MAX,
+  },
+  {
     key: 'escalationLookbackHours',
     label: 'Escalation lookback (hours)',
     help: 'How far back it digs when it needs more context.',
@@ -111,7 +132,7 @@ const FIELDS: FieldSpec[] = [
   {
     key: 'retryAttempts',
     label: 'Retry attempts',
-    help: 'How many extra times to retry Gemini when it returns a temporary error like 503 (high demand).',
+    help: 'How many extra times to retry a model when it returns a temporary error like 503 (high demand).',
     type: 'number',
     min: 0,
     max: 5,
@@ -687,7 +708,7 @@ export default function SettingsPage() {
                   onChange={(event) => setDraft({ ...draft, overloadMessage: event.target.value })}
                 />
                 <p className="text-xs text-muted-foreground">
-                  The message sent when Gemini stays unavailable after every retry.
+                  The message sent when every model on the list stays unavailable after every retry.
                 </p>
               </div>
 
@@ -699,8 +720,8 @@ export default function SettingsPage() {
                   onChange={(event) => setDraft({ ...draft, noCreditsMessage: event.target.value })}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Sent when Gemini refuses on billing. Every model shares the key, so nothing retries out of
-                  this one and no model is blamed for it &mdash; it needs you, not another try.
+                  Sent when OpenRouter refuses on billing. Every model shares the key, so nothing retries out
+                  of this one and no model is blamed for it &mdash; it needs you, not another try.
                 </p>
               </div>
 
@@ -712,7 +733,7 @@ export default function SettingsPage() {
                   onChange={(event) => setDraft({ ...draft, busyMessage: event.target.value })}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Sent when the reply runs out of attempts or takes too long. The bot&apos;s own limit, not Gemini&apos;s.
+                  Sent when the reply runs out of attempts or takes too long. The bot&apos;s own limit, not the provider&apos;s.
                 </p>
               </div>
 
@@ -739,6 +760,7 @@ export default function SettingsPage() {
       )}
 
       <AiTasksSection />
+      <EmbeddingSection />
       <ChannelPermissionsSection />
       <ControllersSection />
     </div>

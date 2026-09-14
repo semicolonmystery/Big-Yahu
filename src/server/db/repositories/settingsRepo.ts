@@ -1,7 +1,13 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../client';
 import { settings } from '../schema';
-import { DEFAULT_SETTINGS, DUPLICATE_DISTANCE_MAX, LANGUAGES, MAX_ESCALATION_DEPTH_HARD_CAP } from '@shared/constants';
+import {
+  DEFAULT_SETTINGS,
+  DUPLICATE_DISTANCE_MAX,
+  FACT_SEARCH_MAX_DISTANCE_MAX,
+  LANGUAGES,
+  MAX_ESCALATION_DEPTH_HARD_CAP,
+} from '@shared/constants';
 import type { AppSettings } from '@shared/types';
 
 const ROW_ID = 1;
@@ -44,6 +50,8 @@ const BOUNDS: Record<NumericSetting, { min: number; max: number }> = {
   retryAttempts: { min: 0, max: 5 },
   retryDelayMs: { min: 0, max: 60_000 },
   duplicateDistance: { min: 1, max: DUPLICATE_DISTANCE_MAX },
+  // 0 is meaningful: it switches the recall ceiling off entirely.
+  factSearchMaxDistance: { min: 0, max: FACT_SEARCH_MAX_DISTANCE_MAX },
   // The narrowest and widest an embedding model will shorten to.
   embeddingDimensions: { min: 128, max: 3072 },
   modelFailureThreshold: { min: 1, max: 20 },

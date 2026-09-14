@@ -19,6 +19,7 @@ export const DEFAULT_SETTINGS = {
   checkIntervalMinutes: 60,
   replyContextMessages: 15,
   factSearchTopK: 8,
+  factSearchMaxDistance: 0,
   escalationLookbackHours: 24,
   maxEscalationDepth: 1,
   replyLanguage: 'en',
@@ -107,6 +108,14 @@ export const MAX_ESCALATION_DEPTH_HARD_CAP = 3;
 
 /** duplicateDistance is stored as hundredths so the setting stays an integer. */
 export const DUPLICATE_DISTANCE_MAX = 60;
+
+/**
+ * The recall ceiling is in the same hundredths as `duplicateDistance`, and goes
+ * further because it is answering a looser question: a fact can be worth
+ * recalling long before it is close enough to be the same fact. Vectors are unit
+ * length, so this tops out where two of them have nothing in common.
+ */
+export const FACT_SEARCH_MAX_DISTANCE_MAX = 200;
 
 /** Discord caps a single message at 2000 characters. */
 export const DISCORD_MESSAGE_LIMIT = 2000;

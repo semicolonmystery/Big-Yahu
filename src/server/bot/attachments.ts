@@ -103,7 +103,7 @@ function countBy(candidates: Candidate[]): UnseenImages {
 }
 
 /**
- * Images and GIFs from a run of messages, ready to hand to Gemini, plus a count
+ * Images and GIFs from a run of messages, ready to hand to a model, plus a count
  * of the ones that did not make it.
  *
  * Anything over the budget, and anything that cannot be fetched or re-encoded,

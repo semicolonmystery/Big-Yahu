@@ -46,8 +46,7 @@ interface Answer {
 /**
  * The answer's shape, as a message of its own. JSON mode guarantees JSON but
  * not which JSON, so the shape has to be said — and it is said here, after the
- * operator's prompt rather than inside it, exactly where Gemini's response
- * schema used to travel as a separate field. What an operator saves is still
+ * operator's prompt rather than inside it. What an operator saves is still
  * precisely the first thing the model reads.
  */
 export function formatInstruction(schema: JsonSchema): string {

@@ -1,0 +1,1 @@
+ALTER TABLE `settings` ADD `fact_search_max_distance` integer DEFAULT 0 NOT NULL;

@@ -35,7 +35,7 @@ import { channelsRouter } from '../../src/server/api/routes/channels';
 import { settingsRouter } from '../../src/server/api/routes/settings';
 import { controllersRouter } from '../../src/server/api/routes/controllers';
 import { isController } from '../../src/server/db/repositories/controllersRepo';
-import { DEFAULT_SETTINGS } from '../../src/shared/constants';
+import { DEFAULT_SETTINGS, DUPLICATE_DISTANCE_MAX, FACT_SEARCH_MAX_DISTANCE_MAX } from '../../src/shared/constants';
 
 let server: Server;
 let baseUrl: string;
@@ -134,6 +134,29 @@ describe('settings API validation', () => {
     expect(body.data.maxEscalationDepth).toBe(3);
     expect(body.data).not.toHaveProperty('unknown');
     expect((await (await fetch(`${baseUrl}/settings`)).json()).data).toEqual(body.data);
+  });
+
+  it('takes a recall ceiling, and 0 to switch it off', async () => {
+    expect((await (await patch('/settings', { factSearchMaxDistance: 65 })).json()).data.factSearchMaxDistance).toBe(65);
+    expect((await (await patch('/settings', { factSearchMaxDistance: 0 })).json()).data.factSearchMaxDistance).toBe(0);
+    expect((await (await patch('/settings', { factSearchMaxDistance: 9999 })).json()).data.factSearchMaxDistance)
+      .toBe(FACT_SEARCH_MAX_DISTANCE_MAX);
+  });
+
+  it('accepts a new embedding model and width without touching the live store', async () => {
+    const body = await (await patch('/settings', { embeddingModel: 'other/embeddings', embeddingDimensions: 512 })).json();
+    expect(body.data).toMatchObject({ embeddingModel: 'other/embeddings', embeddingDimensions: 512 });
+    // Which model recall is actually on is the job's to change, never a save.
+    expect(body.data).not.toHaveProperty('activeEmbeddingModel');
+  });
+
+  it('takes a hand-calibrated duplicate distance and holds it inside its bounds', async () => {
+    expect((await (await patch('/settings', { duplicateDistance: 40 })).json()).data.duplicateDistance).toBe(40);
+    // A distance of 0 would compare nothing; an unbounded one would fold
+    // unrelated facts into each other.
+    expect((await (await patch('/settings', { duplicateDistance: 0 })).json()).data.duplicateDistance).toBe(1);
+    expect((await (await patch('/settings', { duplicateDistance: 500 })).json()).data.duplicateDistance)
+      .toBe(DUPLICATE_DISTANCE_MAX);
   });
 
   it('supports disabling text attachments and clamps their size to the 64 KiB limit', async () => {

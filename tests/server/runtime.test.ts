@@ -63,6 +63,7 @@ describe('graceful shutdown', () => {
     '../../src/server/bot/client',
     '../../src/server/bot/events/ready', '../../src/server/bot/events/messageCreate',
     '../../src/server/plugins/engine', '../../src/server/scheduler/hourlyCheck',
+    '../../src/server/ai/reembed',
   ];
   let previousExitCode: typeof process.exitCode;
   beforeEach(() => {
@@ -92,6 +93,7 @@ describe('graceful shutdown', () => {
     vi.doMock('../../src/server/app', () => ({ createApp: () => ({ listen: () => server }) }));
     vi.doMock('../../src/server/env', () => ({ env: { port: 3000 } }));
     vi.doMock('../../src/server/db/client', () => ({ runMigrations: vi.fn(), closeDatabase }));
+    vi.doMock('../../src/server/ai/reembed', () => ({ resumeReembedAtBoot: vi.fn(async () => {}) }));
     vi.doMock('../../src/server/bot/client', () => ({ discordClient: { destroy } }));
     vi.doMock('../../src/server/bot/events/ready', () => ({ registerReady: vi.fn() }));
     vi.doMock('../../src/server/bot/events/messageCreate', () => ({ registerMessageCreate: vi.fn(), drainMessageHandlers }));

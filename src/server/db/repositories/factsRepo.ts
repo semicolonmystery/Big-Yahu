@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { Metadata } from 'chromadb';
-import { getFactsCollection } from '../chroma';
+import { collectionNameFor, getFactsCollection } from '../chroma';
+import { activeEmbedding } from '../../ai/embeddings';
 import { getSettings } from './settingsRepo';
+import { dropFromSnapshot, noteFactsChanged, recallIsPaused } from './reembedRepo';
 import { embedDocuments, embedQuery } from '../../ai/embeddings';
 import { hasUnresolvedRelativeDate, resolveRelativeDates } from '../../ai/dateEnforcement';
 import { mentionedUserIds } from '@shared/discord';
@@ -121,6 +123,8 @@ export interface RecallOptions {
   dateTo?: string;
   /** An extra Chroma filter, such as one channel. */
   where?: Record<string, unknown>;
+  /** Overrides the configured ceiling, as a distance rather than hundredths. */
+  maxDistance?: number;
 }
 
 function bothOf(base: Record<string, unknown> | undefined, extra: Record<string, unknown>): Record<string, unknown> {
@@ -144,6 +148,9 @@ function readDay(value: string | undefined): number | null {
  * embedding noticed an id.
  */
 export async function recallFacts(options: RecallOptions): Promise<Array<Fact & { distance: number | null }>> {
+  // Mid-migration there is nothing to search yet. Saying "I remember nothing"
+  // is honest; answering out of a half-filled collection is not.
+  if (recallIsPaused()) return [];
   const collection = await getFactsCollection();
   const embedding = await embedQuery(embeddingText(options.query));
   return recallWith(collection, embedding, options);
@@ -207,7 +214,17 @@ async function recallWith(
     }
   }
 
-  const scored = [...found.values()]
+  // How near a fact has to be to count at all. Applied to the distance itself
+  // rather than to the facet-adjusted score, so the number an operator tunes
+  // means one thing: how close the vectors are. Facets reorder what got in;
+  // they cannot smuggle in something unrelated. 0 switches the ceiling off.
+  const ceiling = options.maxDistance ?? getSettings().factSearchMaxDistance / 100;
+  const near = ceiling > 0
+    // A null distance is "not reported", not "infinitely far".
+    ? [...found.values()].filter((entry) => entry.fact.distance === null || entry.fact.distance <= ceiling)
+    : [...found.values()];
+
+  const scored = near
     .map((entry) => ({ ...entry, score: (entry.fact.distance ?? 1) - entry.facets.size * FACET_BONUS }))
     .sort((first, second) => first.score - second.score);
 
@@ -350,7 +367,9 @@ export async function addFacts(candidates: FactCandidate[]): Promise<string[]> {
       // The candidate's own vector is already in hand, so this costs no second
       // embedding of the same sentence.
       const [nearest] = await recallWith(collection, embeddings[index], {
-        query: candidate.text, topK: 1, guildId: candidate.guildId,
+        // No recall ceiling here: this comparison has its own threshold, and a
+        // tighter search ceiling would hide a real duplicate and store it twice.
+        query: candidate.text, topK: 1, guildId: candidate.guildId, maxDistance: 0,
       });
       const identical = nearest && normalise(nearest.text) === normalise(candidate.text);
       // Similar sentences about different people are independent facts, not
@@ -377,6 +396,9 @@ export async function addFacts(candidates: FactCandidate[]): Promise<string[]> {
       });
       savedIds.add(id);
     }
+    // A job copies the store as it was when it started, so anything written
+    // since has to join its snapshot or the swap would leave it behind.
+    noteFactsChanged(collectionNameFor(activeEmbedding()), [...savedIds]);
     return [...savedIds];
   });
 }
@@ -387,6 +409,9 @@ export async function deleteFact(id: string): Promise<boolean> {
     const existing = await collection.get({ ids: [id] });
     if (existing.ids.length === 0) return false;
     await collection.delete({ ids: [id] });
+    // Otherwise an open job would copy it back out of the source it was deleted
+    // from, and a forgotten fact would return at the swap.
+    dropFromSnapshot(id);
     return true;
   });
 }

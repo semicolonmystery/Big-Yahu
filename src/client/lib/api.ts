@@ -9,6 +9,7 @@ import type {
   ChannelPermission,
   Controller,
   DashboardStats,
+  EmbeddingStatus,
   FactAuthor,
   FactPage,
   FactWithSources,
@@ -107,6 +108,8 @@ export const api = {
   removeController: (userId: string) => del<{ userId: string }>(`/controllers/${userId}`),
 
   getSettings: () => request<AppSettings>('/settings'),
+  embeddingStatus: () => request<EmbeddingStatus>('/settings/embedding'),
+  startReembed: () => post<EmbeddingStatus>('/settings/embedding/reembed'),
   updateSettings: (values: Partial<AppSettings>) => patch<AppSettings>('/settings', values),
 
   listPlugins: () => request<PluginSummary[]>('/plugins'),

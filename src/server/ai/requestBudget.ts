@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 export class AIRequestBudgetError extends Error {}
 const budget = new AsyncLocalStorage<{ remaining: number; signal: AbortSignal }>();
 
-/** Deadline for network work that does not consume a paid Gemini attempt. */
+/** Deadline for network work that does not consume a paid model attempt. */
 export function getAIRequestSignal(): AbortSignal | undefined {
   return budget.getStore()?.signal;
 }

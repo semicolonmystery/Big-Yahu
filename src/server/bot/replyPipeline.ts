@@ -154,7 +154,7 @@ export async function handleMention(message: Message): Promise<void> {
   const stopTyping = startTyping(message);
   // Whether anything actually reached the channel. respond() sends the reply and
   // then writes to reply_log, so a failing write — or any bug after the send —
-  // used to produce a correct answer followed by "Gemini is overloaded".
+  // must not turn a delivered answer into an apology for failing.
   const outcome: ReplyOutcome = { replied: false };
   try {
     await withAIRequestBudget(() => respond(message, guildId, outcome));

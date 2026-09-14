@@ -33,7 +33,8 @@ request data.
 | Rolling memories in fact extraction | IMPL | Extraction is shown the memories for the channel it is reading, plus any tied to no channel, and told to leave what they already cover to short-term memory. Every way a memory leaves — running out, the bot forgetting it, compaction dropping it, the operator pressing Forget — now marks it as leaving and goes through the same keep-forever check, so the one durable fact inside a memory cannot be lost. Memories carry their guild, so a promotion needs no Discord message in hand |
 | Structured recall | IMPL | Facts carry who they are about (`subjectIds`, kept apart from the `authorIds` who said it), which channels they name and the span of days they talk about. What goes to the embedding model has the ids and dates stripped out — an embedding cannot mean an id, and two unrelated facts from one afternoon should not look alike — while the stored fact keeps them for the model reading it. `recallFacts` runs the plain search plus one per person, channel and date range the question is about, and a facet match lifts a fact up the list without ever filtering one out |
 | Embeddings through OpenRouter | IMPL | `openai/text-embedding-3-large` at 1536 dimensions, batched, unit-normalised, and billed through the same key and usage table as everything else. Collections are named for the model and width that filled them, so recall can never mix two models' vectors, and dedupe reuses the vector it already has for the candidate rather than embedding the same sentence twice |
-| Transactional re-embed | PLAN | resumable job with dual-write; dedupe threshold calibrated on real pairs; the first migration off the legacy collection; old collection deleted after a verified swap; the Settings dialog and button |
+| Transactional re-embed | IMPL | `reembed_jobs` plus a snapshot of fact ids, so a job moves the store as it was when it started and a restart resumes from its cursor rather than paying to embed the same facts twice. Facts written while it runs join the snapshot and a rewritten one goes back in the queue; a deleted one leaves it, so the swap cannot resurrect it. The first move is detected at boot and starts on its own, with recall paused while it runs because there is nothing to search yet. The swap happens only after every id in the source is confirmed present in the target — not a count, which two collections of different facts can match — and the old collection is deleted only after that. Settings carries the model, the width, the progress and the button |
+| Recall distance ceiling | IMPL | `factSearchMaxDistance`, alongside top-K: a question with nothing relevant behind it comes back empty rather than with the least-bad matches. Applied to the distance itself, so a facet match reorders what got in rather than raising the ceiling, and never applied to the duplicate comparison, which has its own threshold. 0 switches it off |
 | Off-peak extraction setting | PLAN | optional, off by default; skips runs while the extraction model's pinned endpoint is priced above its base price, read from the catalog |
 
 ## Stack
@@ -119,6 +120,19 @@ Generation and embeddings use explicit application retries for transient errors,
 ### Not writing the same fact twice
 
 Embeddings are prepared before existing data is changed. Mutations are serialized, so each completed write is visible to the next candidate, including candidates from the same batch. Sharing source messages alone never drops a fact: one message can contain several independent facts. Identical text merges source metadata. A sufficiently similar candidate about the same mentioned people updates the original record in place, preserving its ID and references. Different mentioned people cannot overwrite one another merely because their sentences are similar. Source IDs, authors, mentioned people and time spans are merged.
+
+**Fact search maximum distance** is the other half of recall, alongside top-K: how far a
+fact may be from a question and still come back. Without it the eight nearest are returned
+however far away they are, which is how a question about nothing in particular gets
+answered out of the least-bad matches in the store. It applies to the distance itself
+rather than to the facet-adjusted score, so a person or date match changes the order of
+what got in rather than letting something unrelated through, and it never applies to the
+duplicate comparison below, which has its own threshold. 0 switches it off.
+
+How close counts as "sufficiently similar" is **Duplicate fact distance** in Settings,
+in hundredths of a vector distance: lower keeps more facts separate, higher merges more.
+It is calibrated by hand rather than derived, because what counts as close depends on the
+embedding model — changing the model is a reason to re-tune it.
 
 ### Voice and language
 
@@ -801,7 +815,7 @@ does not queue or invoke AI.
 | SQLite schema + migrations | IMPL | Drizzle, applied at boot from `drizzle/` |
 | Admin auth (setup, login, logout, sessions) | IMPL | scrypt + opaque session cookie; constant-time and rate-limited |
 | Embedding function for Chroma | IMPL | per-model collections, unit-normalised |
-| Facts repository + duplicate prevention | IMPL | stable-ID updates, serialized writes, same-subject similarity merge |
+| Facts repository + duplicate prevention | IMPL | stable-ID updates, serialized writes, same-subject similarity merge; the distance threshold is a Settings field, clamped server-side |
 | Plugin engine + hooks + bundled plugins | IMPL | `onMessage`, `onHourlyCheck`, `onBotTagged`, `annotateContext`, `annotateExtraction`, `beforeReply` |
 | Periodic fact extraction + scheduler | IMPL | per-channel, checkpointed, escalation-capable |
 | Bot reply pipeline | IMPL | two-stage, jump links, `save_fact` tool, reply logging |

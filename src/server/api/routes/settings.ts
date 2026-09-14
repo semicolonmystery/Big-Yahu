@@ -1,7 +1,9 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { getSettings, updateSettings, SettingsValidationError } from '../../db/repositories/settingsRepo';
+import { latestJob, openJob, resumeJob } from '../../db/repositories/reembedRepo';
+import { planReembed, runReembed, startReembed } from '../../ai/reembed';
 import { DEFAULT_SETTINGS } from '@shared/constants';
-import type { AppSettings } from '@shared/types';
+import type { AppSettings, EmbeddingStatus } from '@shared/types';
 
 export const settingsRouter = Router();
 
@@ -35,3 +37,68 @@ settingsRouter.patch('/', (req, res) => {
     res.status(400).json({ success: false, error: error.message });
   }
 });
+
+type JobStatus = NonNullable<EmbeddingStatus['job']>;
+
+function statusOf(): EmbeddingStatus['job'] {
+  const job = openJob() ?? latestJob();
+  if (!job) return null;
+  return {
+    id: job.id,
+    status: job.status as JobStatus['status'],
+    total: job.total,
+    copied: job.copied,
+    sourceModel: job.sourceModel,
+    targetModel: job.targetModel,
+    targetDimensions: job.targetDimensions,
+    pausesRecall: job.pausesRecall,
+    lastError: job.lastError,
+  };
+}
+
+/**
+ * What the store is embedded with, what it should be, and any move in progress.
+ *
+ * This is the screen an operator opens when memory looks wrong, so an
+ * unreachable fact store has to say that plainly rather than arriving as a
+ * stack trace about fetch.
+ */
+settingsRouter.get('/embedding', async (_req, res) => {
+  try {
+    const plan = await planReembed();
+    res.json({ success: true, data: { ...plan, job: statusOf() } satisfies EmbeddingStatus });
+  } catch (error) {
+    console.error('[settings] could not read the fact store:', error);
+    res.status(503).json({ success: false, error: 'Could not reach the fact store. Check that ChromaDB is running.' });
+  }
+});
+
+settingsRouter.post('/embedding/reembed', async (_req, res) => {
+  try {
+    await reembed(res);
+  } catch (error) {
+    console.error('[settings] could not start the re-embed:', error);
+    res.status(503).json({ success: false, error: 'Could not reach the fact store. Check that ChromaDB is running.' });
+  }
+});
+
+async function reembed(res: Response): Promise<void> {
+  const existing = openJob();
+  if (existing) {
+    // Already moving. Nudge the runner in case a restart left it idle.
+    void runReembed();
+    res.json({ success: true, data: { ...(await planReembed()), job: statusOf() } satisfies EmbeddingStatus });
+    return;
+  }
+
+  const failed = latestJob();
+  if (failed?.status === 'failed') {
+    // Resumed rather than restarted: what it already copied stays copied, so a
+    // retry does not pay to embed the same facts twice.
+    resumeJob(failed.id);
+  } else {
+    await startReembed();
+  }
+  void runReembed();
+  res.json({ success: true, data: { ...(await planReembed()), job: statusOf() } satisfies EmbeddingStatus });
+}

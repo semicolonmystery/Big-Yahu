@@ -6,7 +6,7 @@ import type { TaskModel } from '@shared/types';
 
 /**
  * One ordered model list per task — the same weights, rest periods and
- * retirement as the single Gemini pool, kept per list. Retiring is the one
+ * retirement as the single pool it replaced, kept per list. Retiring is the one
  * thing that crosses lists: a model OpenRouter says does not exist is gone
  * from every list at once.
  */

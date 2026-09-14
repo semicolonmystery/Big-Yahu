@@ -445,7 +445,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     let silent = false;
     let needsResult = false;
     let saveFailed = false;
-    // Replacement is durable before any requested deletion, even when Gemini
+    // Replacement is durable before any requested deletion, even when the model
     // emitted delete_fact first. Responses still retain the original call order.
     const ordered = [...calls].sort((a, b) => Number(b.name === 'save_fact') - Number(a.name === 'save_fact'));
     for (const call of ordered) {

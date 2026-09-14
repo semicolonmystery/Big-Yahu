@@ -34,6 +34,7 @@ export const settings = sqliteTable('settings', {
   retryAttempts: integer('retry_attempts').notNull().default(2),
   retryDelayMs: integer('retry_delay_ms').notNull().default(3000),
   duplicateDistance: integer('duplicate_distance').notNull().default(25),
+  factSearchMaxDistance: integer('fact_search_max_distance').notNull().default(0),
   /** What new facts are embedded with. Changing either rebuilds the collection. */
   embeddingModel: text('embedding_model').notNull().default('openai/text-embedding-3-large'),
   embeddingDimensions: integer('embedding_dimensions').notNull().default(1536),
@@ -228,3 +229,45 @@ export const channelSettings = sqliteTable('channel_settings', {
   canExtract: integer('can_extract', { mode: 'boolean' }).notNull().default(false),
   updatedAt: integer('updated_at').notNull(),
 });
+
+/**
+ * A move of every fact from one embedding model to another.
+ *
+ * It exists in SQLite rather than in memory because it is long, paid, and must
+ * survive a restart: the ids are snapshotted up front so the job copies the
+ * store as it was when it started, and the cursor is what stops a crash halfway
+ * through from charging for the same vectors twice.
+ */
+export const reembedJobs = sqliteTable('reembed_jobs', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  sourceModel: text('source_model').notNull(),
+  sourceDimensions: integer('source_dimensions').notNull(),
+  /** Named outright: the collection predating per-model names is simply `facts`. */
+  sourceCollection: text('source_collection').notNull(),
+  targetModel: text('target_model').notNull(),
+  targetDimensions: integer('target_dimensions').notNull(),
+  targetCollection: text('target_collection').notNull(),
+  total: integer('total').notNull().default(0),
+  copied: integer('copied').notNull().default(0),
+  /** running | failed | complete */
+  status: text('status').notNull().default('running'),
+  lastError: text('last_error'),
+  /**
+   * Set when there is nothing to recall from yet, so the bot says it remembers
+   * nothing rather than answering out of a half-filled collection.
+   */
+  pausesRecall: integer('pauses_recall', { mode: 'boolean' }).notNull().default(false),
+  startedAt: integer('started_at').notNull(),
+  finishedAt: integer('finished_at'),
+});
+
+/** The snapshot: which facts this job promised to move, and which are across. */
+export const reembedJobItems = sqliteTable(
+  'reembed_job_items',
+  {
+    jobId: integer('job_id').notNull(),
+    factId: text('fact_id').notNull(),
+    copied: integer('copied', { mode: 'boolean' }).notNull().default(false),
+  },
+  (table) => [primaryKey({ columns: [table.jobId, table.factId] })],
+);

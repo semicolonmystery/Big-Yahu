@@ -1,6 +1,7 @@
 import { createApp } from './app';
 import { env } from './env';
 import { closeDatabase, runMigrations } from './db/client';
+import { resumeReembedAtBoot } from './ai/reembed';
 import { discordClient } from './bot/client';
 import { registerReady } from './bot/events/ready';
 import { drainMessageHandlers, registerMessageCreate } from './bot/events/messageCreate';
@@ -9,6 +10,11 @@ import { startScheduler, stopScheduler } from './scheduler/hourlyCheck';
 
 runMigrations();
 await loadPlugins();
+
+// Facts embedded with a model that is no longer in use cannot be searched, so a
+// move is picked up — or started — before the bot takes its first question.
+// Deliberately not awaited: it is long and paid, and the panel is how it is watched.
+void resumeReembedAtBoot();
 
 const server = createApp().listen(env.port, () => {
   console.log(`[api] listening on port ${env.port}`);
