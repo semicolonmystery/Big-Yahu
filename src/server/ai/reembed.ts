@@ -6,6 +6,7 @@ import {
   copiedFactIds, createJob, deleteJob, finishJob, jobById, markCopied, openJob, pauseJob, pendingFactIds,
   resumeJob, runningJob, type ReembedJob,
 } from '../db/repositories/reembedRepo';
+import { cleanupBatch } from './factCleanup';
 import { LEGACY_EMBEDDING_DIMENSIONS, LEGACY_EMBEDDING_MODEL, LEGACY_FACTS_COLLECTION } from '@shared/constants';
 
 /** Small enough that a failure costs little, large enough not to be chatty. */
@@ -141,6 +142,10 @@ export async function resetReembed(): Promise<boolean> {
   await running;
 
   const copied = copiedFactIds(job.id);
+  // A cleanup writes in place, so source and target are the same collection and
+  // there is nothing to take back: the facts it rewrote were improved, and
+  // reverting them would mean keeping the old wording it had just corrected.
+  // Reset abandons the rest of the run instead, and running it again is safe.
   if (copied.length > 0 && job.sourceCollection !== job.targetCollection) {
     const target = await collectionFor({ model: job.targetModel, dimensions: job.targetDimensions });
     for (let at = 0; at < copied.length; at += 200) {
@@ -226,24 +231,40 @@ export function runReembed(): Promise<void> {
   return running;
 }
 
+/**
+ * Drives whichever job is open to the end.
+ *
+ * Both kinds are the same loop — take the next batch of promised ids, do the
+ * work, checkpoint, and re-read the row so a pause lands at the boundary. What
+ * differs is the batch body and what finishing means: a re-embed verifies
+ * everything is across and swaps collections, while a cleanup has been writing
+ * in place all along and is simply done.
+ */
 async function drive(): Promise<void> {
   let job = runningJob();
   while (job) {
-    const ids = pendingFactIds(job.id, BATCH);
+    const cleanup = job.kind === 'cleanup';
+    const label = cleanup ? 'cleanup' : 'reembed';
+    const ids = pendingFactIds(job.id, cleanup ? job.bundleSize || BATCH : BATCH);
     if (ids.length === 0) {
-      await completeJob(job);
+      if (cleanup) {
+        finishJob(job.id, 'complete');
+        console.log(`[cleanup] done; ${job.copied} fact(s) went past the model`);
+      } else {
+        await completeJob(job);
+      }
       return;
     }
     try {
-      await copyBatch(job, ids);
+      await (cleanup ? cleanupBatch(job, ids) : copyBatch(job, ids));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       finishJob(job.id, 'failed', message);
-      console.error('[reembed] paused after a failure; it resumes from where it stopped:', error);
+      console.error(`[${label}] paused after a failure; it resumes from where it stopped:`, error);
       return;
     }
     const next = jobById(job.id);
-    console.log(`[reembed] ${next?.copied ?? 0}/${next?.total ?? 0} facts moved`);
+    console.log(`[${label}] ${next?.copied ?? 0}/${next?.total ?? 0} facts ${cleanup ? 'looked at' : 'moved'}`);
     // Re-read rather than loop on the old row: a pause arriving mid-batch is
     // honoured here, at the boundary, so nothing is left half-written.
     job = runningJob();
@@ -269,11 +290,12 @@ async function resumeOrStart(): Promise<void> {
   if (open) {
     // A job the operator started and did not pause carries on; a paused or
     // failed one waits for them, because a restart is not consent to spend.
+    const label = open.kind === 'cleanup' ? 'cleanup' : 'reembed';
     if (open.status === 'running') {
-      console.log(`[reembed] continuing job ${open.id} at ${open.copied}/${open.total}`);
+      console.log(`[${label}] continuing job ${open.id} at ${open.copied}/${open.total}`);
       void runReembed();
     } else {
-      console.log(`[reembed] job ${open.id} is ${open.status} at ${open.copied}/${open.total}; waiting for the panel`);
+      console.log(`[${label}] job ${open.id} is ${open.status} at ${open.copied}/${open.total}; waiting for the panel`);
     }
     return;
   }

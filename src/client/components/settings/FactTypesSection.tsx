@@ -188,7 +188,9 @@ function AddType({ onAdded }: { onAdded: (added: FactType) => void }) {
   );
 }
 
-export function FactTypesSection() {
+export function FactTypesSection({ onTypes }: { onTypes?: (types: FactType[]) => void } = {}) {
+  // Depended on rather than closed over: the parent passes a stable setter, and
+  // listing it is what keeps the rule honest instead of silenced.
   const [types, setTypes] = useState<FactType[] | null>(null);
   const [untyped, setUntyped] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -201,13 +203,14 @@ export function FactTypesSection() {
         if (cancelled) return;
         setTypes(overview.types);
         setUntyped(overview.untypedFacts);
+        onTypes?.(overview.types);
       } catch (loadError) {
         if (cancelled) return;
         setError(loadError instanceof Error ? loadError.message : 'Could not load the fact types');
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [onTypes]);
 
   const replace = (saved: FactType) =>
     setTypes((current) => (current ?? []).map((type) => (type.id === saved.id ? saved : type)));

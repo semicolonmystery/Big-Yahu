@@ -11,8 +11,13 @@ export type ReembedStatus = 'running' | 'paused' | 'failed' | 'complete';
 /** Stopped states a job can be continued from. */
 const UNFINISHED: ReembedStatus[] = ['running', 'paused', 'failed'];
 
+export type JobKind = 'reembed' | 'cleanup';
+
 export interface ReembedJob {
   id: number;
+  kind: string;
+  typeFilter: string;
+  bundleSize: number;
   sourceModel: string;
   sourceDimensions: number;
   sourceCollection: string;
@@ -55,7 +60,8 @@ export function jobById(id: number): ReembedJob | undefined {
  * the two cannot leave a job that has promised to move an unknown set of facts.
  */
 export function createJob(
-  values: Omit<ReembedJob, 'id' | 'copied' | 'status' | 'lastError' | 'startedAt' | 'finishedAt' | 'total'>,
+  values: Omit<ReembedJob, 'id' | 'copied' | 'status' | 'lastError' | 'startedAt' | 'finishedAt' | 'total'
+  | 'kind' | 'typeFilter' | 'bundleSize'> & Partial<Pick<ReembedJob, 'kind' | 'typeFilter' | 'bundleSize'>>,
   factIds: string[],
 ): ReembedJob {
   return db.transaction((tx) => {
@@ -133,6 +139,10 @@ export function recallIsPaused(): boolean {
 export function noteFactsChanged(collection: string, factIds: string[]): void {
   const job = openJob();
   if (!job || job.sourceCollection !== collection || factIds.length === 0) return;
+  // Only a re-embed has a promise to keep here. A fact written now was already
+  // written under the current rules, so sending it to the cleanup model would
+  // pay to rewrite something that needs no rewriting.
+  if (job.kind !== 'reembed') return;
   db.transaction((tx) => {
     let added = 0;
     let uncopied = 0;

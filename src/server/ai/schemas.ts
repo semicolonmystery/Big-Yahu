@@ -207,6 +207,63 @@ export interface TopicResult {
   contextHint: string;
 }
 
+/**
+ * What the cleanup pass answers with: one entry per fact it was handed, keyed by
+ * the id it came in with. `changed` is the honest majority answer — a fact that
+ * was already right is returned untouched, and the host writes nothing for it.
+ */
+export const cleanupSchemaFor = (typeIds: string[]): JsonSchema => ({
+  type: 'object',
+  properties: {
+    facts: {
+      type: 'array',
+      description: 'One entry per fact you were given, no more and no fewer, each keyed by the id it came with.',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'The id of the fact this is, copied exactly from what you were given.' },
+          text: {
+            type: 'string',
+            description:
+              'The fact, corrected where a rule was broken and returned word for word where it was not. '
+              + 'Never reword for style. Never invent anything that is not in the fact or its sources.',
+          },
+          types: typesField(typeIds),
+          changed: {
+            type: 'boolean',
+            description:
+              'True only if you actually altered the wording or the types. False is the right answer for most '
+              + 'facts, and is not a failure.',
+          },
+          needsSources: {
+            type: 'boolean',
+            description:
+              'True if you cannot judge this one without seeing the messages it came from — usually a date or '
+              + 'a name that the text alone cannot resolve. Return it unchanged for now; you will be asked '
+              + 'again with its sources. Only where it would actually decide something.',
+          },
+        },
+        required: ['id', 'text', 'types', 'changed', 'needsSources'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['facts'],
+  additionalProperties: false,
+});
+
+export interface CleanedFact {
+  id: string;
+  text: string;
+  types: string[];
+  changed: boolean;
+  needsSources: boolean;
+}
+
+export interface CleanupResult {
+  facts: CleanedFact[];
+}
+
 export interface ExtractedFact {
   text: string;
   /** Validated against the live list on the way in: a type nobody defined is dropped. */

@@ -7,6 +7,8 @@ import { DUPLICATE_DISTANCE_MAX, FACT_SEARCH_MAX_DISTANCE_MAX, LANGUAGES } from 
 import { api } from '@/lib/api';
 import { AiTasksSection } from '@/components/settings/AiTasksSection';
 import { FactTypesSection } from '@/components/settings/FactTypesSection';
+import { FactCleanupSection } from '@/components/settings/FactCleanupSection';
+import type { FactType } from '@shared/factTypes';
 import { EmbeddingSection } from '@/components/settings/EmbeddingSection';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -467,6 +469,9 @@ function ControllersSection() {
 }
 
 export default function SettingsPage() {
+  // Loaded once by the types section and handed on, so the cleanup section can
+  // offer them without asking for the same list a second time.
+  const [factTypes, setFactTypes] = useState<FactType[]>([]);
   const [original, setOriginal] = useState<AppSettings | null>(null);
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -760,7 +765,8 @@ export default function SettingsPage() {
         </Card>
       )}
 
-      <FactTypesSection />
+      <FactTypesSection onTypes={setFactTypes} />
+      <FactCleanupSection types={factTypes} />
       <AiTasksSection />
       <EmbeddingSection />
       <ChannelPermissionsSection />

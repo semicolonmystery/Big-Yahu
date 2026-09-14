@@ -6,6 +6,7 @@ import type {
   CatalogModel,
   AppSettings,
   AuthStatus,
+  CleanupStatus,
   ChannelPermission,
   Controller,
   DashboardStats,
@@ -105,6 +106,11 @@ export const api = {
   listChannels: () => request<{ channels: ChannelPermission[]; botOnline: boolean }>('/channels'),
   updateChannel: (channelId: string, values: { canReply?: boolean; canExtract?: boolean }) =>
     patch<ChannelPermission>(`/channels/${channelId}`, values),
+
+  cleanupStatus: (types: string[]) =>
+    request<CleanupStatus>(`/settings/cleanup?types=${encodeURIComponent(types.join(','))}`),
+  startCleanup: (types: string[], bundleSize: number) =>
+    post<CleanupStatus>('/settings/cleanup/start', { types, bundleSize }),
 
   listFactTypes: () => request<FactTypesOverview>('/fact-types'),
   addFactType: (values: FactTypeInput) => post<FactType>('/fact-types', values),

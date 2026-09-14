@@ -52,11 +52,11 @@ const send = (method: string, path: string, body?: unknown) => fetch(`${baseUrl}
 const VALID_REPLY = 'answer people, briefly, and link what you quote';
 
 describe('editing the prompts over HTTP', () => {
-  it('lists all three with the shipped text and no override yet', async () => {
+  it('lists every prompt with the shipped text and no override yet', async () => {
     const payload = await (await send('GET', '/prompts')).json();
     expect(payload.success).toBe(true);
     expect(payload.data.map((entry: { id: string }) => entry.id))
-      .toEqual(['factExtraction', 'topicExtraction', 'reply']);
+      .toEqual(['factExtraction', 'topicExtraction', 'reply', 'factCleanup']);
 
     const reply = payload.data.find((entry: { id: string }) => entry.id === 'reply');
     expect(reply.override).toBeNull();

@@ -165,6 +165,59 @@ The reply prompt is explicit that the model knows only the messages and facts in
 
 Generation and embeddings use explicit application retries for transient errors, including 408/429/5xx and transport timeouts. The SDK's own retries are disabled, so failover and the reply deadline stay in our hands. Delays grow exponentially from `retryDelayMs` (default 3s), capped at 60s; a bad request fails immediately, and running out of credit fails everything at once rather than walking the list. Generation falls back through the task's model list. Caller cancellation does not penalize a model. Each reply shares 24 AI attempts and a two-minute deadline, with a 45-second ceiling per AI request. Failures and accidental empty output send the configurable `overloadMessage`; deliberate `stay_silent` remains silent.
 
+### Tidying up facts stored under older rules
+
+The store holds facts written over a long stretch, under rules that have changed
+since: fuzzy dates, dates nobody ever gave, display names that have gone stale,
+and — for everything predating types — no type at all. The cleanup pass takes
+them a bundle at a time and rewrites them under the current rules.
+
+It is the backstop that replaced the date-repair call. Rather than a regex
+catching "tomorrow" on the way in, the writing prompts are asked to get it right
+and this can be re-run over everything whenever those rules change. That makes it
+something to reach for again, not a one-off, so it has to be cheap to run twice
+and safe to run twice.
+
+**It rides on the re-embed's job runner rather than a second one.** Snapshot a
+set of fact ids, work through them in checkpointed batches, pause, continue,
+reset, resume after a restart, never start on its own — that is exactly the shape
+this needs, and duplicating it would mean two of everything to keep in step. The
+job carries a `kind`, and only the batch body and what finishing means differ.
+
+Unlike a re-embed it writes **in place**. The fact keeps its id, its sources and
+its references, and a rewritten one is re-embedded in the same step, because a
+fact whose wording changed has a vector describing a sentence that is no longer
+there. There is no target collection, nothing to verify against and no swap. A
+fact that only gained a type is written without an embedding at all — Chroma
+refuses an empty one, so the two kinds of change are two writes rather than one
+with holes in it.
+
+**Nothing is rewritten unless a rule was actually broken.** The prompt says so
+first and at length, because a model asked to improve a hundred sentences will
+improve sentences that were already right, and this job runs over everything the
+bot remembers. A fact returned unchanged is written nowhere and costs nothing
+beyond the tokens it took to read.
+
+**A failed bundle changes nothing and the job moves on.** Its facts are marked
+done rather than retried: a model having a bad minute must not leave a batch
+cycling forever, and must never half-write one. The same rule as rolling-memory
+upkeep, and it matters more here than anywhere else in the codebase.
+
+It can **ask for the messages behind a fact** when the text alone cannot settle a
+date or a name — shaped like the escalation everything else uses rather than a
+second mechanism, and asked once, so a model that keeps asking cannot loop.
+
+**Which facts it goes over is the operator's choice**, because running it across
+`message` is the whole channel and running it across `rule` is an afternoon. The
+snapshot comes from the SQLite mirror rather than from Chroma, since "the ones
+with no types at all" cannot be expressed as a where-clause against a key that is
+not there. Bundle size is theirs too: bigger bundles cost fewer calls, and a bad
+answer then wastes more of one.
+
+Stopping keeps what it has already corrected. Those facts were improved, and
+putting the old wording back would undo the work — which is why reset, which
+removes what a re-embed copied, removes nothing here.
+
 ### Changing the embedding model
 
 A Chroma collection holds one embedding model at one width — a query embedded with one
@@ -1016,6 +1069,7 @@ does not queue or invoke AI.
 | Date repair deleted, rules moved into the prompts | IMPL | `ai/dateEnforcement.ts` and `ai/relativeDates.ts` are gone with the `dateRepair` task and its rows. Both fact-writing prompts resolve relative dates as they write, and the cleanup pass is the backstop instead of a regex |
 | Facts never invent when something was said | IMPL | a message's `at` is when it was sent, never when the thing happened; with nobody saying when, a fact carries no date rather than a guessed one. Both prompts say so, and nothing on the way in adds one |
 | A spoken tool name is never posted | IMPL | the model typed "stay silent" into the channel instead of calling the tool, which is why that decision is a field now. A reply that is nothing but a silence phrase or a tool's name still sends nothing rather than posting it |
+| One-off cleanup pass over old facts | IMPL | `ai/factCleanup.ts` on the re-embed's job runner, which now carries a `kind`. Rewrites a bundle at a time under the current rules, in place and re-embedded in the same step; writes nothing for a fact it did not change; can ask once for the messages behind one; a failed bundle changes nothing and the job moves on. Operator-run from Settings over chosen types, never on its own |
 | Reasoning on every task | IMPL | effort is the task's own setting for structured calls as well as the reply, default `none`; an endpoint that refuses to have it switched off is asked again without the field and remembered, rather than killing the reply |
 | Anti-fabrication (prompt + mention/link sanitising) | IMPL | strips unknown channels, users and message links |
 | Reply voice (vulgar, room-matching, light gen-z) | IMPL | in the reply system instruction |

@@ -1,11 +1,12 @@
 import {
+  FACT_CLEANUP_DEFAULT,
   FACT_EXTRACTION_DEFAULT,
   REPLY_DEFAULT,
   TOPIC_EXTRACTION_DEFAULT,
 } from './systemInstructions';
 
 /** The prompts an operator can rewrite. */
-export const PROMPT_IDS = ['factExtraction', 'topicExtraction', 'reply'] as const;
+export const PROMPT_IDS = ['factExtraction', 'topicExtraction', 'reply', 'factCleanup'] as const;
 export type PromptId = (typeof PROMPT_IDS)[number];
 
 /**
@@ -42,8 +43,16 @@ export const PROMPTS: Record<PromptId, PromptDefinition> = {
   reply: {
     id: 'reply',
     label: 'Reply',
-    description: "The bot's voice and its rules for answering. The longest of the three by far.",
+    description: "The bot's voice and its rules for answering. The longest of them by far.",
     fallback: REPLY_DEFAULT,
+  },
+  factCleanup: {
+    id: 'factCleanup',
+    label: 'Fact cleanup',
+    description:
+      'The one-off pass over facts stored before the rules changed. Rewrites fuzzy dates, invented '
+      + 'timings and display names, and sorts each fact into types. Run from Settings, never on its own.',
+    fallback: FACT_CLEANUP_DEFAULT,
   },
 };
 

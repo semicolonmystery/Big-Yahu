@@ -367,6 +367,8 @@ export interface EmbeddingStatus {
     /** Recall answers nothing while this is true. */
     pausesRecall: boolean;
     lastError: string | null;
+    /** Which job this is: both share the runner, the controls and this status. */
+    kind: 'reembed' | 'cleanup';
   } | null;
 }
 
@@ -383,4 +385,13 @@ export interface FactTypeInput {
   duplicateDistance?: number;
   factSearchTopK?: number;
   factSearchMaxDistance?: number;
+}
+
+export interface CleanupStatus {
+  /** How many facts the chosen filter would go over. */
+  facts: number;
+  /** Facts nobody has sorted yet — the reason to run it at all. */
+  untyped: number;
+  collection: string;
+  job: EmbeddingStatus['job'];
 }

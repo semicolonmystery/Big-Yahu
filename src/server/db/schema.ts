@@ -240,6 +240,18 @@ export const channelSettings = sqliteTable('channel_settings', {
  */
 export const reembedJobs = sqliteTable('reembed_jobs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
+  /**
+   * `reembed` moves the store to another embedding model; `cleanup` rewrites
+   * facts in place under the rules the bot has gained since they were stored.
+   * The shape is the same either way — snapshot a set of fact ids, work through
+   * them in checkpointed batches, pause, continue, reset, resume after a restart
+   * — which is why there is one runner rather than two.
+   */
+  kind: text('kind').notNull().default('reembed'),
+  /** cleanup only: which types to sort, space-packed. Empty is everything. */
+  typeFilter: text('type_filter').notNull().default(''),
+  /** cleanup only: how many facts go to the model at once. */
+  bundleSize: integer('bundle_size').notNull().default(0),
   sourceModel: text('source_model').notNull(),
   sourceDimensions: integer('source_dimensions').notNull(),
   /** Named outright: the collection predating per-model names is simply `facts`. */

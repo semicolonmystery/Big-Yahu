@@ -47,6 +47,14 @@ export const BUILT_IN_AI_TASKS: readonly AiTaskDefinition[] = [
     structured: true,
   },
   {
+    id: 'factCleanup',
+    label: 'Fact cleanup',
+    description: 'The one-off pass that rewrites old facts under the rules the bot has since gained.',
+    usesImages: false,
+    usesTools: false,
+    structured: true,
+  },
+  {
     id: 'plugins',
     label: 'Plugins',
     description: 'The shared list every plugin uses unless it has been given lists of its own.',

@@ -1,9 +1,11 @@
-import { Router, type Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { getSettings, updateSettings, SettingsValidationError } from '../../db/repositories/settingsRepo';
 import { latestJob, openJob } from '../../db/repositories/reembedRepo';
 import { continueReembed, pauseReembed, planReembed, resetReembed, runReembed, startReembed } from '../../ai/reembed';
+import { DEFAULT_BUNDLE_SIZE, UNTYPED_FILTER, planCleanup, startCleanup } from '../../ai/factCleanup';
+import { factTypeIds } from '../../db/repositories/factTypesRepo';
 import { DEFAULT_SETTINGS } from '@shared/constants';
-import type { AppSettings, EmbeddingStatus } from '@shared/types';
+import type { AppSettings, CleanupStatus, EmbeddingStatus } from '@shared/types';
 
 export const settingsRouter = Router();
 
@@ -53,6 +55,7 @@ function statusOf(): EmbeddingStatus['job'] {
     targetDimensions: job.targetDimensions,
     pausesRecall: job.pausesRecall,
     lastError: job.lastError,
+    kind: job.kind === 'cleanup' ? 'cleanup' : 'reembed',
   };
 }
 
@@ -78,10 +81,10 @@ async function answer(res: Response): Promise<void> {
 }
 
 /** Every control answers with the whole status, so the panel never has to infer it. */
-function control(path: string, act: () => Promise<void> | void) {
-  settingsRouter.post(path, async (_req, res) => {
+function control(path: string, act: (req: Request) => Promise<void> | void) {
+  settingsRouter.post(path, async (req, res) => {
     try {
-      await act();
+      await act(req);
       await answer(res);
     } catch (error) {
       console.error(`[settings] ${path} failed:`, error);
@@ -102,6 +105,44 @@ control('/embedding/reembed', async () => {
   }
   await startReembed();
   void runReembed();
+});
+
+/**
+ * The cleanup pass shares the job runner, and therefore the controls: pause,
+ * continue and reset already act on whichever job is open. Only starting one
+ * differs, because a cleanup chooses what it goes over.
+ */
+settingsRouter.get('/cleanup', async (req, res) => {
+  const types = readTypes(req.query.types);
+  try {
+    res.json({ success: true, data: { ...(await planCleanup(types)), job: statusOf() } satisfies CleanupStatus });
+  } catch (error) {
+    console.error('[settings] could not read the fact store:', error);
+    res.status(503).json({ success: false, error: 'Could not reach the fact store. Check that ChromaDB is running.' });
+  }
+});
+
+function readTypes(value: unknown): string[] {
+  const raw = typeof value === 'string' ? value.split(',') : Array.isArray(value) ? value : [];
+  const known = new Set([UNTYPED_FILTER, ...factTypeIds()]);
+  return [...new Set(raw
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter((entry) => known.has(entry)))];
+}
+
+// Started only from here, like the re-embed: it is long and paid, and nothing
+// in this codebase spends somebody's money without them pressing something.
+control('/cleanup/start', async (req) => {
+  const existing = openJob();
+  if (existing) {
+    if (existing.status === 'running') void runReembed();
+    else continueReembed();
+    return;
+  }
+  const body = (req.body ?? {}) as { types?: unknown; bundleSize?: unknown };
+  const started = await startCleanup(readTypes(body.types), Number(body.bundleSize) || DEFAULT_BUNDLE_SIZE);
+  if (started) void runReembed();
 });
 
 control('/embedding/pause', () => { pauseReembed(); });
