@@ -1,8 +1,15 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { reembedJobItems, reembedJobs } from '../schema';
 
-export type ReembedStatus = 'running' | 'failed' | 'complete';
+/**
+ * `paused` and `failed` are both "stopped, keep what you have": the first is the
+ * operator's doing and the second is not, and neither may throw work away.
+ */
+export type ReembedStatus = 'running' | 'paused' | 'failed' | 'complete';
+
+/** Stopped states a job can be continued from. */
+const UNFINISHED: ReembedStatus[] = ['running', 'paused', 'failed'];
 
 export interface ReembedJob {
   id: number;
@@ -21,9 +28,18 @@ export interface ReembedJob {
   finishedAt: number | null;
 }
 
-/** The one job that is still going, if any. Only ever one at a time. */
-export function openJob(): ReembedJob | undefined {
+/** The job actually copying right now. */
+export function runningJob(): ReembedJob | undefined {
   return db.select().from(reembedJobs).where(eq(reembedJobs.status, 'running')).get();
+}
+
+/**
+ * The one job that has not finished, however it is currently stopped. Only ever
+ * one at a time, and it is what the panel shows and what a second start refuses
+ * to duplicate.
+ */
+export function openJob(): ReembedJob | undefined {
+  return db.select().from(reembedJobs).where(inArray(reembedJobs.status, UNFINISHED)).get();
 }
 
 export function latestJob(): ReembedJob | undefined {
@@ -146,6 +162,27 @@ export function noteFactsChanged(collection: string, factIds: string[]): void {
         .where(eq(reembedJobs.id, job.id))
         .run();
     }
+  });
+}
+
+/** Stops the loop at the next batch boundary, keeping everything copied so far. */
+export function pauseJob(jobId: number): void {
+  db.update(reembedJobs).set({ status: 'paused' }).where(eq(reembedJobs.id, jobId)).run();
+}
+
+export function copiedFactIds(jobId: number): string[] {
+  return db
+    .select({ factId: reembedJobItems.factId })
+    .from(reembedJobItems)
+    .where(and(eq(reembedJobItems.jobId, jobId), eq(reembedJobItems.copied, true)))
+    .all()
+    .map((row) => row.factId);
+}
+
+export function deleteJob(jobId: number): void {
+  db.transaction((tx) => {
+    tx.delete(reembedJobItems).where(eq(reembedJobItems.jobId, jobId)).run();
+    tx.delete(reembedJobs).where(eq(reembedJobs.id, jobId)).run();
   });
 }
 

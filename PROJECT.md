@@ -33,7 +33,7 @@ request data.
 | Rolling memories in fact extraction | IMPL | Extraction is shown the memories for the channel it is reading, plus any tied to no channel, and told to leave what they already cover to short-term memory. Every way a memory leaves — running out, the bot forgetting it, compaction dropping it, the operator pressing Forget — now marks it as leaving and goes through the same keep-forever check, so the one durable fact inside a memory cannot be lost. Memories carry their guild, so a promotion needs no Discord message in hand |
 | Structured recall | IMPL | Facts carry who they are about (`subjectIds`, kept apart from the `authorIds` who said it), which channels they name and the span of days they talk about. What goes to the embedding model has the ids and dates stripped out — an embedding cannot mean an id, and two unrelated facts from one afternoon should not look alike — while the stored fact keeps them for the model reading it. `recallFacts` runs the plain search plus one per person, channel and date range the question is about, and a facet match lifts a fact up the list without ever filtering one out |
 | Embeddings through OpenRouter | IMPL | `openai/text-embedding-3-large` at 1536 dimensions, batched, unit-normalised, and billed through the same key and usage table as everything else. Collections are named for the model and width that filled them, so recall can never mix two models' vectors, and dedupe reuses the vector it already has for the candidate rather than embedding the same sentence twice |
-| Transactional re-embed | IMPL | `reembed_jobs` plus a snapshot of fact ids, so a job moves the store as it was when it started and a restart resumes from its cursor rather than paying to embed the same facts twice. Facts written while it runs join the snapshot and a rewritten one goes back in the queue; a deleted one leaves it, so the swap cannot resurrect it. The first move is detected at boot and starts on its own, with recall paused while it runs because there is nothing to search yet. The swap happens only after every id in the source is confirmed present in the target — not a count, which two collections of different facts can match — and the old collection is deleted only after that. Settings carries the model, the width, the progress and the button |
+| Transactional re-embed | IMPL | `reembed_jobs` plus a snapshot of fact ids, so a job moves the store as it was when it started and a stop resumes from its cursor rather than paying to embed the same facts twice. **Nothing ever starts on its own** — changing the model makes the button appear and the operator presses it, including on the first move off the old provider; a boot with facts on the wrong model says so in the log and waits. It can be paused, continued and reset from Settings: a pause stops at a batch boundary, a reset removes only the ids this job put in the target and never touches the source. Facts written while it runs join the snapshot and a rewritten one goes back in the queue; a deleted one leaves it, so the swap cannot resurrect it. Recall answers nothing while the first move is open, because there is nothing yet to search. The swap happens only after every id in the source is confirmed present in the target — not a count, which two collections of different facts can match — and the old collection is deleted only after that |
 | Recall distance ceiling | IMPL | `factSearchMaxDistance`, alongside top-K: a question with nothing relevant behind it comes back empty rather than with the least-bad matches. Applied to the distance itself, so a facet match reorders what got in rather than raising the ceiling, and never applied to the duplicate comparison, which has its own threshold. 0 switches it off |
 | Off-peak extraction setting | PLAN | optional, off by default; skips runs while the extraction model's pinned endpoint is priced above its base price, read from the catalog |
 
@@ -116,6 +116,39 @@ The reply prompt is explicit that the model knows only the messages and facts in
 ### Surviving provider outages
 
 Generation and embeddings use explicit application retries for transient errors, including 408/429/5xx and transport timeouts. The SDK's own retries are disabled, so failover and the reply deadline stay in our hands. Delays grow exponentially from `retryDelayMs` (default 3s), capped at 60s; a bad request fails immediately, and running out of credit fails everything at once rather than walking the list. Generation falls back through the task's model list. Caller cancellation does not penalize a model. Each reply shares 24 AI attempts and a two-minute deadline, with a 45-second ceiling per AI request. Failures and accidental empty output send the configurable `overloadMessage`; deliberate `stay_silent` remains silent.
+
+### Changing the embedding model
+
+A Chroma collection holds one embedding model at one width — a query embedded with one
+model and compared against vectors from another gives scores that look perfectly
+reasonable and mean nothing — so collections are named `facts__<model>__<width>` and
+recall reads whichever one the store was actually built with, not whichever one Settings
+currently names.
+
+Changing the setting therefore changes nothing on its own. It makes **Re-embed** appear,
+and the move happens when an operator presses it. That is deliberate: the job is long and
+paid, and starting one off the back of a saved form would spend somebody's money on a
+decision they had not made yet. The same applies to the first move off the previous
+provider — the bot comes up, notices the facts are on a model it cannot search, says so in
+the log, and waits.
+
+The job snapshots the fact ids first and copies that set, so it moves the store as it was
+when it started. Every batch is checkpointed, which is what makes **Pause** and
+**Continue** cheap: a stop keeps what it copied and picks up from the cursor rather than
+paying to embed the same facts again. **Reset** throws the move away and puts things back
+— it removes only the ids this job wrote into the target, so facts saved into the new
+collection meanwhile survive, and it never touches the source, which is still the only
+complete copy.
+
+While the job runs the store is changing underneath it, so writes keep the snapshot
+current: a new fact joins it, a rewritten one goes back in the queue because what was
+copied is now the old wording, and a deleted one leaves it so the swap cannot bring it
+back.
+
+The swap is the last step, and it is checked id by id against the source rather than by
+comparing counts — two collections can hold the same number of different facts, and the
+source is deleted immediately afterwards. If anything is missing the job fails with what
+was missing, keeps the old collection, and can be continued.
 
 ### Not writing the same fact twice
 

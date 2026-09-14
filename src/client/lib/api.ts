@@ -110,6 +110,9 @@ export const api = {
   getSettings: () => request<AppSettings>('/settings'),
   embeddingStatus: () => request<EmbeddingStatus>('/settings/embedding'),
   startReembed: () => post<EmbeddingStatus>('/settings/embedding/reembed'),
+  pauseReembed: () => post<EmbeddingStatus>('/settings/embedding/pause'),
+  continueReembed: () => post<EmbeddingStatus>('/settings/embedding/continue'),
+  resetReembed: () => post<EmbeddingStatus>('/settings/embedding/reset'),
   updateSettings: (values: Partial<AppSettings>) => patch<AppSettings>('/settings', values),
 
   listPlugins: () => request<PluginSummary[]>('/plugins'),

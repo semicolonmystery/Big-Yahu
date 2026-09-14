@@ -22,11 +22,14 @@ const state = vi.hoisted(() => {
           id, document: args.documents[index], metadata: args.metadatas[index], embedding: args.embeddings[index],
         }));
       },
+      delete: async ({ ids }: { ids: string[] }) => { for (const id of ids) rows.delete(id); },
     };
   };
 
   return {
     store, deleted, embedCalls, fail, handle,
+    /** Hook for acting while the loop is between batches. */
+    afterBatch: null as (() => void) | null,
     forgetCollections: vi.fn(),
   };
 });
@@ -53,6 +56,7 @@ vi.mock('../../src/server/ai/embeddings', () => ({
   embedWith: async (texts: string[]) => {
     state.embedCalls.push(texts);
     if (state.fail.onEmbed) throw new Error('provider is down');
+    state.afterBatch?.();
     return texts.map(() => [1, 0, 0, 0]);
   },
 }));
@@ -63,7 +67,9 @@ import { getActiveEmbedding, setActiveEmbedding } from '../../src/server/db/repo
 import {
   dropFromSnapshot, jobById, markCopied, noteFactsChanged, openJob, pendingFactIds, recallIsPaused,
 } from '../../src/server/db/repositories/reembedRepo';
-import { planReembed, runReembed, startReembed } from '../../src/server/ai/reembed';
+import {
+  continueReembed, pauseReembed, planReembed, resetReembed, resumeReembedAtBoot, runReembed, startReembed,
+} from '../../src/server/ai/reembed';
 
 const LEGACY = 'facts';
 const TARGET = 'facts__new/model__4';
@@ -86,6 +92,7 @@ beforeEach(() => {
   state.deleted.length = 0;
   state.embedCalls.length = 0;
   state.fail.onEmbed = false;
+  state.afterBatch = null;
   state.forgetCollections.mockClear();
   for (const level of ['log', 'warn', 'error'] as const) vi.spyOn(console, level).mockImplementation(() => {});
 });
@@ -248,5 +255,115 @@ describe('the store changing under a running job', () => {
 
     expect([...(state.store.get(TARGET)?.keys() ?? [])]).toEqual(['fact-0']);
     expect(db.select().from(reembedJobs).get()?.status).toBe('complete');
+  });
+});
+
+describe('nothing starts on its own', () => {
+  it('leaves facts on the old model at boot, and says how to move them', async () => {
+    seedLegacy(4);
+    await resumeReembedAtBoot();
+
+    expect(db.select().from(reembedJobs).all()).toEqual([]);
+    expect(state.embedCalls).toEqual([]);
+    // Untouched, and still the only copy.
+    expect(state.store.get(LEGACY)?.size).toBe(4);
+    expect(getActiveEmbedding().model).toBe('');
+  });
+
+  it('starts only when the button is pressed', async () => {
+    seedLegacy(4);
+    await resumeReembedAtBoot();
+    await startReembed();
+    await runReembed();
+    expect(state.store.get(TARGET)?.size).toBe(4);
+  });
+
+  it('carries on a job that was running when the process stopped', async () => {
+    seedLegacy(2);
+    await startReembed();
+    await resumeReembedAtBoot();
+    await runReembed();
+    expect(db.select().from(reembedJobs).get()?.status).toBe('complete');
+  });
+
+  it('leaves a paused job paused across a restart', async () => {
+    seedLegacy(2);
+    await startReembed();
+    pauseReembed();
+    await resumeReembedAtBoot();
+    await runReembed();
+
+    expect(db.select().from(reembedJobs).get()).toMatchObject({ status: 'paused', copied: 0 });
+    expect(state.embedCalls).toEqual([]);
+  });
+
+  it('settles the collection name without a job when there is nothing stored yet', async () => {
+    state.store.set(LEGACY, new Map());
+    await resumeReembedAtBoot();
+    expect(getActiveEmbedding()).toEqual({ model: 'new/model', dimensions: 4 });
+    expect(db.select().from(reembedJobs).all()).toEqual([]);
+  });
+});
+
+describe('pause, continue and reset', () => {
+  it('stops at a batch boundary and keeps what it copied', async () => {
+    seedLegacy(120);
+    await startReembed();
+    state.afterBatch = () => { pauseReembed(); state.afterBatch = null; };
+    await runReembed();
+
+    const job = db.select().from(reembedJobs).get();
+    expect(job?.status).toBe('paused');
+    // One batch across, the rest still waiting; nothing half-written.
+    expect(job?.copied).toBe(50);
+    expect(state.store.get(TARGET)?.size).toBe(50);
+    expect(state.deleted).toEqual([]);
+  });
+
+  it('continues from the cursor without paying for the same facts twice', async () => {
+    seedLegacy(120);
+    await startReembed();
+    state.afterBatch = () => { pauseReembed(); state.afterBatch = null; };
+    await runReembed();
+    state.embedCalls.length = 0;
+
+    continueReembed();
+    await runReembed();
+    expect(state.embedCalls.flat()).toHaveLength(70);
+    expect(db.select().from(reembedJobs).get()?.status).toBe('complete');
+  });
+
+  it('resets back to the originals, taking out only what the job put there', async () => {
+    setActiveEmbedding('old/model', 3);
+    const source = 'facts__old/model__3';
+    state.store.set(source, new Map([
+      ['fact-0', { id: 'fact-0', document: 'first', metadata: {} }],
+      ['fact-1', { id: 'fact-1', document: 'second', metadata: {} }],
+    ]));
+    await startReembed();
+    // Paused after the copy but before the swap, which is when a reset is a
+    // real question: the facts are in both places.
+    state.afterBatch = () => { pauseReembed(); state.afterBatch = null; };
+    await runReembed();
+    expect(state.store.get(TARGET)?.size).toBe(2);
+
+    // A fact saved into the new collection that was never part of the move.
+    state.store.get(TARGET)!.set('fresh', { id: 'fresh', document: 'saved meanwhile', metadata: {} });
+    expect(await resetReembed()).toBe(true);
+
+    expect([...(state.store.get(TARGET)?.keys() ?? [])]).toEqual(['fresh']);
+    expect(state.store.get(source)?.size).toBe(2);
+    expect(state.deleted).toEqual([]);
+    expect(db.select().from(reembedJobs).all()).toEqual([]);
+  });
+
+  it('can be started again after a reset', async () => {
+    seedLegacy(3);
+    await startReembed();
+    pauseReembed();
+    await resetReembed();
+    await startReembed();
+    await runReembed();
+    expect(state.store.get(TARGET)?.size).toBe(3);
   });
 });

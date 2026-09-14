@@ -9,6 +9,9 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
 
 /** While a move is running, so the count is seen to climb rather than guessed at. */
 const POLL_MS = 3000;
@@ -19,6 +22,7 @@ export function EmbeddingSection() {
   const [draft, setDraft] = useState<{ embeddingModel: string; embeddingDimensions: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
@@ -74,15 +78,15 @@ export function EmbeddingSection() {
     }
   };
 
-  const reembed = async () => {
+  const run = async (act: () => Promise<EmbeddingStatus>, done: string) => {
     setBusy(true);
     try {
-      const next = await api.startReembed();
+      const next = await act();
       setStatus(next);
       if (next.job?.status === 'running') timer.current = setTimeout(() => void load(), POLL_MS);
-      toast.success('Moving the facts across.');
+      toast.success(done);
     } catch (failure) {
-      toast.error(failure instanceof Error ? failure.message : 'Failed to start');
+      toast.error(failure instanceof Error ? failure.message : 'That did not work');
     } finally {
       setBusy(false);
     }
@@ -90,6 +94,8 @@ export function EmbeddingSection() {
 
   const job = status?.job;
   const running = job?.status === 'running';
+  const stopped = job?.status === 'paused' || job?.status === 'failed';
+  const unfinished = running || stopped;
 
   return (
     <Card>
@@ -125,18 +131,20 @@ export function EmbeddingSection() {
               </Alert>
             )}
 
-            {job && job.status !== 'complete' ? (
+            {job && unfinished ? (
               <div className="flex flex-col gap-2">
                 <Progress value={job.total > 0 ? (job.copied / job.total) * 100 : 0} />
                 <p className="text-xs text-muted-foreground">
                   {job.copied} of {job.total} moved to {job.targetModel}
-                  {job.pausesRecall && running ? ' — the bot remembers nothing until this finishes' : ''}
+                  {job.status === 'paused' ? ' — paused' : ''}
+                  {job.pausesRecall ? ' — the bot remembers nothing until this finishes' : ''}
                 </p>
                 {job.status === 'failed' ? (
                   <Alert variant="destructive">
                     <AlertTitle>The move stopped</AlertTitle>
                     <AlertDescription>
-                      {job.lastError ?? 'Unknown error'} &mdash; nothing was lost. Re-embed picks up where it stopped.
+                      {job.lastError ?? 'Unknown error'} &mdash; nothing was lost, and nothing was deleted.
+                      Continue picks up where it stopped.
                     </AlertDescription>
                   </Alert>
                 ) : null}
@@ -173,14 +181,53 @@ export function EmbeddingSection() {
       </CardContent>
       <CardFooter className="gap-2">
         <Button onClick={() => void save()} disabled={busy || !changed}>Save</Button>
-        <Button
-          variant="secondary"
-          onClick={() => void reembed()}
-          disabled={busy || running || !status || status.upToDate}
-        >
-          {running ? 'Moving…' : 'Re-embed'}
-        </Button>
+
+        {running ? (
+          <Button variant="secondary" onClick={() => void run(api.pauseReembed, 'Paused.')} disabled={busy}>
+            Pause
+          </Button>
+        ) : (
+          <Button
+            variant="secondary"
+            onClick={() => void run(stopped ? api.continueReembed : api.startReembed, 'Moving the facts across.')}
+            disabled={busy || !status || (status.upToDate && !stopped)}
+          >
+            {stopped ? 'Continue' : 'Re-embed'}
+          </Button>
+        )}
+
+        {job && unfinished ? (
+          <Button variant="ghost" onClick={() => setConfirmingReset(true)} disabled={busy}>
+            Reset
+          </Button>
+        ) : null}
       </CardFooter>
+
+      <Dialog open={confirmingReset} onOpenChange={setConfirmingReset}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Throw this move away?</DialogTitle>
+            <DialogDescription>
+              The {job?.copied ?? 0} fact{job?.copied === 1 ? '' : 's'} copied so far are removed from
+              {' '}{job?.targetModel}. Your original facts are untouched &mdash; they have not been deleted at any
+              point, and this puts things back exactly as they were before the move started.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmingReset(false)}>Keep going</Button>
+            <Button
+              variant="destructive"
+              disabled={busy}
+              onClick={() => {
+                setConfirmingReset(false);
+                void run(api.resetReembed, 'The move was thrown away. Your facts are as they were.');
+              }}
+            >
+              Reset
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

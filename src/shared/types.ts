@@ -351,7 +351,7 @@ export interface EmbeddingStatus {
   target: { model: string; dimensions: number; collection: string };
   job: {
     id: number;
-    status: 'running' | 'failed' | 'complete';
+    status: 'running' | 'paused' | 'failed' | 'complete';
     total: number;
     copied: number;
     sourceModel: string;

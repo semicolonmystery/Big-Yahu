@@ -1,7 +1,7 @@
 import { Router, type Response } from 'express';
 import { getSettings, updateSettings, SettingsValidationError } from '../../db/repositories/settingsRepo';
-import { latestJob, openJob, resumeJob } from '../../db/repositories/reembedRepo';
-import { planReembed, runReembed, startReembed } from '../../ai/reembed';
+import { latestJob, openJob } from '../../db/repositories/reembedRepo';
+import { continueReembed, pauseReembed, planReembed, resetReembed, runReembed, startReembed } from '../../ai/reembed';
 import { DEFAULT_SETTINGS } from '@shared/constants';
 import type { AppSettings, EmbeddingStatus } from '@shared/types';
 
@@ -73,32 +73,37 @@ settingsRouter.get('/embedding', async (_req, res) => {
   }
 });
 
-settingsRouter.post('/embedding/reembed', async (_req, res) => {
-  try {
-    await reembed(res);
-  } catch (error) {
-    console.error('[settings] could not start the re-embed:', error);
-    res.status(503).json({ success: false, error: 'Could not reach the fact store. Check that ChromaDB is running.' });
-  }
-});
-
-async function reembed(res: Response): Promise<void> {
-  const existing = openJob();
-  if (existing) {
-    // Already moving. Nudge the runner in case a restart left it idle.
-    void runReembed();
-    res.json({ success: true, data: { ...(await planReembed()), job: statusOf() } satisfies EmbeddingStatus });
-    return;
-  }
-
-  const failed = latestJob();
-  if (failed?.status === 'failed') {
-    // Resumed rather than restarted: what it already copied stays copied, so a
-    // retry does not pay to embed the same facts twice.
-    resumeJob(failed.id);
-  } else {
-    await startReembed();
-  }
-  void runReembed();
+async function answer(res: Response): Promise<void> {
   res.json({ success: true, data: { ...(await planReembed()), job: statusOf() } satisfies EmbeddingStatus });
 }
+
+/** Every control answers with the whole status, so the panel never has to infer it. */
+function control(path: string, act: () => Promise<void> | void) {
+  settingsRouter.post(path, async (_req, res) => {
+    try {
+      await act();
+      await answer(res);
+    } catch (error) {
+      console.error(`[settings] ${path} failed:`, error);
+      res.status(503).json({ success: false, error: 'Could not reach the fact store. Check that ChromaDB is running.' });
+    }
+  });
+}
+
+// Started only from here. Nothing begins a re-embed on its own: it is long and
+// paid, and the operator is the one who decides to spend it.
+control('/embedding/reembed', async () => {
+  const existing = openJob();
+  if (existing) {
+    // Already open — continue it rather than opening a second.
+    if (existing.status === 'running') void runReembed();
+    else continueReembed();
+    return;
+  }
+  await startReembed();
+  void runReembed();
+});
+
+control('/embedding/pause', () => { pauseReembed(); });
+control('/embedding/continue', () => { continueReembed(); });
+control('/embedding/reset', async () => { await resetReembed(); });

@@ -3,12 +3,16 @@ import { configuredEmbedding, embedWith, type EmbeddingConfig } from './embeddin
 import { embeddingText } from '../db/repositories/factsRepo';
 import { getActiveEmbedding, setActiveEmbedding } from '../db/repositories/settingsRepo';
 import {
-  createJob, finishJob, jobById, openJob, markCopied, pendingFactIds, resumeJob, type ReembedJob,
+  copiedFactIds, createJob, deleteJob, finishJob, jobById, markCopied, openJob, pauseJob, pendingFactIds,
+  resumeJob, runningJob, type ReembedJob,
 } from '../db/repositories/reembedRepo';
 import { LEGACY_EMBEDDING_DIMENSIONS, LEGACY_EMBEDDING_MODEL, LEGACY_FACTS_COLLECTION } from '@shared/constants';
 
 /** Small enough that a failure costs little, large enough not to be chatty. */
 const BATCH = 50;
+
+/** The copy loop, while one is in flight, so nothing runs it twice or acts mid-batch. */
+let running: Promise<void> | null = null;
 
 /**
  * Where the facts are now.
@@ -66,16 +70,20 @@ export async function planReembed(): Promise<ReembedPlan> {
   };
 }
 
+/**
+ * Opens a job. Only ever called because somebody pressed the button: a re-embed
+ * is long and paid, and starting one off the back of a settings change would
+ * spend an operator's money on a decision they had not made yet.
+ */
 export async function startReembed(): Promise<ReembedJob | null> {
-  const running = openJob();
-  if (running) return running;
+  const existing = openJob();
+  if (existing) return existing;
 
   const plan = await planReembed();
-  if (plan.upToDate || !plan.source.exists) {
-    // Nothing to move. Say so by pointing recall at the configured pair, so the
-    // panel stops offering a job that would copy nothing.
-    setActiveEmbedding(plan.target.model, plan.target.dimensions);
-    forgetCollections();
+  if (plan.upToDate || !plan.source.exists || plan.source.facts === 0) {
+    // Nothing to move, so there is nothing to decide: point recall at the
+    // configured pair and let the panel stop offering a job that copies nothing.
+    adopt(plan.target.model, plan.target.dimensions);
     return null;
   }
 
@@ -93,6 +101,55 @@ export async function startReembed(): Promise<ReembedJob | null> {
   }, ids);
   console.log(`[reembed] moving ${ids.length} fact(s) from ${plan.source.collection} to ${plan.target.collection}`);
   return job;
+}
+
+function adopt(model: string, dimensions: number): void {
+  setActiveEmbedding(model, dimensions);
+  forgetCollections();
+}
+
+/** Stops at the next batch boundary. What is copied stays copied. */
+export function pauseReembed(): boolean {
+  const job = openJob();
+  if (!job || job.status !== 'running') return false;
+  pauseJob(job.id);
+  console.log(`[reembed] paused at ${job.copied}/${job.total}`);
+  return true;
+}
+
+/** Picks a paused or failed job back up from its cursor. */
+export function continueReembed(): boolean {
+  const job = openJob();
+  if (!job || job.status === 'running') return false;
+  resumeJob(job.id);
+  void runReembed();
+  return true;
+}
+
+/**
+ * Throws the move away and leaves the facts as they were.
+ *
+ * Only what this job put in the target is removed, by id, rather than the whole
+ * collection: during the first move the target is also where new facts are being
+ * written, and dropping it would take those with it. The source is never touched
+ * — it is still the only copy.
+ */
+export async function resetReembed(): Promise<boolean> {
+  const job = openJob();
+  if (!job) return false;
+  if (job.status === 'running') pauseJob(job.id);
+  await running;
+
+  const copied = copiedFactIds(job.id);
+  if (copied.length > 0 && job.sourceCollection !== job.targetCollection) {
+    const target = await collectionFor({ model: job.targetModel, dimensions: job.targetDimensions });
+    for (let at = 0; at < copied.length; at += 200) {
+      await target.delete({ ids: copied.slice(at, at + 200) });
+    }
+  }
+  deleteJob(job.id);
+  console.log(`[reembed] reset; ${copied.length} copied fact(s) removed from ${job.targetCollection}`);
+  return true;
 }
 
 async function copyBatch(job: ReembedJob, ids: string[]): Promise<void> {
@@ -146,8 +203,7 @@ async function completeJob(job: ReembedJob): Promise<void> {
   }
   const moved = await target.count();
 
-  setActiveEmbedding(job.targetModel, job.targetDimensions);
-  forgetCollections();
+  adopt(job.targetModel, job.targetDimensions);
   finishJob(job.id, 'complete');
   console.log(`[reembed] ${job.targetCollection} is live with ${moved} fact(s)`);
 
@@ -163,8 +219,6 @@ async function completeJob(job: ReembedJob): Promise<void> {
   }
 }
 
-let running: Promise<void> | null = null;
-
 /** Drives the open job to the end. Safe to call again; it will not double-run. */
 export function runReembed(): Promise<void> {
   if (running) return running;
@@ -173,7 +227,7 @@ export function runReembed(): Promise<void> {
 }
 
 async function drive(): Promise<void> {
-  let job = openJob();
+  let job = runningJob();
   while (job) {
     const ids = pendingFactIds(job.id, BATCH);
     if (ids.length === 0) {
@@ -190,7 +244,9 @@ async function drive(): Promise<void> {
     }
     const next = jobById(job.id);
     console.log(`[reembed] ${next?.copied ?? 0}/${next?.total ?? 0} facts moved`);
-    job = openJob();
+    // Re-read rather than loop on the old row: a pause arriving mid-batch is
+    // honoured here, at the boundary, so nothing is left half-written.
+    job = runningJob();
   }
 }
 
@@ -211,20 +267,27 @@ export async function resumeReembedAtBoot(): Promise<void> {
 async function resumeOrStart(): Promise<void> {
   const open = openJob();
   if (open) {
-    console.log(`[reembed] resuming job ${open.id} at ${open.copied}/${open.total}`);
-    void runReembed();
+    // A job the operator started and did not pause carries on; a paused or
+    // failed one waits for them, because a restart is not consent to spend.
+    if (open.status === 'running') {
+      console.log(`[reembed] continuing job ${open.id} at ${open.copied}/${open.total}`);
+      void runReembed();
+    } else {
+      console.log(`[reembed] job ${open.id} is ${open.status} at ${open.copied}/${open.total}; waiting for the panel`);
+    }
     return;
   }
+
   const plan = await planReembed();
   if (plan.upToDate) return;
   if (!plan.source.exists || plan.source.facts === 0) {
-    setActiveEmbedding(plan.target.model, plan.target.dimensions);
-    forgetCollections();
+    // An empty store has nothing to migrate, so settle the names and move on.
+    adopt(plan.target.model, plan.target.dimensions);
     return;
   }
-  console.log(`[reembed] ${plan.source.facts} fact(s) are still embedded with ${plan.source.model}`);
-  await startReembed();
-  void runReembed();
+  // Deliberately not started. It costs money and takes a while; the panel says
+  // it is waiting and the operator decides when.
+  console.log(`[reembed] ${plan.source.facts} fact(s) are still embedded with ${plan.source.model}`
+    + ' — press Re-embed in Settings to move them');
 }
 
-export { resumeJob };
