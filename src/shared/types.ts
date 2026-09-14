@@ -244,7 +244,6 @@ export interface AiTaskView {
   usesTools: boolean;
   structured: boolean;
   reasoningEffort: 'none' | 'low' | 'medium' | 'high';
-  reasoningEditable: boolean;
   models: TaskModelView[];
   /** Plain-language problems with this list, worst first. */
   warnings: string[];

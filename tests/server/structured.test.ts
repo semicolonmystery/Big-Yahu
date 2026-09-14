@@ -32,8 +32,10 @@ vi.mock('../../src/server/ai/catalog', () => ({
 }));
 
 import { db } from '../../src/server/db/client';
-import { aiUsage, settings, taskModels } from '../../src/server/db/schema';
+import { aiTasks, aiUsage, settings, taskModels } from '../../src/server/db/schema';
 import { addTaskModel, listTaskModels } from '../../src/server/db/repositories/taskModelsRepo';
+import { setReasoningEffort } from '../../src/server/db/repositories/aiTasksRepo';
+import { forgetMandatoryReasoning } from '../../src/server/ai/reasoning';
 import { updateSettings } from '../../src/server/db/repositories/settingsRepo';
 import { structured, UnreadableAnswerError } from '../../src/server/ai/structured';
 import { BillingError, OverloadedError } from '../../src/server/ai/errors';
@@ -62,8 +64,10 @@ beforeEach(() => {
   client.calls = [];
   catalog.images = new Map();
   db.delete(taskModels).run();
+  db.delete(aiTasks).run();
   db.delete(aiUsage).run();
   db.delete(settings).run();
+  forgetMandatoryReasoning();
   updateSettings({ retryAttempts: 0, retryDelayMs: 0, modelFailureThreshold: 20 });
   addTaskModel('factExtraction', 'a/first', 'deepseek');
   addTaskModel('factExtraction', 'b/second', '');
@@ -71,7 +75,7 @@ beforeEach(() => {
 });
 
 describe('what a structured call sends', () => {
-  it("sends the saved prompt untouched, the answer's shape separately, in JSON mode without reasoning, pinned to its host", async () => {
+  it("sends the saved prompt untouched, the answer's shape separately, in JSON mode, pinned to its host", async () => {
     client.replies.push(reply(good));
     expect(await structured('factExtraction', request)).toEqual({ answer: 'ok', count: 1 });
 
@@ -92,6 +96,63 @@ describe('what a structured call sends', () => {
     expect(db.select().from(aiUsage).all()).toEqual([expect.objectContaining({
       task: 'factExtraction', model: 'a/first', provider: 'DeepSeek', cost: 0.00002, cachedTokens: 64, outcome: 'ok',
     })]);
+  });
+});
+
+describe('reasoning', () => {
+  // A structured answer used to be sent with reasoning hardcoded off, which left
+  // an operator no way to give a model that needs a moment's thought one, and no
+  // way onto an endpoint that will not answer without it.
+  it("follows the task's own setting, like the reply does", async () => {
+    setReasoningEffort('factExtraction', 'medium');
+    client.replies.push(reply(good));
+    await structured('factExtraction', request);
+    expect(client.calls[0].reasoning).toEqual({ effort: 'medium' });
+  });
+
+  it('asks again without the field when the endpoint says reasoning cannot be switched off', async () => {
+    client.replies.push(
+      fail(400, { message: 'Reasoning is mandatory for this endpoint and cannot be disabled.' }),
+      reply(good),
+    );
+    expect(await structured('factExtraction', request)).toEqual({ answer: 'ok', count: 1 });
+
+    // The same model, twice: the model was never the problem.
+    expect(client.calls.map((call) => call.model)).toEqual(['a/first', 'a/first']);
+    expect(client.calls[0].reasoning).toEqual({ effort: 'none' });
+    expect(client.calls[1].reasoning).toBeUndefined();
+  });
+
+  it('remembers that endpoint, so the next call does not spend a request finding out again', async () => {
+    client.replies.push(
+      fail(400, { message: 'Reasoning is mandatory for this endpoint and cannot be disabled.' }),
+      reply(good),
+      reply(good),
+    );
+    await structured('factExtraction', request);
+    await structured('factExtraction', request);
+    expect(client.calls).toHaveLength(3);
+    expect(client.calls[2].reasoning).toBeUndefined();
+  });
+
+  // Raising the effort is a different decision from the one that was refused.
+  it('sends the field again once the effort is no longer none', async () => {
+    client.replies.push(
+      fail(400, { message: 'Reasoning is mandatory for this endpoint and cannot be disabled.' }),
+      reply(good),
+      reply(good),
+    );
+    await structured('factExtraction', request);
+    setReasoningEffort('factExtraction', 'high');
+    await structured('factExtraction', request);
+    expect(client.calls[2].reasoning).toEqual({ effort: 'high' });
+  });
+
+  it('moves to the next model when it still will not answer', async () => {
+    const refusal = { message: 'Reasoning is mandatory for this endpoint and cannot be disabled.' };
+    client.replies.push(fail(400, refusal), fail(400, refusal), reply(good));
+    expect(await structured('factExtraction', request)).toEqual({ answer: 'ok', count: 1 });
+    expect(client.calls.map((call) => call.model)).toEqual(['a/first', 'a/first', 'b/second']);
   });
 });
 

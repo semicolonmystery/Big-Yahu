@@ -17,7 +17,7 @@ export interface AiTaskDefinition {
   usesImages: boolean;
   /** Offered tools, so every model on the list has to support them. */
   usesTools: boolean;
-  /** Answers are read by code: JSON mode, and never any reasoning. */
+  /** Answers are read by code, so they are asked for in JSON mode. */
   structured: boolean;
 }
 
@@ -91,7 +91,3 @@ export function builtInTask(id: string): AiTaskDefinition | undefined {
   return BUILT_IN_AI_TASKS.find((task) => task.id === id);
 }
 
-/** A structured answer never reasons: JSON mode is asked for with reasoning off. */
-export function reasoningIsEditable(task: AiTaskDefinition): boolean {
-  return !task.structured;
-}

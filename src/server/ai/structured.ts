@@ -1,5 +1,6 @@
 import type OpenAI from 'openai';
-import { openrouter, routingFor } from './openrouter';
+import { routingFor } from './openrouter';
+import { completeWithReasoning } from './reasoning';
 import { schemaViolation, type JsonSchema } from './jsonSchema';
 import { recordCall } from './usage';
 import { claimAIRequest } from './requestBudget';
@@ -79,22 +80,20 @@ async function complete(task: string, candidate: PoolCandidate, messages: Messag
   const deadline = claimAIRequest();
   const signal = request.signal ? AbortSignal.any([deadline, request.signal]) : deadline;
   const startedAt = Date.now();
-  // `reasoning` and `provider` are OpenRouter's own fields; the SDK passes them through as they are.
+  // `provider` is OpenRouter's own field; the SDK passes it through as it is.
+  // `reasoning` is added by `completeWithReasoning`, which owns the effort and
+  // the endpoints that will not have it switched off.
   const params = {
     model: candidate.model,
     messages,
     response_format: { type: 'json_object' as const },
     max_tokens: Math.min(request.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS_CEILING),
-    reasoning: { effort: 'none' },
     provider: routingFor(candidate.upstream),
   };
 
   let response: OpenAI.Chat.ChatCompletion;
   try {
-    response = await openrouter().chat.completions.create(
-      params as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
-      { signal },
-    );
+    response = await completeWithReasoning(task, candidate, params, { signal });
   } catch (error) {
     recordCall({ task, model: candidate.model, startedAt, outcome: 'error' });
     throw error;

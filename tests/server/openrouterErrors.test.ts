@@ -59,6 +59,14 @@ describe('classifying OpenRouter failures', () => {
     expect(classifyOpenRouterFailure(failure(400, { message: 'Tool xyz does not exist', code: 400 }))).toBe('fatal');
   });
 
+  // The request is retried without the field first; reaching the pool at all
+  // means that endpoint will not answer on any terms, and another row may.
+  it('moves on when an endpoint will not have reasoning switched off', () => {
+    expect(classifyOpenRouterFailure(failure(400, {
+      message: 'Reasoning is mandatory for this endpoint and cannot be disabled.', code: 400,
+    }))).toBe('next-model');
+  });
+
   it('fails a bad key outright', () => {
     expect(classifyOpenRouterFailure(failure(401, { message: 'Missing Authentication header', code: 401 }))).toBe('fatal');
   });

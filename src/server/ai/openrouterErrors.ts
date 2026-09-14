@@ -88,6 +88,21 @@ const MODEL_MISSING = /is not a valid model id|^model \S+ does not exist/i;
  */
 const TRY_ANOTHER_MODEL = new Set([403, 404, 408, 429, 500, 502, 503, 504]);
 
+/**
+ * An endpoint that will not answer without reasoning, which is a 400 like any
+ * other bad request and would otherwise stop everything dead. `ai/reasoning.ts`
+ * asks again without the field before it ever reaches the pool; if it still
+ * failed, the host is the problem rather than the request, and another row may
+ * not share it.
+ */
+const REASONING_MANDATORY = /reasoning is mandatory|reasoning cannot be disabled|cannot be disabled/i;
+
+/** Did this endpoint refuse because reasoning may not be switched off? */
+export function reasoningRefused(error: unknown): boolean {
+  const failure = readOpenRouterFailure(error);
+  return failure.httpStatus === 400 && REASONING_MANDATORY.test(`${failure.detail} ${failure.raw ?? ''}`);
+}
+
 const NETWORK = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up|network/i;
 
 export function classifyOpenRouterFailure(error: unknown): FailureKind {
@@ -102,6 +117,7 @@ export function classifyOpenRouterFailure(error: unknown): FailureKind {
   const failure = readOpenRouterFailure(error);
   if (failure.httpStatus === 402) return 'billing';
   if (failure.httpStatus === 400 && MODEL_MISSING.test(failure.detail)) return 'gone';
+  if (reasoningRefused(error)) return 'next-model';
   if (failure.httpStatus !== null && TRY_ANOTHER_MODEL.has(failure.httpStatus)) return 'next-model';
   return 'fatal';
 }

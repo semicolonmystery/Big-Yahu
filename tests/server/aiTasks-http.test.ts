@@ -98,8 +98,7 @@ describe('the AI tasks overview', () => {
       })]);
       expect(task.warnings).toEqual([]);
     }
-    expect(taskIn(json.data, 'reply').reasoningEditable).toBe(true);
-    expect(taskIn(json.data, 'topicExtraction').reasoningEditable).toBe(false);
+    expect(taskIn(json.data, 'reply').reasoningEffort).toBe('none');
   });
 
   it('warns about an empty list, an unpinned row, and a model that cannot see pictures', async () => {
@@ -186,8 +185,16 @@ describe('reasoning effort', () => {
     expect(taskIn(json.data, 'reply').reasoningEffort).toBe('low');
   });
 
-  it('cannot be set on a task that answers in JSON mode, or to something made up', async () => {
-    expect((await call('PATCH', '/topicExtraction', { reasoningEffort: 'low' })).status).toBe(400);
+  // Some models comprehend the question far better with a little reasoning, and
+  // some endpoints refuse to answer without any, so a task answering in JSON
+  // mode is no longer a reason to withhold the setting.
+  it('can be raised for a task that answers in JSON mode', async () => {
+    const { status, json } = await call('PATCH', '/topicExtraction', { reasoningEffort: 'low' });
+    expect(status).toBe(200);
+    expect(taskIn(json.data, 'topicExtraction').reasoningEffort).toBe('low');
+  });
+
+  it('cannot be set to something made up', async () => {
     expect((await call('PATCH', '/reply', { reasoningEffort: 'extreme' })).status).toBe(400);
   });
 });

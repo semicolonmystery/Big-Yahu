@@ -26,7 +26,6 @@ import {
   SHARED_PLUGIN_TASK,
   builtInTask,
   pluginTaskId,
-  reasoningIsEditable,
   type AiTaskDefinition,
   type ReasoningEffort,
 } from '@shared/aiTasks';
@@ -113,7 +112,6 @@ async function overview(): Promise<AiTasksOverview> {
     return {
       ...task,
       reasoningEffort: reasoningEffortFor(task.id),
-      reasoningEditable: reasoningIsEditable(task),
       models,
       warnings: catalogAvailable ? warningsFor(task, models, visionEnabled) : [],
     };
@@ -260,10 +258,6 @@ aiTasksRouter.patch('/:task', async (req, res) => {
   const task = taskFrom(req.params.task, res);
   if (!task) return;
   const effort = readString((req.body as { reasoningEffort?: unknown })?.reasoningEffort);
-  if (!reasoningIsEditable(task)) {
-    res.status(400).json({ success: false, error: `${task.label} answers in JSON mode, which always runs without reasoning` });
-    return;
-  }
   if (!(REASONING_EFFORTS as readonly string[]).includes(effort)) {
     res.status(400).json({ success: false, error: `reasoningEffort must be one of ${REASONING_EFFORTS.join(', ')}` });
     return;

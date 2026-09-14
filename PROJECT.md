@@ -24,7 +24,7 @@ request data.
 | OpenRouter as the only provider | IMPL | The client (`ai/openrouter.ts`, built on first use, SDK retries off) and error classification (`ai/openrouterErrors.ts`, from the probe's real error bodies: 402 out of credit, a 400 naming a missing model retires it, a routing block never does). `OPENROUTER_API_KEY` is required whenever a Discord token is set, and it is the only key the bot has |
 | Per-call usage and cost | WIP | In: the `ai_usage` table (migration 0021), `recordCall`, and the dashboard's AI spend card (24 hours, 7 days, by task, model and serving host), recording the cost OpenRouter actually billed rather than a price table of our own. Still to come: the 90-day fold into daily totals |
 | One model list per task | IMPL | `task_models` and `ai_tasks` (reasoning effort), seeded once by migration with `deepseek/deepseek-v4.1-flash` pinned to `deepseek`; OpenRouter's catalog (`ai/catalog.ts`: capabilities per host, prices, peak windows, cached hourly); `/api/ai-tasks`, which refuses a model whose host cannot do the task and pins new rows to the cheapest host that can; and the Settings tab per task with a host picker showing prices. Tasks: reply, fact extraction, topic extraction, date repair, the shared plugins list, and one per plugin-declared job. The single global pool it replaced is gone |
-| Structured calls | IMPL | `ai/structured.ts` walks a task's list in JSON mode with reasoning off, pinned to each row's host; the saved prompt is sent untouched and the answer's shape as a separate message; every answer is validated against its schema (`ai/jsonSchema.ts`) and re-asked once with the problem quoted; a truncated answer goes to the existing narrowing retry. Topic extraction (now with searchQuery/people/channels/dates), fact extraction and date repair run on it; the query-rewrite call is deleted. DeepSeek's endpoint can neither force a tool call nor enforce a schema through OpenRouter, which is why the shape is described and then checked here |
+| Structured calls | IMPL | `ai/structured.ts` walks a task's list in JSON mode, at that task's own reasoning effort, pinned to each row's host; the saved prompt is sent untouched and the answer's shape as a separate message; every answer is validated against its schema (`ai/jsonSchema.ts`) and re-asked once with the problem quoted; a truncated answer goes to the existing narrowing retry. Topic extraction (now with searchQuery/people/channels/dates), fact extraction and date repair run on it; the query-rewrite call is deleted. DeepSeek's endpoint can neither force a tool call nor enforce a schema through OpenRouter, which is why the shape is described and then checked here |
 | JSON material and a cache-stable system prompt | IMPL | Everything that changes per call is one compact JSON document (`ai/material.ts`): the time, who is asking and whether they are a controller, the messages with `replyTo` and `unseenImages`, the people with live presence, remembered facts with their sources, other channels, readable channels, images and plugin notes. Nothing is substituted into a prompt any more — no `{{placeholders}}` at all, and a prompt containing them saves fine because nothing will fill them. Message text is JSON-escaped, so nobody can type their way into the structure. The three shipped prompts describe fields instead of bracket notation, and the Prompts screen flags an override still written for the old one |
 | The model never gets the server id | IMPL | It asks for a link by naming a message (`<link:MESSAGE_ID>`) and the bot builds the URL from the channel that message is actually in, so a link cannot come out pointing at the wrong server or an invented message |
 | Fewer calls per reply | IMPL | The query-rewrite call is gone (topic extraction's `searchQuery` does its job), topic extraction no longer generates facts nobody reads, a turn whose tools were all fire-and-forget ends the reply, the topic call, the quoted message and any mentioned channel are fetched together instead of in turn, and rolling-memory upkeep runs after the reply has been sent — as one call now, not two |
@@ -127,6 +127,26 @@ window was almost entirely "I have run out of credit", and it began explaining t
 to people as though it had meant it. They are replaced rather than removed because people
 in the channel saw them and reply to them — a gap where one was would leave those replies
 answering nothing.
+
+### How hard a model may think
+
+Reasoning is the task's own setting, the reply and the structured calls alike, and the
+default is `none` — cheap and fast. A structured answer used to be sent with reasoning
+hardcoded off and the setting hidden from Settings on the grounds that JSON mode never
+needs it, which was two mistakes. Some models comprehend a question markedly better with a
+little thought, and the one being asked for is the whole reason the question is worth
+asking well. And some endpoints will not answer without any.
+
+`google/gemini-3.5-flash-lite` is one: it answers `400: Reasoning is mandatory for this
+endpoint and cannot be disabled.` A 400 is otherwise a bad request, which is nobody's model
+to fix, so the pool stopped dead and the reply came out as the operator's error message.
+The model was fine; one parameter was not. So `ai/reasoning.ts` sends the request again
+without the field, letting the endpoint use its own default, and remembers that endpoint
+for the rest of the process rather than spending a request rediscovering it. Only `none` is
+ever refused, so only `none` is ever remembered — raising the effort later sends the field
+again rather than being stuck with a decision taken about a different setting. If it still
+will not answer, that is the host and not the request, so the pool moves to the next model
+instead of failing everything.
 
 ### When a reply comes out empty
 
@@ -904,6 +924,7 @@ does not queue or invoke AI.
 | Reply-stage `request_more_context` tool | IMPL | the reply can pull more history when the window is not enough |
 | Retry + overload message | IMPL | attempts, delay and message all in Settings |
 | Configurable model lists | IMPL | one ordered list per job, edited in Settings, applies to the next request |
+| Reasoning on every task | IMPL | effort is the task's own setting for structured calls as well as the reply, default `none`; an endpoint that refuses to have it switched off is asked again without the field and remembered, rather than killing the reply |
 | Anti-fabrication (prompt + mention/link sanitising) | IMPL | strips unknown channels, users and message links |
 | Reply voice (vulgar, room-matching, light gen-z) | IMPL | in the reply system instruction |
 | Configurable reply language | IMPL | 47-language searchable combobox; adapts to the asker's language |

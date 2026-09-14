@@ -251,35 +251,33 @@ function TaskPanel({ task, busy, run }: { task: AiTaskView; busy: boolean; run: 
         </Alert>
       )}
 
-      {task.reasoningEditable && (
-        <div className="flex flex-col gap-1.5">
-          <Label>Reasoning</Label>
-          <Select
-            items={REASONING_EFFORTS.map((effort) => ({ value: effort, label: effort === 'none' ? 'none (fastest, cheapest)' : effort }))}
-            value={task.reasoningEffort}
-            disabled={busy}
-            onValueChange={(value) => {
-              if (typeof value !== 'string' || value === task.reasoningEffort) return;
-              void run(() => api.setReasoningEffort(task.id, value), `Reasoning set to ${value}`);
-            }}
-          >
-            <SelectTrigger className="w-60" aria-label="Reasoning effort">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {REASONING_EFFORTS.map((effort) => (
-                <SelectItem key={effort} value={effort}>
-                  {effort === 'none' ? 'none (fastest, cheapest)' : effort}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            How much the model thinks before answering. Thinking is slower and billed as output. Tasks that answer
-            in JSON always run without it.
-          </p>
-        </div>
-      )}
+      <div className="flex flex-col gap-1.5">
+        <Label>Reasoning</Label>
+        <Select
+          items={REASONING_EFFORTS.map((effort) => ({ value: effort, label: effort === 'none' ? 'none (fastest, cheapest)' : effort }))}
+          value={task.reasoningEffort}
+          disabled={busy}
+          onValueChange={(value) => {
+            if (typeof value !== 'string' || value === task.reasoningEffort) return;
+            void run(() => api.setReasoningEffort(task.id, value), `Reasoning set to ${value}`);
+          }}
+        >
+          <SelectTrigger className="w-60" aria-label="Reasoning effort">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {REASONING_EFFORTS.map((effort) => (
+              <SelectItem key={effort} value={effort}>
+                {effort === 'none' ? 'none (fastest, cheapest)' : effort}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          How much the model thinks before answering. Thinking is slower and billed as output. Some endpoints
+          refuse to answer without it, and are asked again on their own terms rather than skipped.
+        </p>
+      </div>
 
       {models.length === 0 ? (
         <p className="text-sm text-muted-foreground">Nothing on this list yet.</p>

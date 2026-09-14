@@ -1,9 +1,9 @@
 import type OpenAI from 'openai';
-import { openrouter, routingFor } from './openrouter';
+import { routingFor } from './openrouter';
+import { completeWithReasoning } from './reasoning';
 import { recordCall } from './usage';
 import { claimAIRequest } from './requestBudget';
 import { runOnPool, type PoolCandidate } from './pool';
-import { reasoningEffortFor } from '../db/repositories/aiTasksRepo';
 import { recordTaskSuccess } from '../db/repositories/taskModelsRepo';
 import type { MessageImage } from '../bot/attachments';
 
@@ -99,13 +99,11 @@ function readToolCalls(message: OpenAI.Chat.ChatCompletionMessage): ChatToolCall
 /**
  * One turn of a conversation with tools, on a task's model list.
  *
- * How hard the model may think is the task's own setting, so the reply can be
- * made to reason without touching anything else. Everything about failing over
- * between models lives in the pool.
+ * How hard the model may think is the task's own setting, applied by
+ * `completeWithReasoning`. Everything about failing over between models lives
+ * in the pool.
  */
 export async function chat(task: string, request: ChatRequest): Promise<ChatAnswer> {
-  const effort = reasoningEffortFor(task);
-
   return runOnPool<ChatAnswer>(task, {
     withImages: request.hasImages,
     signal: request.signal,
@@ -127,16 +125,12 @@ export async function chat(task: string, request: ChatRequest): Promise<ChatAnsw
           }
           : {}),
         max_tokens: request.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-        reasoning: { effort },
         provider: routingFor(candidate.upstream),
       };
 
       let response: OpenAI.Chat.ChatCompletion;
       try {
-        response = await openrouter().chat.completions.create(
-          params as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
-          { signal },
-        );
+        response = await completeWithReasoning(task, candidate, params, { signal });
       } catch (error) {
         recordCall({ task, model: candidate.model, startedAt, outcome: 'error' });
         throw error;
