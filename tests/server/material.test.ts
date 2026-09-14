@@ -24,10 +24,14 @@ const source: SourceMessage = {
 };
 
 describe('messages as material', () => {
-  it('keeps ids, times and Discord markup, and says which lines are the bot itself', () => {
+  it('names the bot as the author of its own lines, in the same field as everyone else', () => {
     const [mine, theirs] = messagesMaterial([line({ id: '9', isSelf: true, content: 'earlier' }), line()]);
-    expect(mine).toEqual({ id: '9', at: new Date(1_757_000_000_000).toISOString(), authorId: '111', fromYou: true, content: 'earlier' });
-    expect(theirs.fromYou).toBeUndefined();
+    // Not its id with a flag beside it: authorship has to be in the one field
+    // that is read on every message, or its own lines get answered as somebody
+    // else's.
+    expect(mine).toEqual({ id: '9', at: new Date(1_757_000_000_000).toISOString(), authorId: 'you', content: 'earlier' });
+    expect(mine).not.toHaveProperty('fromYou');
+    expect(theirs.authorId).toBe('111');
     // Mentions stay exactly as Discord writes them, so the model copies a real one.
     expect(theirs.content).toBe('hello <@222>(Bob)');
   });

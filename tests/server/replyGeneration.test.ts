@@ -197,6 +197,32 @@ describe('the reply protocol', () => {
     expect((await generateReply(draft(), context())).text).toBe('čau');
   });
 
+  it('says whether a lost reply was never written or was emptied afterwards', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Nothing came back at all.
+    m.chat.mockResolvedValue(answer(''));
+    expect((await generateReply(draft(), context())).text).toBe('');
+    expect(warn.mock.calls.flat().join(' ')).toContain('produced no text at all');
+
+    // Something came back and the sanitisers took all of it: a different bug,
+    // in a different place, and the log has to say which.
+    warn.mockClear();
+    m.chat.mockReset();
+    m.chat.mockResolvedValueOnce(answer('[replying to id=1549100564241981512]'));
+    expect((await generateReply(draft(), context())).text).toBe('');
+    const emptied = warn.mock.calls.flat().join(' ');
+    expect(emptied).toContain('emptied after generation');
+    expect(emptied).toContain('1549100564241981512');
+  });
+
+  it('logs the prose it drops as tool narration, so it can be told apart from silence', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    m.chat.mockResolvedValueOnce(answer('čau', [{ name: 'example__assess' }])).mockResolvedValueOnce(answer('all done'));
+    await generateReply(draft(), context());
+    expect(warn.mock.calls.flat().join(' ')).toContain('all done');
+  });
+
   it('honours silence while still executing the requested plugin tool', async () => {
     m.chat.mockResolvedValueOnce(answer('', [{ name: 'stay_silent' }, { name: 'example__assess' }]));
     expect((await generateReply(draft(), context())).silent).toBe(true);

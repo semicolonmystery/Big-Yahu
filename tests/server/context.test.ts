@@ -5,7 +5,10 @@ import type { Fact } from '../../src/shared/types';
 import type { TextAttachmentBudget } from '../../src/server/bot/textAttachments';
 
 const state = vi.hoisted(() => ({
-  settings: { maxEscalationDepth: 1, escalationLookbackHours: 24, factSearchTopK: 5 },
+  settings: {
+    maxEscalationDepth: 1, escalationLookbackHours: 24, factSearchTopK: 5,
+    rateLimitMessage: '', overloadMessage: '', busyMessage: '', errorMessage: '', noCreditsMessage: '',
+  },
   structured: vi.fn(async (
     _task: string,
     _request: { system: string; user: string; images?: unknown[]; schema: unknown; maxOutputTokens?: number },
@@ -34,6 +37,8 @@ import { factsMaterial, messageMaterial, messagesMaterial } from '../../src/serv
 import { extractTopic } from '../../src/server/ai/topicExtraction';
 import { UnreadableAnswerError } from '../../src/server/ai/structured';
 import { extractionSchema, topicSchema } from '../../src/server/ai/schemas';
+import { HOST_FAILURE_NOTICE } from '../../src/shared/constants';
+import { REPLY_DEFAULT, TOPIC_EXTRACTION_DEFAULT } from '../../src/server/ai/prompts/systemInstructions';
 
 /** What the extraction runner was asked on its nth call. */
 const request = (call: number) => state.structured.mock.calls[call][1];
@@ -98,9 +103,8 @@ describe('conversation formatting', () => {
     const own = message(10, { author: { id: '999', username: 'bot', bot: true } });
     const window = [toWindowMessage(own), toWindowMessage(message(11))];
     const marked = messagesMaterial(markUnseenImages(window, new Map([['10', 1], ['11', 2]])));
-    expect(marked[0]).toMatchObject({ fromYou: true, unseenImages: 1 });
+    expect(marked[0]).toMatchObject({ authorId: 'you', unseenImages: 1 });
     expect(marked[1]).toMatchObject({ authorId: '111', unseenImages: 2 });
-    expect(marked[1].fromYou).toBeUndefined();
     expect(window[0].unseenImages).toBeUndefined();
   });
 
@@ -344,5 +348,55 @@ describe('topic extraction', () => {
     expect(state.structured).toHaveBeenCalledWith('topicExtraction', expect.objectContaining({ schema: topicSchema }));
     expect(request(0).user).toContain('What did Bob decide?');
     expect(state.attachments.mock.calls[0][1]).toBe(budget);
+  });
+
+  it('rewrites the bot\'s own outage messages into the notice, keeping them in place', async () => {
+    state.settings.noCreditsMessage = 'im out of credit';
+    state.settings.overloadMessage = 'everything is busy';
+    const bot = { id: '999', username: 'bot', displayName: 'Bot', bot: true };
+    const { object } = channel([
+      message(10, { content: 'anyone there?' }),
+      // Not something it decided to say: the host sends these when no model
+      // could be reached at all, and read back they are its own conversation.
+      message(11, { author: bot, content: 'im out of credit' }),
+      message(12, { author: bot, content: '  everything is busy  ' }),
+      // Something it actually said stays.
+      message(13, { author: bot, content: 'yeah im here' }),
+    ]);
+    const tagged = message(30, { content: 'hello', channel: object });
+    state.structured.mockResolvedValueOnce({
+      coreTopic: 'greeting', whatTaggingMessageIsAbout: 'hello', searchQuery: 'hello',
+      people: [], channels: [], dateFrom: '', dateTo: '', needsMoreContext: false, contextHint: '',
+    });
+
+    const result = await extractTopic(tagged, 'guild', 20, undefined);
+    // Still there: people saw them and answer them, and a gap would leave those
+    // replies answering nothing.
+    expect(result.windowMessages.map((entry) => entry.id)).toEqual(['10', '11', '12', '13', '30']);
+    expect(result.windowMessages.map((entry) => entry.content)).toEqual([
+      'anyone there?', HOST_FAILURE_NOTICE, HOST_FAILURE_NOTICE, 'yeah im here', 'hello',
+    ]);
+    expect(request(0).user).not.toContain('im out of credit');
+    expect(request(0).user).not.toContain('everything is busy');
+  });
+
+  it('says in the prompt what that notice is, so it is not read as something the bot meant', () => {
+    expect(REPLY_DEFAULT).toContain(HOST_FAILURE_NOTICE);
+    expect(TOPIC_EXTRACTION_DEFAULT).toContain(HOST_FAILURE_NOTICE);
+  });
+
+  it('tells the model its own lines are its own, by author rather than by a flag', async () => {
+    const bot = { id: '999', username: 'bot', displayName: 'Bot', bot: true };
+    const { object } = channel([message(10, { author: bot, content: 'said this before' })]);
+    const tagged = message(30, { content: 'and now this', channel: object });
+    state.structured.mockResolvedValueOnce({
+      coreTopic: 'x', whatTaggingMessageIsAbout: 'x', searchQuery: 'x',
+      people: [], channels: [], dateFrom: '', dateTo: '', needsMoreContext: false, contextHint: '',
+    });
+
+    await extractTopic(tagged, 'guild', 20, undefined);
+    const sent = JSON.parse(request(0).user.slice(request(0).user.indexOf('{')));
+    expect(sent.messages[0]).toMatchObject({ authorId: 'you', content: 'said this before' });
+    expect(sent.messages[1]).toMatchObject({ authorId: '111' });
   });
 });

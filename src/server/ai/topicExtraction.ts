@@ -1,5 +1,5 @@
 import type { Message } from 'discord.js';
-import { runEscalatableExtraction, windowMessagesWithAttachments } from './context';
+import { markHostFailures, runEscalatableExtraction, windowMessagesWithAttachments } from './context';
 import type { TextAttachmentBudget } from '../bot/textAttachments';
 import type { WindowMessage } from './context';
 import { topicSchema } from './schemas';
@@ -27,7 +27,8 @@ export async function extractTopic(
     .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
     .concat(taggedMessage);
 
-  const windowMessages = await windowMessagesWithAttachments(discordMessages, attachmentBudget);
+  // The bot's own outage notices stay in place, as what they actually were.
+  const windowMessages = markHostFailures(await windowMessagesWithAttachments(discordMessages, attachmentBudget));
 
   const topic = await runEscalatableExtraction<TopicResult>({
     aiTask: 'topicExtraction',

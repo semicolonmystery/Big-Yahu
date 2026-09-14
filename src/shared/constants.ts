@@ -117,6 +117,17 @@ export const DUPLICATE_DISTANCE_MAX = 60;
  */
 export const FACT_SEARCH_MAX_DISTANCE_MAX = 200;
 
+/**
+ * What one of the bot's own failure messages reads as once it reaches the model.
+ *
+ * The text is fixed and explained in the reply prompt, so the bot can tell an
+ * outage notice apart from something it actually said. It is not removed from
+ * the window: it is a real message that people in the channel saw and may well
+ * be talking about, and a gap where it was would leave their replies answering
+ * nothing.
+ */
+export const HOST_FAILURE_NOTICE = 'automatic outage notice, sent on your behalf because no model could be reached';
+
 /** Discord caps a single message at 2000 characters. */
 export const DISCORD_MESSAGE_LIMIT = 2000;
 

@@ -5,7 +5,7 @@ import { factsMaterial, messagesMaterial, renderMaterial } from './material';
 import type { JsonSchema } from './jsonSchema';
 import { searchFacts } from '../db/repositories/factsRepo';
 import { getSettings } from '../db/repositories/settingsRepo';
-import { MAX_ESCALATION_DEPTH_HARD_CAP, formatNow } from '@shared/constants';
+import { HOST_FAILURE_NOTICE, MAX_ESCALATION_DEPTH_HARD_CAP, formatNow } from '@shared/constants';
 import type { Fact } from '@shared/types';
 import type { MessageImage } from '../bot/attachments';
 import { readTextAttachments, type TextAttachmentBudget } from '../bot/textAttachments';
@@ -26,6 +26,8 @@ export interface WindowMessage {
   replyToId?: string;
   /** Who wrote that message, where Discord told us — it may sit outside the window. */
   replyToAuthorId?: string;
+  /** The message it answers is one of the bot's own. */
+  replyToIsSelf?: boolean;
 }
 
 /**
@@ -67,6 +69,7 @@ export function toWindowMessage(message: Message): WindowMessage {
     isSelf: author.id === message.client.user?.id,
     replyToId: replyTo,
     replyToAuthorId: replyTo ? message.mentions.repliedUser?.id : undefined,
+    replyToIsSelf: Boolean(replyTo && message.mentions.repliedUser?.id === message.client.user?.id),
   };
 }
 
@@ -85,6 +88,36 @@ export function markUnseenImages(messages: WindowMessage[], unseen: Map<string, 
   return messages.map((message) =>
     unseen.has(message.id) ? { ...message, unseenImages: unseen.get(message.id) } : message,
   );
+}
+
+/**
+ * Rewrites the bot's own canned failure messages into one fixed notice.
+ *
+ * These are not things it decided to say — they are what the host sends when no
+ * model could be reached at all. Read back as its own words they are actively
+ * misleading: after a spell out of credit the window was almost entirely "I have
+ * run out of credit", and it began explaining that line to people as though it
+ * had meant it, and then arguing about who had said it.
+ *
+ * They are replaced rather than dropped, because people in the channel saw them
+ * and answer them; a gap where one was leaves those replies answering nothing.
+ * The replacement is always the same sentence, and the prompt says what it means,
+ * so the bot knows why it is looking at it.
+ *
+ * Matched on the text, because that is what is recoverable from Discord. An
+ * operator who rewrites one of these afterwards simply gets the old ones back as
+ * themselves, which is the harmless direction to be wrong in.
+ */
+export function markHostFailures(messages: WindowMessage[]): WindowMessage[] {
+  const settings = getSettings();
+  const canned = new Set([
+    settings.rateLimitMessage, settings.overloadMessage,
+    settings.busyMessage, settings.errorMessage, settings.noCreditsMessage,
+  ].map((text) => text?.trim() ?? '').filter((text) => text.length > 0));
+  if (canned.size === 0) return messages;
+  return messages.map((message) => (message.isSelf && canned.has(message.content.trim())
+    ? { ...message, content: HOST_FAILURE_NOTICE }
+    : message));
 }
 
 /** Display name to user id, so a name the model writes can be turned into a real ping. */

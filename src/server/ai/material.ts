@@ -11,15 +11,24 @@ import type { Fact, SourceMessage } from '@shared/types';
  * `[id=123] you:` into Discord is quoted text, not a line of the transcript.
  */
 
+/** What the bot is called in its own transcript, in place of an id. */
+const SELF = 'you';
+
 /** One message, as the model reads it. */
 export interface MaterialMessage {
   id: string;
   /** When it was sent, ISO 8601. */
   at: string;
+  /**
+   * Who sent it — the literal string `you` on the bot's own lines, never its id.
+   *
+   * Authorship has to sit in the same field, on every message, or it is not
+   * read. A flag alongside a real id is something a model skims past, and then
+   * it discusses its own messages as if somebody else had said them: it did
+   * exactly that, attributing its own line to the person it was talking to.
+   */
   authorId: string;
-  /** Present only on the bot's own lines. */
-  fromYou?: true;
-  /** The message this one answers, when it answers one. */
+  /** The message this one answers, when it answers one. `you` again, where that is who it was. */
   replyTo?: { id: string; authorId?: string };
   /** Discord's own markup is kept: `<@id>` and `<#id>`, annotated with the name. */
   content: string;
@@ -33,10 +42,15 @@ export function messageMaterial(message: WindowMessage, notes?: string[]): Mater
   return {
     id: message.id,
     at: new Date(message.createdAt).toISOString(),
-    authorId: message.authorId,
-    ...(message.isSelf ? { fromYou: true as const } : {}),
+    authorId: message.isSelf ? SELF : message.authorId,
     ...(message.replyToId
-      ? { replyTo: { id: message.replyToId, ...(message.replyToAuthorId ? { authorId: message.replyToAuthorId } : {}) } }
+      ? {
+        replyTo: {
+          id: message.replyToId,
+          ...(message.replyToIsSelf ? { authorId: SELF } : {}),
+          ...(!message.replyToIsSelf && message.replyToAuthorId ? { authorId: message.replyToAuthorId } : {}),
+        },
+      }
       : {}),
     content: message.content,
     ...(message.unseenImages ? { unseenImages: message.unseenImages } : {}),

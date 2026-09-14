@@ -434,7 +434,12 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     });
     const calls = answer.toolCalls;
     let text = answer.text;
-    if (answeredTools && looksLikeToolNarration(text)) text = '';
+    if (answeredTools && looksLikeToolNarration(text)) {
+      // Promised by the comment on that function and previously not done, which
+      // is why a reply that vanished here could not be explained afterwards.
+      console.warn(`[bot] dropped what looked like tool narration: ${JSON.stringify(text)}`);
+      text = '';
+    }
     if (calls.length === 0) {
       if (text || pendingText) { finalText = text || pendingText; break; }
       if (++emptyTurns > MAX_EMPTY_TURNS || lastTurn) break;
@@ -566,7 +571,8 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     }
     answeredTools = true;
   }
-  let text = finalText || pendingText;
+  const answered = finalText || pendingText;
+  let text = answered;
   text = stripPromptMarkers(text);
   text = restoreMentions(text, mentionRoster([...localMessages, ...foreignMessages, ...olderMessages]));
   text = expandLinkMarkers(text, context.guildId, (id) => channelByMessageId.get(id));
@@ -576,6 +582,13 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     (id) => context.taggedMessage.guild?.channels.cache.has(id) ?? false,
     (id) => knownUserIds.has(id));
   text = text.trim().slice(0, DISCORD_MESSAGE_LIMIT);
-  if (!text) console.warn(`[bot] no reply text for ${context.taggedMessage.id}`);
+  if (!text) {
+    // Saying which it was matters: the model returning nothing and the
+    // sanitisers emptying a real answer are different bugs in different places,
+    // and one line saying "no reply text" could not tell them apart.
+    console.warn(answered
+      ? `[bot] the answer to ${context.taggedMessage.id} was emptied after generation, from ${JSON.stringify(answered.slice(0, 300))}`
+      : `[bot] the model produced no text at all for ${context.taggedMessage.id}`);
+  }
   return { text, savedFactIds, deletedFactIds, contextRequests, silent: false, replyToMessageId };
 }

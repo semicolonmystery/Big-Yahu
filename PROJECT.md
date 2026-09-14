@@ -109,6 +109,34 @@ here and roles cannot ping at all regardless of what ends up in the string. The
 words still render as text, which is honest — the bot said them, it just cannot
 make Discord act on them.
 
+### Whose message is whose
+
+The bot's own lines are labelled `you` in `authorId`, the same field every other message
+carries, rather than its own id with a flag beside it. Authorship has to sit where it is
+read on every message: given an id plus an optional `fromYou`, the model skimmed the flag
+and discussed its own messages as though somebody else had said them — at one point
+telling the person it was talking to that one of its own lines was theirs. The prose
+transcript this replaced had the same lesson written into it, labelling those lines `you`
+and nothing else.
+
+The host's own failure messages are rewritten in the window into one fixed sentence,
+`HOST_FAILURE_NOTICE`, which the reply and topic prompts both explain. They are what gets
+sent when no model could be reached at all, so they are not things the bot decided to say;
+read back as its own words they are actively misleading. After a spell out of credit the
+window was almost entirely "I have run out of credit", and it began explaining that line
+to people as though it had meant it. They are replaced rather than removed because people
+in the channel saw them and reply to them — a gap where one was would leave those replies
+answering nothing.
+
+### When a reply comes out empty
+
+Two different things end with the operator's error message in the channel, and the log now
+says which: the model returning no text at all, and the model answering with something the
+sanitising chain then removed entirely. The second is a bug in this codebase and the first
+is not. Text dropped as tool narration is logged too, which its own comment had always
+claimed and the code had never done — a reply that vanished there could not be explained
+afterwards.
+
 ### Not making things up
 
 The reply prompt is explicit that the model knows only the messages and facts in front of it, must never quote or paraphrase something it was not shown, and must never narrate a search it did not perform. Beyond the prompt, the output is sanitised: jump links to message IDs the model never saw, `<#channel>` mentions for channels not in the guild, and `<@user>` mentions for users not in context are all stripped before sending.
