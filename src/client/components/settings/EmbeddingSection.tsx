@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
 import type { AppSettings, EmbeddingStatus } from '@shared/types';
 import { api } from '@/lib/api';
+import { useJobPolling } from '@/lib/useJobPolling';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -16,18 +17,17 @@ import {
 /** While a move is running, so the count is seen to climb rather than guessed at. */
 const POLL_MS = 3000;
 
+/** Keep asking while a move is running, so the count is seen to climb. */
+const isRunning = (status: EmbeddingStatus) => status.job?.status === 'running';
+
 export function EmbeddingSection() {
-  const [status, setStatus] = useState<EmbeddingStatus | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [draft, setDraft] = useState<{ embeddingModel: string; embeddingDimensions: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
     const [next, current] = await Promise.all([api.embeddingStatus(), api.getSettings()]);
-    setStatus(next);
     setSettings(current);
     setDraft((existing) => existing ?? {
       embeddingModel: current.embeddingModel,
@@ -36,25 +36,7 @@ export function EmbeddingSection() {
     return next;
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const next = await load();
-        if (cancelled) return;
-        setError(null);
-        // Only while something is actually moving; an idle panel should not poll.
-        if (next.job?.status === 'running') timer.current = setTimeout(() => void tick(), POLL_MS);
-      } catch (failure) {
-        if (!cancelled) setError(failure instanceof Error ? failure.message : 'Failed to read the embedding status');
-      }
-    };
-    void tick();
-    return () => {
-      cancelled = true;
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [load]);
+  const { value: status, error, refresh } = useJobPolling(load, isRunning, POLL_MS);
 
   const changed = Boolean(
     settings && draft
@@ -69,7 +51,7 @@ export function EmbeddingSection() {
         embeddingModel: draft.embeddingModel.trim(),
         embeddingDimensions: draft.embeddingDimensions,
       }));
-      setStatus(await api.embeddingStatus());
+      await refresh();
       toast.success('Saved. Re-embed to move the facts across.');
     } catch (failure) {
       toast.error(failure instanceof Error ? failure.message : 'Failed to save');
@@ -81,9 +63,11 @@ export function EmbeddingSection() {
   const run = async (act: () => Promise<EmbeddingStatus>, done: string) => {
     setBusy(true);
     try {
-      const next = await act();
-      setStatus(next);
-      if (next.job?.status === 'running') timer.current = setTimeout(() => void load(), POLL_MS);
+      await act();
+      // Reading it back is what starts the polling: the status says whether
+      // anything is moving, and the poll follows the status rather than a timer
+      // somebody has to remember to restart.
+      await refresh();
       toast.success(done);
     } catch (failure) {
       toast.error(failure instanceof Error ? failure.message : 'That did not work');

@@ -1,6 +1,6 @@
 import { collectionFor, collectionNameFor } from '../db/chroma';
 import { activeEmbedding, embedWith } from './embeddings';
-import { embeddingText, factsByIds, ensureFactIndex } from '../db/repositories/factsRepo';
+import { chromaMetadata, embeddingText, factsByIds, ensureFactIndex } from '../db/repositories/factsRepo';
 import { factIdsOfTypes, indexFacts, untypedFactIds } from '../db/repositories/factIndexRepo';
 import { factTypesForModel, knownTypes } from '../db/repositories/factTypesRepo';
 import { getMessages } from '../db/repositories/cachedMessagesRepo';
@@ -9,7 +9,7 @@ import { structured } from './structured';
 import { cleanupSchemaFor, type CleanupResult } from './schemas';
 import { effectivePrompt } from '../db/repositories/promptsRepo';
 import { renderMaterial } from './material';
-import { formatNow } from '@shared/constants';
+import { DEFAULT_BUNDLE_SIZE, MAX_BUNDLE_SIZE, formatNow } from '@shared/constants';
 import { getSettings } from '../db/repositories/settingsRepo';
 import type { Fact } from '@shared/types';
 
@@ -36,8 +36,7 @@ import type { Fact } from '@shared/types';
 export const UNTYPED_FILTER = 'untyped';
 
 /** Enough to be worth a call, few enough that one bad answer costs little. */
-export const DEFAULT_BUNDLE_SIZE = 12;
-export const MAX_BUNDLE_SIZE = 50;
+export { DEFAULT_BUNDLE_SIZE, MAX_BUNDLE_SIZE } from '@shared/constants';
 
 export interface CleanupPlan {
   /** How many facts the chosen filter would go over. */
@@ -189,11 +188,12 @@ export async function cleanupBatch(job: ReembedJob, ids: string[]): Promise<void
 
   if (rewrites.length > 0) {
     const collection = await collectionFor(activeEmbedding());
-    const metadataFor = (rewrite: typeof rewrites[number]) => ({
+    // Through `chromaMetadata`, or an empty list goes back to a store that
+    // refuses one: a fact naming no channel carries `channelRefs: []` once it
+    // has been read, and writing that is what this job first fell over on.
+    const metadataFor = (rewrite: typeof rewrites[number]) => chromaMetadata({
       ...rewrite.fact.metadata,
-      // Chroma rejects an empty array, and its absence is what marks a fact
-      // nobody has sorted — so a model that returned none leaves it untyped.
-      ...(rewrite.types.length > 0 ? { types: rewrite.types } : {}),
+      types: rewrite.types,
     }) as never;
 
     // Two writes, because they are two different changes. A fact whose wording

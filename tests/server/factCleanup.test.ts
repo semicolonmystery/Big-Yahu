@@ -27,10 +27,13 @@ vi.mock('../../src/server/ai/embeddings', () => ({
   activeEmbedding: () => ({ model: 'test/embeddings', dimensions: 3 }),
   embedWith: state.embed,
 }));
-vi.mock('../../src/server/db/repositories/factsRepo', () => ({
+vi.mock('../../src/server/db/repositories/factsRepo', async (importOriginal) => ({
   embeddingText: (text: string) => text,
   ensureFactIndex: async () => {},
   factsByIds: async (ids: string[]) => state.facts.filter((fact) => ids.includes(fact.id)),
+  // The real one: dropping empty lists is the thing under test below, not a
+  // detail worth restating in a stub.
+  chromaMetadata: (await importOriginal<typeof import('../../src/server/db/repositories/factsRepo')>()).chromaMetadata,
 }));
 vi.mock('../../src/server/db/repositories/cachedMessagesRepo', () => ({
   getMessages: (ids: string[]) => state.messages.filter((message) => ids.includes(message.messageId)),
@@ -112,6 +115,32 @@ describe('rewriting a bundle', () => {
     expect(state.embed).not.toHaveBeenCalled();
     expect(state.update.mock.calls[0][0]).not.toHaveProperty('embeddings');
     expect(state.update.mock.calls[0][0].metadatas[0]).toMatchObject({ types: ['person'] });
+  });
+
+  // Chroma refuses an empty list — "Expected metadata list value for key
+  // 'channelRefs' to be non-empty" — and reading a fact fills every missing
+  // array in with one, so writing it straight back failed on the first live run.
+  it('never writes back an empty list, whichever field is empty', async () => {
+    state.facts = [fact('a', 'Alice owns a dog')];
+    const job = openCleanup(['a']);
+    state.structured.mockResolvedValueOnce(answered([{ id: 'a', text: 'Alice owns a dog', types: ['person'] }]));
+    await cleanupBatch(job, ['a']);
+
+    const [written] = (state.update.mock.calls[0][0] as UpdateArgs).metadatas;
+    for (const [key, value] of Object.entries(written)) {
+      expect(Array.isArray(value) && value.length === 0, `${key} went back empty`).toBe(false);
+    }
+    // The fields that do have something in them survive.
+    expect(written).toMatchObject({ authorIds: ['111'], types: ['person'], guildId: 'guild' });
+    expect(written).not.toHaveProperty('channelRefs');
+  });
+
+  it('leaves a fact untyped rather than writing an empty type list', async () => {
+    state.facts = [fact('a', 'Alice owns a dog')];
+    const job = openCleanup(['a']);
+    state.structured.mockResolvedValueOnce(answered([{ id: 'a', text: 'a corrected dog fact', types: [] }]));
+    await cleanupBatch(job, ['a']);
+    expect((state.update.mock.calls[0][0] as UpdateArgs).metadatas[0]).not.toHaveProperty('types');
   });
 
   it('drops a type nobody defined rather than storing it', async () => {

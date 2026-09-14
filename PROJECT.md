@@ -214,6 +214,13 @@ with no types at all" cannot be expressed as a where-clause against a key that i
 not there. Bundle size is theirs too: bigger bundles cost fewer calls, and a bad
 answer then wastes more of one.
 
+Metadata goes back through one helper that drops empty lists, because Chroma
+refuses them — *"Expected metadata list value for key 'channelRefs' to be
+non-empty"* — and reading a fact fills every absent array in with one so that
+everything downstream can treat them as lists. Writing that straight back is
+what the first live run fell over on. For `types` the absence is meaningful
+besides: it is what marks a fact nobody has sorted.
+
 Stopping keeps what it has already corrected. Those facts were improved, and
 putting the old wording back would undo the work — which is why reset, which
 removes what a re-embed copied, removes nothing here.
@@ -1069,6 +1076,7 @@ does not queue or invoke AI.
 | Date repair deleted, rules moved into the prompts | IMPL | `ai/dateEnforcement.ts` and `ai/relativeDates.ts` are gone with the `dateRepair` task and its rows. Both fact-writing prompts resolve relative dates as they write, and the cleanup pass is the backstop instead of a regex |
 | Facts never invent when something was said | IMPL | a message's `at` is when it was sent, never when the thing happened; with nobody saying when, a fact carries no date rather than a guessed one. Both prompts say so, and nothing on the way in adds one |
 | A spoken tool name is never posted | IMPL | the model typed "stay silent" into the channel instead of calling the tool, which is why that decision is a field now. A reply that is nothing but a silence phrase or a tool's name still sends nothing rather than posting it |
+| Long jobs are watched, not sampled | IMPL | one `useJobPolling` hook behind both panels: polling follows the status, so it starts the moment a job does and stops when it finishes. The self-rescheduling timer it replaced ended whenever the status was idle and was never restarted by a button, so a job that had just begun showed one frame and looked stuck |
 | One-off cleanup pass over old facts | IMPL | `ai/factCleanup.ts` on the re-embed's job runner, which now carries a `kind`. Rewrites a bundle at a time under the current rules, in place and re-embedded in the same step; writes nothing for a fact it did not change; can ask once for the messages behind one; a failed bundle changes nothing and the job moves on. Operator-run from Settings over chosen types, never on its own |
 | Reasoning on every task | IMPL | effort is the task's own setting for structured calls as well as the reply, default `none`; an endpoint that refuses to have it switched off is asked again without the field and remembered, rather than killing the reply |
 | Anti-fabrication (prompt + mention/link sanitising) | IMPL | strips unknown channels, users and message links |

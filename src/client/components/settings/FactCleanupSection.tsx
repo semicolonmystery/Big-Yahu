@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
+import { useJobPolling } from '@/lib/useJobPolling';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,9 +12,12 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import type { CleanupStatus } from '@shared/types';
 import type { FactType } from '@shared/factTypes';
+import { DEFAULT_BUNDLE_SIZE, MAX_BUNDLE_SIZE } from '@shared/constants';
 
 const UNTYPED = 'untyped';
-const POLL_MS = 2000;
+
+/** Keep asking while a job is moving, and stop the moment it is not. */
+const isRunning = (status: CleanupStatus) => status.job?.status === 'running';
 
 /**
  * The one-off pass over facts stored before the rules changed.
@@ -24,37 +28,21 @@ const POLL_MS = 2000;
  * `message` is the whole channel and running it across `rule` is an afternoon.
  */
 export function FactCleanupSection({ types }: { types: FactType[] }) {
-  const [status, setStatus] = useState<CleanupStatus | null>(null);
   const [chosen, setChosen] = useState<string[]>([UNTYPED]);
-  const [bundleSize, setBundleSize] = useState(12);
+  const [bundleSize, setBundleSize] = useState(DEFAULT_BUNDLE_SIZE);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   // Rebuilt when the chosen types change, which is exactly when the count it
   // reports has to change too.
   const load = useCallback(() => api.cleanupStatus(chosen), [chosen]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const next = await load();
-        if (cancelled) return;
-        setStatus(next);
-        setError(null);
-      } catch (loadError) {
-        if (!cancelled) setError(loadError instanceof Error ? loadError.message : 'Could not read the fact store');
-      }
-    };
-    void tick();
-    const timer = setInterval(() => { void tick(); }, POLL_MS);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [load]);
+  const { value: status, error, refresh } = useJobPolling(load, isRunning);
 
   const run = async (act: () => Promise<unknown>, done: string) => {
     setBusy(true);
     try {
       await act();
-      setStatus(await load());
+      // The status that comes back is what starts the polling, so progress
+      // begins updating the moment the job does.
+      await refresh();
       toast.success(done);
     } catch (actError) {
       toast.error(actError instanceof Error ? actError.message : 'That did not work');
@@ -123,7 +111,7 @@ export function FactCleanupSection({ types }: { types: FactType[] }) {
                 id="cleanupBundleSize"
                 type="number"
                 min={1}
-                max={50}
+                max={MAX_BUNDLE_SIZE}
                 className="w-32"
                 value={bundleSize}
                 disabled={running}

@@ -148,3 +148,10 @@ export function formatNow(timezone: string, at: Date = new Date()): string {
     }).format(at);
   }
 }
+
+/**
+ * How many facts the cleanup pass sends to the model at once. Shared, because
+ * the panel offers the default and the bound, and the server enforces them.
+ */
+export const DEFAULT_BUNDLE_SIZE = 12;
+export const MAX_BUNDLE_SIZE = 50;

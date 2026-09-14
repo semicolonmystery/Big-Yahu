@@ -44,6 +44,30 @@ function toFact(id: string, document: string | null | undefined, metadata: Metad
   };
 }
 
+/** The array fields, which Chroma stores as lists and refuses to store empty. */
+const LIST_FIELDS = ['messageIds', 'authorIds', 'subjectIds', 'channelRefs', 'types', 'referencedFactIds'] as const;
+
+/**
+ * A fact's metadata on its way back to Chroma.
+ *
+ * `toFact` fills every missing array in with `[]` so everything reading a fact
+ * can treat them as lists without guarding each one. Writing that back is a
+ * different matter: Chroma rejects an empty list outright — *"Expected metadata
+ * list value for key 'channelRefs' to be non-empty"* — and for `types` the
+ * absence is meaningful anyway, since it is what marks a fact nobody has sorted.
+ * So an empty one is dropped rather than written, exactly as `metadataFor` does
+ * on the way in.
+ */
+export function chromaMetadata(metadata: FactMetadata): Metadata {
+  const out: Metadata = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (value === undefined || value === null) continue;
+    if ((LIST_FIELDS as readonly string[]).includes(key) && Array.isArray(value) && value.length === 0) continue;
+    out[key] = value as Metadata[string];
+  }
+  return out;
+}
+
 /** Everyone a fact concerns: whose messages it came from, and who it is about. */
 export function peopleIn(fact: Fact): string[] {
   return [...new Set([...fact.metadata.authorIds, ...(fact.metadata.subjectIds ?? [])])];
