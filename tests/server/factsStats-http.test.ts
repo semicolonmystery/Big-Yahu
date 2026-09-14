@@ -158,7 +158,7 @@ describe('fact search and browsing HTTP API', () => {
   it('applies page and person filters and returns the pagination contract', async () => {
     const response = await request('/facts?page=2&pageSize=1&authorId=111');
     expect(response.status).toBe(200);
-    expect(state.page).toHaveBeenCalledWith({ page: 2, pageSize: 1, authorId: '111' });
+    expect(state.page).toHaveBeenCalledWith({ page: 2, pageSize: 1, authorId: '111', types: [] });
     expect(await response.json()).toMatchObject({ success: true, data: {
       total: 2, page: 2, pageSize: 1, facts: [{ id: 'second', distance: null, sourceMessages: [{ messageId: '1' }] }],
     } });
@@ -166,7 +166,7 @@ describe('fact search and browsing HTTP API', () => {
 
   it('uses defaults and permits empty out-of-range pages', async () => {
     await request('/facts');
-    expect(state.page).toHaveBeenCalledWith({ page: 1, pageSize: 25, authorId: undefined });
+    expect(state.page).toHaveBeenCalledWith({ page: 1, pageSize: 25, authorId: undefined, types: [] });
     expect(await (await request('/facts?page=9')).json()).toMatchObject({ data: { facts: [], total: 3, page: 9 } });
   });
 

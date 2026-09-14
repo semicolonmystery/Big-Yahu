@@ -39,6 +39,13 @@ export interface Pricing {
 export interface CatalogModelInfo {
   id: string;
   name: string;
+  /**
+   * OpenRouter's own blurb. Kept only for the embedding models, where it is the
+   * single place the widths a model supports are stated at all — there is no
+   * structured field for them, just prose like "Matryoshka embeddings at 2048,
+   * 1024, 512, and 256".
+   */
+  description: string;
   kind: 'chat' | 'embedding';
   inputModalities: string[];
   supportedParameters: string[];
@@ -102,6 +109,7 @@ function parseModel(raw: unknown, kind: CatalogModelInfo['kind']): CatalogModelI
   return {
     id: model.id,
     name: typeof model.name === 'string' ? model.name : model.id,
+    description: typeof model.description === 'string' ? model.description : '',
     kind,
     inputModalities: strings(architecture.input_modalities),
     supportedParameters: strings(model.supported_parameters),

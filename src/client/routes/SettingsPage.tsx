@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Check, ChevronsUpDown, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { AppSettings, ChannelPermission, Controller } from '@shared/types';
+import type { AppSettings, ChannelPermission, Controller, GuildMember } from '@shared/types';
 import { DUPLICATE_DISTANCE_MAX, FACT_SEARCH_MAX_DISTANCE_MAX, LANGUAGES } from '@shared/constants';
 import { api } from '@/lib/api';
 import { AiTasksSection } from '@/components/settings/AiTasksSection';
@@ -30,8 +30,6 @@ import {
   DialogFooter,
   DialogClose,
 } from '@/components/ui/dialog';
-
-const SNOWFLAKE_RE = /^\d{17,20}$/;
 
 function formatLanguage(language: (typeof LANGUAGES)[number]): string {
   return language.name === language.native ? language.name : `${language.name} — ${language.native}`;
@@ -102,10 +100,12 @@ const FIELDS: FieldSpec[] = [
     key: 'duplicateDistance',
     label: 'Duplicate fact distance',
     help: 'How close two facts must be before a new one replaces the old instead of being stored beside it. '
-      + 'Hundredths of a vector distance, so 25 means 0.25: lower keeps more separate facts, higher merges more. '
-      + 'What counts as close depends on the embedding model, so re-tune this after changing it.',
+      + 'Hundredths of a vector distance, so 25 means 0.25: lower keeps more separate facts, higher merges more, '
+      + 'and 0 never merges anything. What counts as close depends on the embedding model, so re-tune this after '
+      + 'changing it. Each fact type carries its own; this is the seed for a new one and the fallback for a fact '
+      + 'with no type.',
     type: 'number',
-    min: 1,
+    min: 0,
     max: DUPLICATE_DISTANCE_MAX,
   },
   {
@@ -284,183 +284,172 @@ function ChannelPermissionsSection() {
   );
 }
 
+/**
+ * Who may direct the bot.
+ *
+ * Added by picking a person, not by typing a snowflake: an id is unreadable, so
+ * typing one is a transcription exercise with no feedback until it silently does
+ * nothing. It is still the id that is stored — names change, ids do not — but
+ * the id is never shown. Whatever Discord calls somebody today is what the panel
+ * says, resolved on every load.
+ */
 function ControllersSection() {
   const [controllers, setControllers] = useState<Controller[] | null>(null);
+  const [people, setPeople] = useState<GuildMember[]>([]);
+  const [botOnline, setBotOnline] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [userId, setUserId] = useState('');
-  const [label, setLabel] = useState('');
-  const [validationError, setValidationError] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Controller | null>(null);
-  const [removing, setRemoving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .listControllers()
-      .then((data) => {
-        if (!cancelled) setControllers(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load controllers');
-      })
-      .finally(() => {
+    void (async () => {
+      try {
+        const [rows, roster] = await Promise.all([api.listControllers(), api.listPeople()]);
+        if (cancelled) return;
+        setControllers(rows);
+        setPeople(roster.people);
+        setBotOnline(roster.botOnline);
+      } catch (loadError) {
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : 'Could not load the controllers');
+      } finally {
         if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
-  const handleAdd = async (event: FormEvent) => {
-    event.preventDefault();
-    const trimmedId = userId.trim();
-    const trimmedLabel = label.trim();
-    if (!SNOWFLAKE_RE.test(trimmedId)) {
-      setValidationError('Discord user ID must be 17-20 digits.');
-      return;
-    }
-    if (!trimmedLabel) {
-      setValidationError('Label is required.');
-      return;
-    }
-    setValidationError(null);
-    setAdding(true);
+  // The id is the key; this is the only thing that turns it back into a person.
+  const nameOf = (userId: string) => people.find((person) => person.id === userId)?.name
+    ?? 'somebody the bot cannot see right now';
+
+  const add = async (person: GuildMember) => {
+    setBusy(true);
     try {
-      const created = await api.addController(trimmedId, trimmedLabel);
-      setControllers((current) => [...(current ?? []), created]);
-      setUserId('');
-      setLabel('');
-      toast.success('Controller added');
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to add controller');
+      const added = await api.addController(person.id);
+      setControllers((current) => [...(current ?? []).filter((row) => row.userId !== added.userId), added]);
+      setPickerOpen(false);
+      toast.success(`${person.name} can direct the bot`);
+    } catch (addError) {
+      toast.error(addError instanceof Error ? addError.message : 'Could not add that controller');
     } finally {
-      setAdding(false);
+      setBusy(false);
     }
   };
 
-  const handleRemove = async () => {
+  const remove = async () => {
     if (!removeTarget) return;
-    setRemoving(true);
+    setBusy(true);
     try {
       await api.removeController(removeTarget.userId);
-      setControllers((current) => (current ?? []).filter((controller) => controller.userId !== removeTarget.userId));
-      toast.success('Controller removed');
+      setControllers((current) => (current ?? []).filter((row) => row.userId !== removeTarget.userId));
       setRemoveTarget(null);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove controller');
+    } catch (removeError) {
+      toast.error(removeError instanceof Error ? removeError.message : 'Could not remove that controller');
     } finally {
-      setRemoving(false);
+      setBusy(false);
     }
   };
+
+  const available = (controllers ?? []).length === 0
+    ? people
+    : people.filter((person) => !controllers!.some((row) => row.userId === person.id));
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Controllers</CardTitle>
         <CardDescription>
-          Controllers are Discord users allowed to command the bot — they can tell it to remember or forget facts, and
-          it complies.
+          People who may direct the bot: tell it to remember something and it saves the fact, tell it to forget
+          one and it deletes it. Everyone else it argues with.
         </CardDescription>
       </CardHeader>
-      <CardContent>
-        <div className="flex flex-col gap-5">
-          {error && (
-            <Alert variant="destructive">
-              <AlertTitle>Couldn't load controllers</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
+      <CardContent className="flex flex-col gap-4">
+        {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+        {!botOnline && (
+          <Alert>
+            <AlertDescription>
+              The bot is not connected, so there is nobody to choose from and existing controllers cannot be named.
+            </AlertDescription>
+          </Alert>
+        )}
 
-          {loading ? (
-            <Skeleton className="h-24 w-full" />
-          ) : !controllers || controllers.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No controllers yet. Without any, nobody can direct the bot.
-            </p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Label</TableHead>
-                  <TableHead>User ID</TableHead>
-                  <TableHead />
+        {loading ? (
+          <Skeleton className="h-24 w-full" />
+        ) : !controllers || controllers.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No controllers yet. Without any, nobody can direct the bot.
+          </p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Who</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {controllers.map((controller) => (
+                <TableRow key={controller.userId}>
+                  <TableCell className="font-medium">{nameOf(controller.userId)}</TableCell>
+                  <TableCell>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Remove ${nameOf(controller.userId)}`}
+                      onClick={() => setRemoveTarget(controller)}
+                    >
+                      <Trash2 />
+                    </Button>
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {controllers.map((controller) => (
-                  <TableRow key={controller.userId}>
-                    <TableCell className="font-medium">{controller.label}</TableCell>
-                    <TableCell className="font-mono text-muted-foreground">{controller.userId}</TableCell>
-                    <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`Remove ${controller.label}`}
-                        onClick={() => setRemoveTarget(controller)}
-                      >
-                        <Trash2 />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+              ))}
+            </TableBody>
+          </Table>
+        )}
 
-          <form onSubmit={(event) => void handleAdd(event)} className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="flex flex-1 flex-col gap-1.5">
-              <Label htmlFor="controller-user-id">Discord user ID</Label>
-              <Input
-                id="controller-user-id"
-                value={userId}
-                onChange={(event) => {
-                  setUserId(event.target.value);
-                  setValidationError(null);
-                }}
-                placeholder="123456789012345678"
-                className="font-mono"
-              />
-            </div>
-            <div className="flex flex-1 flex-col gap-1.5">
-              <Label htmlFor="controller-label">Label</Label>
-              <Input
-                id="controller-label"
-                value={label}
-                onChange={(event) => {
-                  setLabel(event.target.value);
-                  setValidationError(null);
-                }}
-                placeholder="e.g. Moderator name"
-              />
-            </div>
-            <Button type="submit" disabled={adding}>
-              {adding ? 'Adding…' : 'Add'}
-            </Button>
-          </form>
-          {validationError && <p className="text-xs text-destructive">{validationError}</p>}
-        </div>
+        <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+          <PopoverTrigger
+            render={<Button variant="outline" disabled={busy || available.length === 0}>Add a controller</Button>}
+          />
+          <PopoverContent className="w-72 p-0" align="start">
+            <Command>
+              <CommandInput placeholder="Search by name…" />
+              <CommandList>
+                <CommandEmpty>Nobody by that name is visible.</CommandEmpty>
+                <CommandGroup>
+                  {available.map((person) => (
+                    <CommandItem
+                      key={person.id}
+                      value={`${person.name} ${person.username ?? ''}`}
+                      onSelect={() => void add(person)}
+                    >
+                      {person.name}
+                      {person.username && person.username !== person.name && (
+                        <span className="ml-2 text-xs text-muted-foreground">{person.username}</span>
+                      )}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
       </CardContent>
 
-      <Dialog
-        open={removeTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) setRemoveTarget(null);
-        }}
-      >
+      <Dialog open={removeTarget !== null} onOpenChange={(open) => { if (!open) setRemoveTarget(null); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Remove this controller?</DialogTitle>
             <DialogDescription>
-              {removeTarget?.label} ({removeTarget?.userId}) will no longer be able to direct the bot.
+              {removeTarget ? nameOf(removeTarget.userId) : ''} will no longer be able to direct the bot.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
-            <Button variant="destructive" onClick={() => void handleRemove()} disabled={removing}>
-              {removing ? 'Removing…' : 'Remove'}
-            </Button>
+            <Button variant="destructive" onClick={() => void remove()} disabled={busy}>Remove</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -534,24 +523,31 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
+    // A grid rather than one long column: most of these cards are a few fields
+    // wide and were being stretched across the whole screen, which put the ones
+    // that matter three scrolls apart. `items-start` so a short card does not
+    // grow to match a tall neighbour, and the wide ones — the model tabs, the
+    // tables, the message textareas — say so themselves.
+    <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2 2xl:grid-cols-3">
+      <h1 className="col-span-full text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
 
       {error && (
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="col-span-full">
           <AlertTitle>Couldn't load settings</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 
       {loading || !draft ? (
-        <div className="flex flex-col gap-4">
+        <div className="col-span-full flex flex-col gap-4">
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-24 w-full" />
         </div>
       ) : (
-        <Card>
+        // Five message textareas and a language picker: readable at full width,
+        // cramped in a third of one.
+        <Card className="col-span-full">
           <CardHeader>
             <CardTitle>Bot behavior</CardTitle>
             <CardDescription>Changes only apply once saved.</CardDescription>
@@ -765,12 +761,13 @@ export default function SettingsPage() {
         </Card>
       )}
 
-      <FactTypesSection onTypes={setFactTypes} />
-      <FactCleanupSection types={factTypes} />
-      <AiTasksSection />
-      <EmbeddingSection />
-      <ChannelPermissionsSection />
-      <ControllersSection />
+      {/* Wide by nature: a row of tabs, and a table that scrolls sideways if it must. */}
+      <div className="col-span-full"><AiTasksSection /></div>
+      <div className="col-span-full lg:col-span-1"><EmbeddingSection /></div>
+      <div className="col-span-full lg:col-span-1"><FactCleanupSection types={factTypes} /></div>
+      <div className="col-span-full"><FactTypesSection onTypes={setFactTypes} /></div>
+      <div className="col-span-full lg:col-span-1"><ChannelPermissionsSection /></div>
+      <div className="col-span-full lg:col-span-1"><ControllersSection /></div>
     </div>
   );
 }

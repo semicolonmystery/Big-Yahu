@@ -196,6 +196,26 @@ aiTasksRouter.get('/catalog', async (req, res) => {
 });
 
 /** The hosts serving one model, cheapest first, for the pin picker. */
+/**
+ * The embedding models, for the panel that picks one.
+ *
+ * Their description comes along because OpenRouter states the widths a model
+ * supports nowhere else — there is no structured field for dimensions, only
+ * prose. The panel offers the standard widths and shows this underneath, which
+ * is the honest version of "check the catalog".
+ */
+aiTasksRouter.get('/catalog/embeddings', async (_req, res) => {
+  const models = (await catalogModels())
+    .filter((model) => model.kind === 'embedding')
+    .map((model) => ({
+      id: model.id,
+      name: model.name,
+      description: model.description,
+      promptPrice: model.pricing.prompt,
+    }));
+  res.json({ success: true, data: models });
+});
+
 aiTasksRouter.get('/catalog/endpoints', async (req, res) => {
   const model = readString(req.query.model);
   if (!MODEL_ID.test(model)) {

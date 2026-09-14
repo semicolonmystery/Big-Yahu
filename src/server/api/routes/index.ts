@@ -9,6 +9,7 @@ import { aiTasksRouter } from './aiTasks';
 import { channelsRouter } from './channels';
 import { controllersRouter } from './controllers';
 import { factTypesRouter } from './factTypes';
+import { peopleRouter } from './people';
 import { requireAuth } from '../middleware/requireAuth';
 
 export const apiRouter = Router();
@@ -23,3 +24,4 @@ apiRouter.use('/ai-tasks', requireAuth, aiTasksRouter);
 apiRouter.use('/channels', requireAuth, channelsRouter);
 apiRouter.use('/controllers', requireAuth, controllersRouter);
 apiRouter.use('/fact-types', requireAuth, factTypesRouter);
+apiRouter.use('/people', requireAuth, peopleRouter);

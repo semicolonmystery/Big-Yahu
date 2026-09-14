@@ -5,38 +5,23 @@ export const controllersRouter = Router();
 
 const SNOWFLAKE_RE = /^\d{17,20}$/;
 
-function readPayload(body: unknown): { userId: string; label: string } | null {
-  if (typeof body !== 'object' || body === null) return null;
-  const { userId, label } = body as { userId?: unknown; label?: unknown };
-  if (typeof userId !== 'string' || typeof label !== 'string') return null;
-  const trimmedUserId = userId.trim();
-  const trimmedLabel = label.trim();
-  if (!trimmedUserId || !trimmedLabel) return null;
-  return { userId: trimmedUserId, label: trimmedLabel };
-}
-
 controllersRouter.get('/', (_req, res) => {
   res.json({ success: true, data: listControllers() });
 });
 
+/**
+ * A user id, and nothing else. The panel picks a person by name and sends their
+ * id; what they are called is Discord's to say and is looked up when shown.
+ */
 controllersRouter.post('/', (req, res) => {
-  const payload = readPayload(req.body);
-  if (!payload) {
-    res.status(400).json({ success: false, error: 'userId and label are required' });
-    return;
-  }
-
-  if (!SNOWFLAKE_RE.test(payload.userId)) {
+  const userId = typeof (req.body as { userId?: unknown })?.userId === 'string'
+    ? ((req.body as { userId: string }).userId).trim()
+    : '';
+  if (!SNOWFLAKE_RE.test(userId)) {
     res.status(400).json({ success: false, error: 'userId must be a Discord snowflake (17-20 digits)' });
     return;
   }
-
-  if (payload.label.length > 100) {
-    res.status(400).json({ success: false, error: 'label must be at most 100 characters' });
-    return;
-  }
-
-  res.json({ success: true, data: addController(payload.userId, payload.label) });
+  res.json({ success: true, data: addController(userId) });
 });
 
 controllersRouter.delete('/:userId', (req, res) => {

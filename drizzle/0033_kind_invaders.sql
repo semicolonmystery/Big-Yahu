@@ -1,0 +1,1 @@
+ALTER TABLE `controllers` DROP COLUMN `label`;

@@ -36,8 +36,9 @@ describe('duplicate fact distance', () => {
     render(<SettingsPage />);
     const input = await screen.findByRole('spinbutton', { name: 'Duplicate fact distance' });
     expect((input as HTMLInputElement).value).toBe(String(DEFAULT_SETTINGS.duplicateDistance));
-    // Zero would make every fact a duplicate of nothing, so the floor is 1.
-    expect(input.getAttribute('min')).toBe('1');
+    // 0 switches the duplicate check off, the same way it switches the recall
+    // ceiling off, so it is a real value rather than a floor to clamp away.
+    expect(input.getAttribute('min')).toBe('0');
     expect(input.getAttribute('max')).toBe(String(DUPLICATE_DISTANCE_MAX));
 
     fireEvent.change(input, { target: { value: '40' } });

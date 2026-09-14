@@ -1,4 +1,4 @@
-import { desc, eq, inArray, like, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, like, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../client';
 import { factIndex } from '../schema';
 import type { Fact } from '@shared/types';
@@ -100,11 +100,24 @@ export function factIdsOfTypes(types: string[]): string[] {
  * Somebody a fact is about counts as much as somebody whose message it came
  * from, which is why both go into `people`.
  */
-export function pageOfFactIds(options: { page: number; pageSize: number; authorId?: string }): {
-  ids: string[];
-  total: number;
-} {
-  const where = options.authorId ? containsId(factIndex.people, options.authorId) : undefined;
+export function pageOfFactIds(options: {
+  page: number;
+  pageSize: number;
+  authorId?: string;
+  /** Any of these types. A fact with none matches every one, as it does in recall. */
+  types?: string[];
+}): { ids: string[]; total: number } {
+  const clauses = [
+    ...(options.authorId ? [containsId(factIndex.people, options.authorId)] : []),
+    // Untyped facts are included deliberately: they are the whole store as it
+    // stood before types existed, and a filter that hid them would make the
+    // screen look empty until the cleanup pass has run.
+    ...(options.types?.length
+      ? [or(eq(factIndex.types, ' '), ...options.types.map((type) => containsId(factIndex.types, type)))!]
+      : []),
+  ];
+  const where = clauses.length === 0 ? undefined : and(...clauses);
+
   const total = db.select({ count: sql<number>`count(*)` }).from(factIndex)
     .where(where).get()?.count ?? 0;
   const ids = db.select({ factId: factIndex.factId }).from(factIndex)

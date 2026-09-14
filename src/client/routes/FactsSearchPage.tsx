@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
+import type { FactType } from '@shared/factTypes';
 import type { FactAuthor, FactWithSources } from '@shared/types';
 import { USER_MENTION_SPLIT } from '@shared/discord';
 import { cn } from '@/lib/utils';
@@ -53,9 +54,47 @@ function FactText({ text, names }: { text: string; names: Record<string, string>
   );
 }
 
+/** Whole days since the epoch is how a fact's date range is stored. */
+function dayLabel(day: number): string {
+  return new Date(day * 86_400_000).toLocaleDateString(undefined, { day: 'numeric', month: 'numeric', year: 'numeric' });
+}
+
+/**
+ * The things a fact carries that its sentence does not say: when it is about,
+ * when it was written down, and who it records.
+ *
+ * The two dates are genuinely different and the panel used to show neither. The
+ * span is the days the fact itself talks about, read out of its text; `stored`
+ * is when the bot wrote it down, which is not evidence of when anything
+ * happened — the distinction the extraction prompts now spell out, and the one
+ * an operator needs when deciding whether a fact is wrong.
+ */
+function FactDetails({ fact }: { fact: FactWithSources }) {
+  const { dateMin, dateMax, createdAt } = fact.metadata;
+  const people = [...new Set([...(fact.metadata.authorIds ?? []), ...(fact.metadata.subjectIds ?? [])])];
+  const named = people.map((id) => fact.peopleNames?.[id]).filter(Boolean);
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+      {dateMin !== undefined && (
+        <span>
+          about {dayLabel(dateMin)}
+          {dateMax !== undefined && dateMax !== dateMin ? ` – ${dayLabel(dateMax)}` : ''}
+        </span>
+      )}
+      {createdAt > 0 && <span>stored {new Date(createdAt).toLocaleDateString()}</span>}
+      {named.length > 0 && <span>about {named.join(', ')}</span>}
+      {named.length === 0 && people.length > 0 && (
+        <span>about {people.length} {people.length === 1 ? 'person' : 'people'} the bot cannot name right now</span>
+      )}
+    </div>
+  );
+}
+
 function FactCard({ fact, onDeleted }: { fact: FactWithSources; onDeleted: (id: string) => void }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -78,6 +117,14 @@ function FactCard({ fact, onDeleted }: { fact: FactWithSources; onDeleted: (id: 
           <Badge variant={fact.metadata.source === 'reply' ? 'secondary' : 'outline'}>
             {fact.metadata.source}
           </Badge>
+          {/* What kind of thing it is. Nothing here means nobody has sorted it
+              yet, which is why it still comes back from every type search. */}
+          {(fact.metadata.types ?? []).map((type) => (
+            <Badge key={type} variant="secondary">{type}</Badge>
+          ))}
+          {(fact.metadata.types ?? []).length === 0 && (
+            <Badge variant="outline" className="text-muted-foreground">no type yet</Badge>
+          )}
           {fact.distance !== null && (
             <span className="text-xs text-muted-foreground">distance {fact.distance.toFixed(2)}</span>
           )}
@@ -94,6 +141,7 @@ function FactCard({ fact, onDeleted }: { fact: FactWithSources; onDeleted: (id: 
         <CardTitle className="text-base font-normal">
           <FactText text={fact.text} names={fact.mentionNames} />
         </CardTitle>
+        <FactDetails fact={fact} />
       </CardHeader>
       {fact.sourceMessages.length > 0 && (
         <CardContent>
@@ -227,6 +275,8 @@ function BrowseTab() {
   const [browsePage, setBrowsePage] = useState(1);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [selectedAuthorId, setSelectedAuthorId] = useState<string | null>(null);
+  const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
+  const [factTypes, setFactTypes] = useState<FactType[]>([]);
   const [authors, setAuthors] = useState<FactAuthor[]>([]);
   const [authorPickerOpen, setAuthorPickerOpen] = useState(false);
 
@@ -247,8 +297,23 @@ function BrowseTab() {
 
   useEffect(() => {
     let cancelled = false;
+    api.listFactTypes()
+      .then((overview) => { if (!cancelled) setFactTypes(overview.types); })
+      .catch(() => {
+        // Same: without the list there are simply no type chips to offer.
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     api
-      .listFacts({ page: browsePage, pageSize: BROWSE_PAGE_SIZE, authorId: selectedAuthorId ?? undefined })
+      .listFacts({
+        page: browsePage,
+        pageSize: BROWSE_PAGE_SIZE,
+        authorId: selectedAuthorId ?? undefined,
+        types: selectedTypes,
+      })
       .then((data) => {
         if (cancelled) return;
         const lastPage = Math.max(1, Math.ceil(data.total / data.pageSize));
@@ -264,7 +329,7 @@ function BrowseTab() {
     return () => {
       cancelled = true;
     };
-  }, [browsePage, selectedAuthorId, refreshVersion]);
+  }, [browsePage, selectedAuthorId, selectedTypes, refreshVersion]);
 
   const handleDeleted = (id: string) => {
     setBrowseState((prev) =>
@@ -281,11 +346,39 @@ function BrowseTab() {
     setAuthorPickerOpen(false);
   };
 
+  const toggleType = (id: string) => {
+    setSelectedTypes((current) => (current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id]));
+    setBrowsePage(1);
+  };
+
   const selectedAuthor = authors.find((author) => author.authorId === selectedAuthorId) ?? null;
   const totalPages = browseState.status === 'done' ? Math.max(1, Math.ceil(browseState.total / browseState.pageSize)) : 1;
 
   return (
     <div className="flex flex-col gap-6">
+      {factTypes.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm text-muted-foreground">Types</span>
+          {factTypes.map((type) => (
+            <Button
+              key={type.id}
+              size="sm"
+              variant={selectedTypes.includes(type.id) ? 'secondary' : 'outline'}
+              onClick={() => toggleType(type.id)}
+            >
+              {type.label}
+            </Button>
+          ))}
+          {selectedTypes.length > 0 && (
+            <Button size="sm" variant="ghost" onClick={() => { setSelectedTypes([]); setBrowsePage(1); }}>
+              Clear
+            </Button>
+          )}
+          <span className="text-xs text-muted-foreground">
+            Facts nobody has sorted yet come back whichever types are chosen, the same way they do in recall.
+          </span>
+        </div>
+      )}
       <div className="flex flex-col gap-1.5">
         <Popover open={authorPickerOpen} onOpenChange={setAuthorPickerOpen}>
           <PopoverTrigger

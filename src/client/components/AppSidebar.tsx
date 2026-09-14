@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { LayoutDashboard, Search, Settings, Puzzle, LogOut, MessageSquareText } from 'lucide-react';
+import { ThemeToggle } from '@/components/ThemeToggle';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { useAuth } from '@/hooks/useAuth';
@@ -47,6 +48,7 @@ function AppSidebar() {
       <Separator />
       <div className="flex items-center justify-center gap-2 p-2 sm:justify-between sm:p-3">
         <span className="hidden truncate text-sm text-muted-foreground sm:inline">{status?.username}</span>
+        <ThemeToggle />
         <Button variant="ghost" size="icon-sm" onClick={() => {
           void logout().catch((error: unknown) => toast.error(error instanceof Error ? error.message : 'Failed to log out'));
         }} aria-label="Log out">

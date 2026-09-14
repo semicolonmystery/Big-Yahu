@@ -172,26 +172,27 @@ describe('settings API validation', () => {
 describe('controller administration', () => {
   const userId = '45678901234567890';
 
-  it('adds, relabels and removes a controller without creating duplicates', async () => {
+  // A controller is an id and nothing else now: the label that used to sit
+  // beside it was typed by whoever added them, which meant the panel showed a
+  // made-up name next to an unreadable id. Names come from Discord instead.
+  it('adds and removes a controller without creating duplicates', async () => {
     expect((await (await fetch(`${baseUrl}/controllers`)).json()).data).toEqual([]);
-    const added = await send('POST', '/controllers', { userId: ` ${userId} `, label: ' Moderator ' });
+    const added = await send('POST', '/controllers', { userId: ` ${userId} ` });
     expect(added.status).toBe(200);
-    expect((await added.json()).data).toMatchObject({ userId, label: 'Moderator' });
+    expect((await added.json()).data).toMatchObject({ userId });
     expect(isController(userId)).toBe(true);
-    expect((await send('POST', '/controllers', { userId, label: 'Owner' })).status).toBe(200);
-    const listed = (await (await fetch(`${baseUrl}/controllers`)).json()).data;
-    expect(listed).toHaveLength(1);
-    expect(listed[0].label).toBe('Owner');
+
+    expect((await send('POST', '/controllers', { userId })).status).toBe(200);
+    expect((await (await fetch(`${baseUrl}/controllers`)).json()).data).toHaveLength(1);
+
     expect((await send('DELETE', `/controllers/${userId}`)).status).toBe(200);
     expect(isController(userId)).toBe(false);
     expect((await send('DELETE', `/controllers/${userId}`)).status).toBe(404);
   });
 
-  it.each([
-    {}, { userId: 'invalid', label: 'Moderator' }, { userId, label: ' ' },
-    { userId, label: 'x'.repeat(101) }, { userId: 123456789, label: 'Moderator' },
-  ])('rejects invalid controller input: %j', async (body) => {
-    expect((await send('POST', '/controllers', body)).status).toBe(400);
-    expect(db.select().from(controllers).all()).toHaveLength(0);
-  });
+  it.each([{}, { userId: 'invalid' }, { userId: '' }, { userId: 123456789 }, { userId: '123' }])(
+    'rejects invalid controller input: %j', async (body) => {
+      expect((await send('POST', '/controllers', body)).status).toBe(400);
+      expect(db.select().from(controllers).all()).toHaveLength(0);
+    });
 });

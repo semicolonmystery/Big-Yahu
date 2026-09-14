@@ -1,11 +1,13 @@
 import type { BigYahuPlugin, PluginField } from '@big-yahu/plugin-sdk';
 import { DEFAULT_CONFIG, withDefaults } from './config';
 import { inspectionTool } from './inspectionTool';
+import { auditLogTool } from './auditLogTool';
 import { memberTools } from './memberTools';
 import { permissionTools } from './permissionTools';
 
 const CAPABILITY_LABELS: Array<[keyof typeof DEFAULT_CONFIG, string]> = [
   ['enableInspection', 'inspection'],
+  ['enableAuditLog', "reading Discord's audit log"],
   ['enableNicknames', 'server nickname changes'],
   ['enableTimeouts', 'timeouts'],
   ['enableKicks', 'kicks'],
@@ -58,7 +60,7 @@ ${config.autonomousModeration ? '' : `- Mutations may return an exact, payload-b
   : '\n- Administrator grants are disabled. Do not suggest that they succeeded or can be bypassed.'}`;
   },
 
-  tools: [inspectionTool, ...memberTools, ...permissionTools],
+  tools: [inspectionTool, auditLogTool, ...memberTools, ...permissionTools],
 
   configSchema: [
     {
@@ -66,6 +68,24 @@ ${config.autonomousModeration ? '' : `- Mutations may return an exact, payload-b
       label: 'Inspect Discord state',
       type: 'boolean',
       description: 'Let controllers inspect members, roles, channels, bans and current permission flags.',
+    },
+    {
+      name: 'enableAuditLog',
+      label: "Read Discord's audit log",
+      type: 'boolean',
+      description:
+        'Let the bot answer who kicked, banned, timed out or changed something, from Discord\'s own record. '
+        + 'The bot needs the View Audit Log permission; without it the tool says so rather than guessing.',
+    },
+    {
+      name: 'auditLogLookbackHours',
+      label: 'Audit log look-back (hours)',
+      type: 'number',
+      min: 1,
+      max: 24 * 90,
+      description:
+        'How far back one read may reach. Entries older than this are not read at all, so an answer of "nothing" '
+        + 'means nothing in this window rather than nothing ever. Discord keeps 90 days.',
     },
     {
       name: 'enableNicknames',

@@ -615,3 +615,43 @@ describe('several searches at once', () => {
     expect(await recallForSearches([{ query: 'dogs' }], 'guild')).toEqual([]);
   });
 });
+
+describe('browsing by type', () => {
+  const typed = (text: string, types: string[], overrides: Partial<FactCandidate> = {}) =>
+    candidate(text, { types, ...overrides });
+
+  it('narrows the page to the chosen types', async () => {
+    await addFacts([typed('a rule', ['rule'])]);
+    await addFacts([typed('a decision', ['decision'], { messageIds: ['m2'] })]);
+    await addFacts([typed('something said', ['message'], { messageIds: ['m3'] })]);
+
+    const rules = await listFactsPage({ page: 1, pageSize: 10, types: ['rule'] });
+    expect(rules.facts.map((fact) => fact.text)).toEqual(['a rule']);
+    expect(rules.total).toBe(1);
+
+    const both = await listFactsPage({ page: 1, pageSize: 10, types: ['rule', 'decision'] });
+    expect(both.total).toBe(2);
+  });
+
+  it('matches a fact on any one of its several types', async () => {
+    await addFacts([typed('agreed out loud', ['decision', 'message'])]);
+    expect((await listFactsPage({ page: 1, pageSize: 10, types: ['message'] })).total).toBe(1);
+    expect((await listFactsPage({ page: 1, pageSize: 10, types: ['decision'] })).total).toBe(1);
+    expect((await listFactsPage({ page: 1, pageSize: 10, types: ['rule'] })).total).toBe(0);
+  });
+
+  // The same rule recall follows: hiding them would make the screen look empty
+  // until the cleanup pass has run, which is every fact that exists today.
+  it('still shows facts nobody has sorted, whichever type is chosen', async () => {
+    await addFacts([candidate('predates types entirely')]);
+    await addFacts([typed('a rule', ['rule'], { messageIds: ['m2'] })]);
+    const rules = await listFactsPage({ page: 1, pageSize: 10, types: ['rule'] });
+    expect(rules.facts.map((fact) => fact.text).sort()).toEqual(['a rule', 'predates types entirely']);
+  });
+
+  it('shows everything when no type is chosen', async () => {
+    await addFacts([typed('a rule', ['rule'])]);
+    await addFacts([candidate('untyped', { messageIds: ['m2'] })]);
+    expect((await listFactsPage({ page: 1, pageSize: 10, types: [] })).total).toBe(2);
+  });
+});

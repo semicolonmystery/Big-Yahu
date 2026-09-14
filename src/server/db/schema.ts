@@ -159,9 +159,17 @@ export const cachedMessages = sqliteTable('cached_messages', {
 });
 
 /** Discord users allowed to command the bot: adding and deleting facts on request. */
+/**
+ * Discord ids that may direct the bot.
+ *
+ * The id is all there is. There used to be a label beside it, typed by whoever
+ * added the controller, which meant the panel showed a name somebody had made
+ * up next to an id nobody could read. Names come from Discord now, resolved on
+ * the way out, so there is nothing here to go stale when somebody renames
+ * themselves.
+ */
 export const controllers = sqliteTable('controllers', {
   userId: text('user_id').primaryKey(),
-  label: text('label').notNull(),
   addedAt: integer('added_at').notNull(),
 });
 

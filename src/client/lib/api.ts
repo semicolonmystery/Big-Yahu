@@ -2,6 +2,7 @@ import type {
   AiTasksOverview,
   AiUsageSummary,
   ApiResponse,
+  CatalogEmbeddingModel,
   CatalogEndpoint,
   CatalogModel,
   AppSettings,
@@ -14,6 +15,7 @@ import type {
   FactAuthor,
   FactPage,
   FactTypesOverview,
+  GuildMember,
   FactTypeInput,
   FactWithSources,
   PluginSummary,
@@ -70,10 +72,11 @@ export const api = {
   stats: () => request<DashboardStats>('/stats'),
   aiUsage: () => request<AiUsageSummary>('/stats/usage'),
   searchFacts: (query: string, topK?: number) => post<FactWithSources[]>('/facts/search', { query, topK }),
-  listFacts: (params: { page?: number; pageSize?: number; authorId?: string } = {}) => {
+  listFacts: (params: { page?: number; pageSize?: number; authorId?: string; types?: string[] } = {}) => {
     const query = new URLSearchParams();
     if (params.page) query.set('page', String(params.page));
     if (params.pageSize) query.set('pageSize', String(params.pageSize));
+    if (params.types?.length) query.set('types', params.types.join(','));
     if (params.authorId) query.set('authorId', params.authorId);
     const suffix = query.toString();
     return request<FactPage>(`/facts${suffix ? `?${suffix}` : ''}`);
@@ -100,6 +103,7 @@ export const api = {
   setPluginSharedModels: (pluginId: string, useSharedModels: boolean) =>
     patch<AiTasksOverview>(`/ai-tasks/plugins/${pluginId}`, { useSharedModels }),
   aiTaskCatalog: (query: string) => request<CatalogModel[]>(`/ai-tasks/catalog?q=${encodeURIComponent(query)}`),
+  embeddingModels: () => request<CatalogEmbeddingModel[]>('/ai-tasks/catalog/embeddings'),
   modelHosts: (model: string) =>
     request<CatalogEndpoint[]>(`/ai-tasks/catalog/endpoints?model=${encodeURIComponent(model)}`),
 
@@ -119,7 +123,8 @@ export const api = {
   resetFactTypes: () => post<FactType[]>('/fact-types/reset'),
 
   listControllers: () => request<Controller[]>('/controllers'),
-  addController: (userId: string, label: string) => post<Controller>('/controllers', { userId, label }),
+  listPeople: () => request<{ people: GuildMember[]; botOnline: boolean }>('/people'),
+  addController: (userId: string) => post<Controller>('/controllers', { userId }),
   removeController: (userId: string) => del<{ userId: string }>(`/controllers/${userId}`),
 
   getSettings: () => request<AppSettings>('/settings'),

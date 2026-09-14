@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { lazy, Suspense } from 'react';
+import { ThemeProvider } from 'next-themes';
 import { useAuth } from '@/hooks/useAuth';
 import { AuthProvider } from '@/components/AuthProvider';
 import { SetupDialog } from '@/components/SetupDialog';
@@ -77,12 +78,23 @@ function AppContent() {
   return <AppShell />;
 }
 
+/**
+ * Light, dark, or the machine's own preference, remembered between visits.
+ *
+ * `attribute="class"` because the stylesheet's dark variant is written against
+ * `.dark` — `@custom-variant dark (&:is(.dark *))`, with a full parallel set of
+ * variables under it. Both were already there; nothing had ever provided the
+ * theme, which is why the toaster's own `useTheme` had been reading a default
+ * and doing nothing with it.
+ */
 function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-      <Toaster />
-    </AuthProvider>
+    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+      <AuthProvider>
+        <AppContent />
+        <Toaster />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 

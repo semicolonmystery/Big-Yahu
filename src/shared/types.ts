@@ -53,6 +53,13 @@ export interface FactWithSources extends Fact {
   sourceMessages: SourceMessage[];
   /** Display names for the `<@id>` mentions in `text`, for the admin panel only. */
   mentionNames: Record<string, string>;
+  /**
+   * Display names for everyone the fact records — whose messages it came from
+   * and who it is about — which is not the same set as the mentions in the text:
+   * an author never appears in it, and that is most of why the panel could not
+   * say where a fact had come from.
+   */
+  peopleNames: Record<string, string>;
 }
 
 export interface FactPage {
@@ -150,7 +157,6 @@ export interface ChannelPermission {
 
 export interface Controller {
   userId: string;
-  label: string;
   addedAt: number;
 }
 
@@ -394,4 +400,19 @@ export interface CleanupStatus {
   untyped: number;
   collection: string;
   job: EmbeddingStatus['job'];
+}
+
+export interface CatalogEmbeddingModel {
+  id: string;
+  name: string;
+  /** OpenRouter's blurb, which is the only place the widths a model supports are stated. */
+  description: string;
+  promptPrice: number | null;
+}
+
+export interface GuildMember {
+  id: string;
+  /** What the panel shows. The id is the storage key and is never displayed. */
+  name: string;
+  username: string | null;
 }

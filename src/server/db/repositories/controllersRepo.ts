@@ -11,10 +11,10 @@ export function isController(userId: string): boolean {
   return db.select().from(controllers).where(eq(controllers.userId, userId)).get() !== undefined;
 }
 
-export function addController(userId: string, label: string): Controller {
-  const row = { userId, label, addedAt: Date.now() };
-  db.insert(controllers).values(row).onConflictDoUpdate({ target: controllers.userId, set: { label } }).run();
-  return row;
+export function addController(userId: string): Controller {
+  const row = { userId, addedAt: Date.now() };
+  db.insert(controllers).values(row).onConflictDoNothing().run();
+  return db.select().from(controllers).where(eq(controllers.userId, userId)).get() ?? row;
 }
 
 export function removeController(userId: string): boolean {

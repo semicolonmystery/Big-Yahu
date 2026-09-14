@@ -25,6 +25,7 @@ const ROLE_ID = '600000000000000001';
 
 const EXPECTED_GATES = {
   inspect_discord: 'enableInspection',
+  read_audit_log: 'enableAuditLog',
   set_nickname: 'enableNicknames',
   timeout_member: 'enableTimeouts',
   kick_member: 'enableKicks',

@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { factCountsByPerson } from '../../db/repositories/factIndexRepo';
 import {
-  searchFacts, listFactsPage, ensureFactIndex, deleteFact } from '../../db/repositories/factsRepo';
+  searchFacts, listFactsPage, ensureFactIndex, deleteFact, peopleIn } from '../../db/repositories/factsRepo';
+import { factTypeIds } from '../../db/repositories/factTypesRepo';
 import { getMessages, getUsernames } from '../../db/repositories/cachedMessagesRepo';
 import { getSettings } from '../../db/repositories/settingsRepo';
 import { mentionedUserIds } from '@shared/discord';
 import { knownDisplayNames } from '../../bot/identity';
-import type { FactWithSources, SourceMessage, FactPage, FactAuthor } from '@shared/types';
+import type { Fact, FactWithSources, SourceMessage, FactPage, FactAuthor } from '@shared/types';
 
 export const factsRouter = Router();
 
@@ -47,11 +48,30 @@ function readAuthorId(value: unknown): string | undefined {
  */
 function resolveMentionNames(facts: { text: string }[]): Record<string, string>[] {
   const idsByFact = facts.map((fact) => mentionedUserIds(fact.text));
-  const allIds = idsByFact.flat();
+  return namesPerFact(idsByFact);
+}
+
+/** The same lookup for everyone a fact records, which the text does not always name. */
+function resolvePeopleNames(facts: Fact[]): Record<string, string>[] {
+  return namesPerFact(facts.map((fact) => peopleIn(fact)));
+}
+
+function namesPerFact(idsByFact: string[][]): Record<string, string>[] {
+  const allIds = [...new Set(idsByFact.flat())];
   const names = { ...knownDisplayNames(allIds), ...getUsernames(allIds) };
   return idsByFact.map((ids) =>
     Object.fromEntries(ids.filter((id) => names[id]).map((id) => [id, names[id]])),
   );
+}
+
+/** Only types that exist, so a hand-typed query cannot filter the screen into nothing. */
+function readTypes(value: unknown): string[] {
+  const raw = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
+  const known = new Set(factTypeIds());
+  return [...new Set(raw
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter((entry) => known.has(entry)))];
 }
 
 factsRouter.post('/search', async (req, res) => {
@@ -73,6 +93,7 @@ factsRouter.post('/search', async (req, res) => {
   const messages = getMessages(allMessageIds);
   const messagesById = new Map(messages.map((message) => [message.messageId, message]));
   const mentionNames = resolveMentionNames(facts);
+  const peopleNames = resolvePeopleNames(facts);
 
   const data: FactWithSources[] = facts.map((fact, i) => ({
     ...fact,
@@ -80,6 +101,7 @@ factsRouter.post('/search', async (req, res) => {
       .map((id) => messagesById.get(id))
       .filter((message): message is SourceMessage => message !== undefined),
     mentionNames: mentionNames[i],
+    peopleNames: peopleNames[i],
   }));
 
   res.json({ success: true, data });
@@ -99,13 +121,15 @@ factsRouter.get('/', async (req, res) => {
   }
 
   const authorId = readAuthorId(req.query.authorId);
+  const types = readTypes(req.query.types);
 
-  const { facts, total } = await listFactsPage({ page, pageSize, authorId });
+  const { facts, total } = await listFactsPage({ page, pageSize, authorId, types });
 
   const allMessageIds = [...new Set(facts.flatMap((fact) => fact.metadata.messageIds))];
   const messages = getMessages(allMessageIds);
   const messagesById = new Map(messages.map((message) => [message.messageId, message]));
   const mentionNames = resolveMentionNames(facts);
+  const peopleNames = resolvePeopleNames(facts);
 
   const data: FactWithSources[] = facts.map((fact, i) => ({
     ...fact,
@@ -114,6 +138,7 @@ factsRouter.get('/', async (req, res) => {
       .map((id) => messagesById.get(id))
       .filter((message): message is SourceMessage => message !== undefined),
     mentionNames: mentionNames[i],
+    peopleNames: peopleNames[i],
   }));
 
   const result: FactPage = { facts: data, total, page, pageSize };

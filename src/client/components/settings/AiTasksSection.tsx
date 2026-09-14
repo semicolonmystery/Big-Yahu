@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { ArrowDown, ArrowUp, ChevronsUpDown, GripVertical, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -36,55 +36,75 @@ function formatPrice(price: number | null): string {
   return `$${price >= 0.01 ? price.toFixed(2) : price.toFixed(3)}`;
 }
 
-function hostLabel(host: CatalogEndpoint): string {
-  const cached = host.cacheReadPrice === null ? '' : ` / ${formatPrice(host.cacheReadPrice)} cached`;
-  return `${host.providerName}: ${formatPrice(host.promptPrice)} in / ${formatPrice(host.completionPrice)} out${cached}`
-    + (host.timeOfDayPricing ? ', varies by time of day' : '')
-    + (host.healthy ? '' : ', degraded');
-}
-
 type Run = (action: () => Promise<AiTasksOverview>, success?: string) => Promise<void>;
 
 /**
- * Which host a row is pinned to. Hosts load when the picker opens, since most
- * visits to the page never change one. A host that cannot do what the task
- * needs is shown but cannot be picked, so the operator sees why it is not an option.
+ * Which host a row is pinned to.
+ *
+ * The slug is the label, exactly as it is stored and sent — `google-ai-studio/flex`,
+ * `deepseek`. It used to read as a provider name and a price table, which is
+ * pleasant to look at and useless for the one thing this control does: say which
+ * string a request is pinned to. Searching for the slug found nothing, and two
+ * hosts from the same provider were told apart only by their prices.
+ *
+ * A host that cannot do what the task needs is shown but cannot be picked, so
+ * the operator sees why it is not an option.
  */
 function UpstreamPicker({ task, entry, disabled, run }: { task: AiTaskView; entry: TaskModelView; disabled: boolean; run: Run }) {
   const [hosts, setHosts] = useState<CatalogEndpoint[] | null>(null);
 
-  const load = () => {
-    if (hosts) return;
-    api
-      .modelHosts(entry.model)
-      .then(setHosts)
-      .catch((err: unknown) => toast.error(err instanceof Error ? err.message : "Couldn't load the hosts"));
-  };
+  // Loaded when the row appears rather than when the dropdown opens. Opening a
+  // picker whose list is still empty meant the control reconciled its value
+  // against a list of one, and the answer arriving a moment later changed it
+  // underneath the operator.
+  useEffect(() => {
+    let cancelled = false;
+    api.modelHosts(entry.model)
+      .then((found) => { if (!cancelled) setHosts(found); })
+      .catch((err: unknown) => {
+        // A catalog that cannot be read must not stop the row being edited: the
+        // stored slug still shows, and it can still be cleared.
+        if (!cancelled) console.warn(`could not load hosts for ${entry.model}`, err);
+      });
+    return () => { cancelled = true; };
+  }, [entry.model]);
+
+  const items = useMemo(() => {
+    const listed = [
+      { value: ANY_HOST, label: 'Any host (OpenRouter chooses)' },
+      ...(hosts ?? []).map((host) => ({ value: host.tag, label: host.tag })),
+    ];
+    // What is stored may be a provider prefix rather than a whole tag — the
+    // server accepts `deepseek` for `deepseek/fp8` — so a stored value with no
+    // exact match is listed as itself rather than looking absent and being
+    // reconciled away.
+    if (entry.upstream && !listed.some((item) => item.value === entry.upstream)) {
+      listed.push({ value: entry.upstream, label: entry.upstream });
+    }
+    return listed;
+  }, [hosts, entry.upstream]);
 
   const current = entry.upstream || ANY_HOST;
-  const items = [
-    { value: ANY_HOST, label: 'Any host (OpenRouter chooses)' },
-    ...(hosts ?? []).map((host) => ({ value: host.tag, label: hostLabel(host) })),
-  ];
-  if (entry.upstream && !items.some((item) => item.value === entry.upstream)) {
-    items.push({ value: entry.upstream, label: entry.upstream });
-  }
 
   return (
     <Select
       items={items}
       value={current}
       disabled={disabled}
-      onOpenChange={(open) => {
-        if (open) load();
-      }}
-      onValueChange={(value) => {
+      onValueChange={(value, details) => {
+        // A denylist of one rather than an allowlist of the pressing kind.
+        // `none` is the only reason Base UI reports with a bare Event — the
+        // value settling for its own reasons rather than somebody choosing.
+        // Every other reason carries a real mouse or keyboard event, and
+        // `list-navigation` is a keyboard pick, so allowing only `item-press`
+        // would have quietly stopped this control working from the keyboard.
+        if (details.reason === 'none') return;
         if (typeof value !== 'string' || value === current) return;
         const upstream = value === ANY_HOST ? '' : value;
         void run(() => api.setTaskModelUpstream(task.id, entry.model, upstream), `${entry.model} pinned to ${upstream || 'any host'}`);
       }}
     >
-      <SelectTrigger size="sm" className="max-w-72" aria-label={`Host for ${entry.model}`}>
+      <SelectTrigger size="sm" className="max-w-72 font-mono" aria-label={`Host for ${entry.model}`}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent alignItemWithTrigger={false}>
@@ -93,8 +113,9 @@ function UpstreamPicker({ task, entry, disabled, run }: { task: AiTaskView; entr
           const unsuitable = host ? (task.usesTools && !host.tools) || (task.structured && !host.jsonMode) : false;
           return (
             <SelectItem key={item.value} value={item.value} disabled={unsuitable}>
-              {item.label}
+              <span className={item.value === ANY_HOST ? '' : 'font-mono'}>{item.label}</span>
               {unsuitable && ' (cannot do this task)'}
+              {host && !host.healthy && ' (degraded)'}
             </SelectItem>
           );
         })}

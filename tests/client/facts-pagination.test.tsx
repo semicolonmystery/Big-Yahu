@@ -9,9 +9,12 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 afterEach(cleanup);
 
-const fact = (id: string): FactWithSources => ({
-  id, text: `Fact ${id}`, distance: null, sourceMessages: [], mentionNames: {},
-  metadata: { channelId: 'channel', guildId: 'guild', authorIds: [], messageIds: [], referencedFactIds: [], source: 'auto', timePeriodStart: 1, timePeriodEnd: 1, createdAt: 1 },
+const fact = (id: string, over: Partial<FactWithSources['metadata']> = {}): FactWithSources => ({
+  id, text: `Fact ${id}`, distance: null, sourceMessages: [], mentionNames: {}, peopleNames: {},
+  metadata: {
+    channelId: 'channel', guildId: 'guild', authorIds: [], messageIds: [], referencedFactIds: [],
+    source: 'auto', timePeriodStart: 1, timePeriodEnd: 1, createdAt: 1, ...over,
+  },
 });
 
 describe('fact browsing after deletion', () => {

@@ -340,6 +340,77 @@ The prompt carries a single short example, deliberately: with a bank of them the
 
 `replyLanguage` (Settings) sets the language it defaults to, chosen from a searchable list of 47. If whoever tags it writes in a different language, it answers in theirs instead — the default only decides what it does absent a signal.
 
+### Browsing what the bot remembers
+
+The facts screen shows what a fact carries, not only what it says. Its types,
+with an explicit marker when it has none; the days it talks about, read out of
+its own text; when it was written down; and everyone it records — whose messages
+it came from as well as who it is about, which is a wider set than the mentions
+in the sentence and is why the panel could never say where a fact came from.
+
+The two dates are different things and it used to show neither. The span is when
+the fact is *about*; `stored` is when the bot wrote it down, and is not evidence
+of when anything happened — the distinction the writing prompts now spell out,
+and exactly what an operator needs when deciding whether a fact is wrong.
+
+Filtering by type sits beside the existing person filter, answered from the
+SQLite mirror like the rest of the page. A fact nobody has sorted comes back
+whichever types are chosen, the same rule recall follows: they are every fact
+that existed before types did, and hiding them would make the screen look empty
+until the cleanup pass has run.
+
+### Which host a row is pinned to
+
+The host picker shows the slug exactly as it is stored and sent —
+`google-ai-studio/flex`, `deepseek` — and nothing else. It used to read as a
+provider name and a price table, which is pleasant and useless for the one thing
+the control does: say which string a request is pinned to. Searching for a slug
+found nothing, and two hosts from one provider were told apart only by their
+prices.
+
+It also repinned rows on its own. Three things were wrong at once and all three
+are fixed: the list loaded when the dropdown opened, so the control reconciled
+its value against a list of one and the answer arriving a moment later changed it
+underneath the operator; a stored value that is a provider prefix rather than a
+whole tag — the server accepts `deepseek` for `deepseek/fp8` — looked absent; and
+any value change at all called the API. Hosts load with the row now, a stored
+slug with no exact match is listed as itself, and a change is acted on unless
+Base UI reports it with the one reason that is not a user gesture. Deliberately a
+denylist of one: `list-navigation` is a keyboard pick, and allowing only
+`item-press` would have quietly stopped the control working from the keyboard.
+
+### Light, dark, or whatever the machine says
+
+`next-themes` was already a dependency, the dark variant and a full parallel set
+of variables were already in the stylesheet, and the toaster already asked for
+the theme. Nothing had ever provided it, so the toaster read a default and there
+was no toggle at all. Wiring it up was the provider plus a control in the
+sidebar: `attribute="class"`, because the stylesheet is written against `.dark`.
+
+The icon follows what is on screen rather than what is stored, so "system" shows
+a sun or a moon depending on the machine. Both values are undefined until the
+theme resolves, which is the hydration guard and needs no flag of its own.
+
+### Reading Discord's own record
+
+The bot is regularly asked things no message can answer — who banned somebody,
+who deleted the channel, whether a kick was a kick or a leave — and guessing at
+those is exactly the confident invention the reply prompt spends paragraphs
+forbidding. `read_audit_log` reads Discord's audit log through the Discord Admin
+plugin: gated like every other capability there, controller-only unless
+autonomous moderation is on, and rechecked before it runs.
+
+It answers in Discord and nowhere else. There is no admin page, because Discord's
+own audit-log view already exists and is better than anything here would be.
+
+Everything comes back as `<@id>` mentions rather than names: the reply renders
+those into whatever people are called today, while a name captured in the log is
+whatever they were called at the time — stale, or a different person. The
+look-back is configured in the plugin, entries past it are not read at all, and
+an empty answer says which window it is about, since "nothing" and "nothing in
+the last week" are different answers. The bot needs View Audit Log; without it
+the tool reports Discord's refusal rather than working around it.
+
 ### Chroma is private to the compose network
 
 The bot reaches Chroma at `chromadb:8000`, resolved by Compose's own service
@@ -379,6 +450,14 @@ proxy` is on, so `req.ip` is whatever the caller's own header says, and a limite
 that believes the caller can be stepped around by changing it.
 
 ### Controllers
+
+Controllers are added by picking a person, not by typing a snowflake. An id is
+unreadable, so typing one was a transcription exercise with no feedback until it
+silently did nothing, and the label that used to sit beside it was a name
+somebody had made up — shown next to an id nobody could read. The id is still
+what is stored, because names change and ids do not, but it is never displayed:
+what Discord calls somebody today is what the panel says, resolved on every load
+from the gateway's own caches.
 
 Discord user IDs listed in Settings may direct the bot: tell it to remember
 something and it saves the fact, tell it to forget something and it finds it
@@ -1063,7 +1142,7 @@ does not queue or invoke AI.
 | Plugin dependencies | IMPL | npm install per plugin, plus the bot's shared modules |
 | Per-channel reply/read permissions | IMPL | reply defaults on, read defaults **off**; enforced in the handler and the scheduler |
 | Fact deletion (bot + web) | IMPL | `delete_fact` tool, `DELETE /api/facts/:id`, confirm dialog |
-| Browse facts, paginated + per-person filter | IMPL | matches whoever a fact is about as well as whoever said it |
+| Browse facts, paginated, by person and by type | IMPL | each fact shows its types, the days it is about, when it was stored and everyone it records; the person filter matches whoever a fact is about as well as whoever said it, and an unsorted fact comes back under every type |
 | Single-guild scoping | IMPL | required in bot mode; missing/foreign guilds rejected before work |
 | Reply-to triggers a response | IMPL | replying to a bot message works like an @mention |
 | Typing indicator while replying | IMPL | refcounted per channel |
@@ -1078,6 +1157,12 @@ does not queue or invoke AI.
 | A spoken tool name is never posted | IMPL | the model typed "stay silent" into the channel instead of calling the tool, which is why that decision is a field now. A reply that is nothing but a silence phrase or a tool's name still sends nothing rather than posting it |
 | Long jobs are watched, not sampled | IMPL | one `useJobPolling` hook behind both panels: polling follows the status, so it starts the moment a job does and stops when it finishes. The self-rescheduling timer it replaced ended whenever the status was idle and was never restarted by a button, so a job that had just begun showed one frame and looked stuck |
 | One-off cleanup pass over old facts | IMPL | `ai/factCleanup.ts` on the re-embed's job runner, which now carries a `kind`. Rewrites a bundle at a time under the current rules, in place and re-embedded in the same step; writes nothing for a fact it did not change; can ask once for the messages behind one; a failed bundle changes nothing and the job moves on. Operator-run from Settings over chosen types, never on its own |
+| Host picker shows the slug it stores | IMPL | exact tags in the list and when searching, no display name and no price; hosts load with the row, a prefix-form slug is kept as itself, and only a real user gesture repins a row |
+| Embedding dimensions are a list | IMPL | the standard widths rather than a free number, with the model's own catalog description beside it — OpenRouter exposes no structured dimensions field, only prose |
+| Settings as a grid | IMPL | two and three columns on wider screens, `items-start`, with the model tabs, the fact types and the message textareas spanning the full width |
+| Themes | IMPL | system, light and dark from the sidebar, `next-themes` against the `.dark` variant the stylesheet already had; sonner's own `useTheme` starts working as a side effect |
+| Controllers by name | IMPL | picked from the guild roster rather than typed as a snowflake; `label` dropped, and no user id shown anywhere in the UI |
+| `read_audit_log` | IMPL | Discord Admin gains a controller-gated read of the audit log with a configurable look-back, answering in Discord only; executor and target come back as mentions |
 | Reasoning on every task | IMPL | effort is the task's own setting for structured calls as well as the reply, default `none`; an endpoint that refuses to have it switched off is asked again without the field and remembered, rather than killing the reply |
 | Anti-fabrication (prompt + mention/link sanitising) | IMPL | strips unknown channels, users and message links |
 | Reply voice (vulgar, room-matching, light gen-z) | IMPL | in the reply system instruction |

@@ -1,6 +1,7 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import type { AppSettings, EmbeddingStatus } from '@shared/types';
+import type { AppSettings, CatalogEmbeddingModel, EmbeddingStatus } from '@shared/types';
+import { EMBEDDING_DIMENSIONS } from '@shared/constants';
 import { api } from '@/lib/api';
 import { useJobPolling } from '@/lib/useJobPolling';
 import { Label } from '@/components/ui/label';
@@ -10,6 +11,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -37,6 +39,20 @@ export function EmbeddingSection() {
   }, []);
 
   const { value: status, error, refresh } = useJobPolling(load, isRunning, POLL_MS);
+
+  // The catalog says nothing structured about dimensions, so the widths offered
+  // are the usual ones and the model's own description is shown beside them —
+  // that prose is where a model actually states what it supports.
+  const [models, setModels] = useState<CatalogEmbeddingModel[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api.embeddingModels()
+      .then((found) => { if (!cancelled) setModels(found); })
+      .catch(() => { /* The widths still work; only the hint is missing. */ });
+    return () => { cancelled = true; };
+  }, []);
+  const chosenModel = models?.find((model) => model.id === draft?.embeddingModel.trim());
+  const widths = EMBEDDING_DIMENSIONS;
 
   const changed = Boolean(
     settings && draft
@@ -143,20 +159,38 @@ export function EmbeddingSection() {
                   value={draft.embeddingModel}
                   onChange={(event) => setDraft({ ...draft, embeddingModel: event.target.value })}
                 />
-                <p className="text-xs text-muted-foreground">An OpenRouter embedding model id.</p>
+                <p className="text-xs text-muted-foreground">
+                  An OpenRouter embedding model id.
+                  {chosenModel?.description
+                    ? ` ${chosenModel.description.slice(0, 300)}`
+                    : ' OpenRouter does not say which widths a model supports in a form this can read, so the'
+                      + ' list beside it is the usual ones — check the model before picking an unusual one.'}
+                </p>
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="embeddingDimensions">Dimensions</Label>
-                <Input
-                  id="embeddingDimensions"
-                  type="number"
-                  min={128}
-                  max={3072}
-                  value={draft.embeddingDimensions}
-                  onChange={(event) => setDraft({ ...draft, embeddingDimensions: Number(event.target.value) })}
-                />
+                <Select
+                  items={widths.map((width) => ({ value: String(width), label: String(width) }))}
+                  value={String(draft.embeddingDimensions)}
+                  onValueChange={(value, details) => {
+                    if (details.reason === 'none' || typeof value !== 'string') return;
+                    setDraft({ ...draft, embeddingDimensions: Number(value) });
+                  }}
+                >
+                  <SelectTrigger id="embeddingDimensions" aria-label="Dimensions">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {widths.map((width) => (
+                      <SelectItem key={width} value={String(width)}>{width}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">
                   Narrower is cheaper to store and search; wider retrieves a little better.
+                  {chosenModel?.description
+                    ? ' What this model actually supports is in its description below.'
+                    : ''}
                 </p>
               </div>
             </div>

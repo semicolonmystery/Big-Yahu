@@ -1,5 +1,5 @@
 import { ActivityType, MessageType } from 'discord.js';
-import type { Message, TextBasedChannel } from 'discord.js';
+import type { Guild, Message, TextBasedChannel } from 'discord.js';
 import { structured, UnreadableAnswerError } from './structured';
 import { factsMaterial, messagesMaterial, renderMaterial } from './material';
 import type { JsonSchema } from './jsonSchema';
@@ -215,17 +215,14 @@ export interface GuildPerson {
   doing?: string;
 }
 
-export function listGuildPeople(message: Message, nameContains?: string): {
-  people: GuildPerson[];
-  visibleOnly: true;
-  matching?: string;
-  shown?: number;
-  total?: number;
-} {
-  const guild = message.guild;
-  if (!guild) return { people: [], visibleOnly: true };
-
-  const selfId = message.client.user?.id;
+/**
+ * Everyone the bot can currently see in a guild, presences first and the member
+ * cache behind them.
+ *
+ * Takes a `Guild` rather than a `Message` so the admin panel can ask too — the
+ * controllers list needs names, and it has no Discord message in hand.
+ */
+export function guildPeople(guild: Guild, selfId?: string, nameContains?: string): GuildPerson[] {
   const found = new Map<string, GuildPerson>();
 
   for (const [id, presence] of guild.presences.cache) {
@@ -250,11 +247,23 @@ export function listGuildPeople(message: Message, nameContains?: string): {
   }
 
   const needle = nameContains?.trim().toLowerCase();
-  let listed = [...found.values()];
-  if (needle) {
-    listed = listed.filter((person) => `${person.name} ${person.username ?? ''}`.toLowerCase().includes(needle));
-  }
+  const listed = [...found.values()];
+  return needle
+    ? listed.filter((person) => `${person.name} ${person.username ?? ''}`.toLowerCase().includes(needle))
+    : listed;
+}
 
+export function listGuildPeople(message: Message, nameContains?: string): {
+  people: GuildPerson[];
+  visibleOnly: true;
+  matching?: string;
+  shown?: number;
+  total?: number;
+} {
+  const guild = message.guild;
+  if (!guild) return { people: [], visibleOnly: true };
+
+  const listed = guildPeople(guild, message.client.user?.id, nameContains);
   const capped = listed.slice(0, PEOPLE_LISTING_CAP);
   return {
     people: capped,

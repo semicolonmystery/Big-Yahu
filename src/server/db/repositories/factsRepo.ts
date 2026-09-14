@@ -559,6 +559,7 @@ export async function listFactsPage(options: {
   page: number;
   pageSize: number;
   authorId?: string;
+  types?: string[];
 }): Promise<{ facts: Fact[]; total: number }> {
   await ensureFactIndex();
   const { ids, total } = pageOfFactIds(options);

@@ -1,5 +1,8 @@
 export interface DiscordAdminConfig {
   enableInspection: boolean;
+  enableAuditLog: boolean;
+  /** How far back a single audit-log read may reach, in hours. */
+  auditLogLookbackHours: number;
   enableNicknames: boolean;
   enableTimeouts: boolean;
   enableKicks: boolean;
@@ -15,11 +18,16 @@ export interface DiscordAdminConfig {
 
 export type DiscordAdminFeature = Exclude<
   keyof DiscordAdminConfig,
-  'allowAdministratorPermission' | 'requireMutationConfirmation' | 'autonomousModeration'
+  'allowAdministratorPermission' | 'requireMutationConfirmation' | 'autonomousModeration' | 'auditLogLookbackHours'
 >;
 
 export const DEFAULT_CONFIG: DiscordAdminConfig = {
   enableInspection: true,
+  // On with the rest of them. The plugin as a whole is off until an operator
+  // enables it, and once it is, reading a log is the least invasive thing here —
+  // strictly less than the kicks and bans that default on beside it.
+  enableAuditLog: true,
+  auditLogLookbackHours: 24 * 7,
   enableNicknames: true,
   enableTimeouts: true,
   enableKicks: true,
@@ -41,11 +49,21 @@ export const DEFAULT_CONFIG: DiscordAdminConfig = {
 
 /** Saved config predates new fields after an update, so defaults are merged every time it is read. */
 export function withDefaults(config: Partial<DiscordAdminConfig>): DiscordAdminConfig {
-  const boolean = (key: keyof DiscordAdminConfig): boolean =>
+  const boolean = (key: DiscordAdminFeature | 'allowAdministratorPermission' | 'requireMutationConfirmation'
+    | 'autonomousModeration'): boolean =>
     typeof config[key] === 'boolean' ? config[key] : DEFAULT_CONFIG[key];
+
+  const whole = (key: 'auditLogLookbackHours', min: number, max: number): number => {
+    const value = config[key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_CONFIG[key];
+    return Math.min(max, Math.max(min, Math.round(value)));
+  };
 
   return {
     enableInspection: boolean('enableInspection'),
+    enableAuditLog: boolean('enableAuditLog'),
+    // Discord keeps 90 days of audit log, so asking for more is asking for all of it.
+    auditLogLookbackHours: whole('auditLogLookbackHours', 1, 24 * 90),
     enableNicknames: boolean('enableNicknames'),
     enableTimeouts: boolean('enableTimeouts'),
     enableKicks: boolean('enableKicks'),

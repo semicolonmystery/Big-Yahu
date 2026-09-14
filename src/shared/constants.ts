@@ -155,3 +155,12 @@ export function formatNow(timezone: string, at: Date = new Date()): string {
  */
 export const DEFAULT_BUNDLE_SIZE = 12;
 export const MAX_BUNDLE_SIZE = 50;
+
+/**
+ * The widths an embedding model is normally shortened to.
+ *
+ * A fixed list rather than something read from the catalog: OpenRouter exposes
+ * no structured dimensions field, and the only statement of what a model
+ * supports is prose in its description — which the panel shows beside this.
+ */
+export const EMBEDDING_DIMENSIONS = [256, 512, 768, 1024, 1536, 2048, 3072] as const;
