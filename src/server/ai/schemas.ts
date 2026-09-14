@@ -77,7 +77,67 @@ export const extractionSchemaFor = (typeIds: string[]): JsonSchema => ({
 
 const DAY_MONTH_YEAR = '^(\\d{1,2}\\.\\d{1,2}\\.\\d{4})?$';
 
-export const topicSchema: JsonSchema = {
+/** More searches than this in one call is a fishing expedition, not a question. */
+export const MAX_TOPIC_SEARCHES = 4;
+
+/**
+ * One thing to look for in memory.
+ *
+ * The topic call used to produce exactly one of these, so a reply got one
+ * recall — which meant a question touching two people and a rule had to be
+ * flattened into a single embedding and hope. Several searches cost several
+ * embeddings and no extra chat calls, because `embedWith` takes an array.
+ */
+const searchShape = (typeIds: string[]): JsonSchema => ({
+  type: 'object',
+  properties: {
+    query: {
+      type: 'string',
+      description:
+        'What to search for, written the way a stored fact is written: one or two plain statements of the '
+        + 'thing being looked for, never a question, in English. Keep every name, place and specific term '
+        + 'exactly as written; they carry most of the meaning. Leave mentions and dates out of it — they go in '
+        + 'people, channels, dateFrom and dateTo. Add nothing that was not asked for, and never answer the question.',
+    },
+    type: {
+      type: 'string',
+      ...(typeIds.length > 0 ? { enum: ['', ...typeIds] } : {}),
+      description:
+        'Which kind of fact to search, from the `factTypes` list you were given — read what each one says it '
+        + 'is for. A search naming a type returns only that kind, which is the point: asking for "message" '
+        + 'finds what somebody said, asking for "rule" finds what the rule is, and neither buries the other. '
+        + 'Leave it empty to search everything at once, which is right when the question fits no one kind.',
+    },
+    people: {
+      type: 'array',
+      items: { type: 'string' },
+      description:
+        'The Discord user ids this search is about: the digits from their <@ID> mention. Empty when it is '
+        + 'about nobody in particular.',
+    },
+    channels: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'The ids of any channels this search is about: the digits from <#ID>. Empty when none.',
+    },
+    dateFrom: {
+      type: 'string',
+      pattern: DAY_MONTH_YEAR,
+      description:
+        'When this search is about a particular time, its first day as day.month.year, like "3.10.2026", '
+        + 'worked out from the message timestamps. Empty otherwise.',
+    },
+    dateTo: {
+      type: 'string',
+      pattern: DAY_MONTH_YEAR,
+      description: 'The last day of that time, as day.month.year. The same as dateFrom for a single day. Empty otherwise.',
+    },
+  },
+  required: ['query', 'type', 'people', 'channels', 'dateFrom', 'dateTo'],
+  additionalProperties: false,
+});
+
+export const topicSchemaFor = (typeIds: string[]): JsonSchema => ({
   type: 'object',
   properties: {
     coreTopic: {
@@ -92,38 +152,16 @@ export const topicSchema: JsonSchema = {
         'What the person who tagged the bot is actually asking for. Name anyone involved both ways: '
         + 'their name and their <@ID> mention.',
     },
-    searchQuery: {
-      type: 'string',
-      description:
-        'What to search stored memory for, written the way a stored fact is written: one or two plain '
-        + 'statements of the thing being looked for, never a question, in English. Keep every name, place and '
-        + 'specific term exactly as written; they carry most of the meaning. Leave mentions and dates out of it — '
-        + 'they go in people, channels, dateFrom and dateTo. Add nothing that was not asked for, and do not '
-        + 'answer the question.',
-    },
-    people: {
+    searches: {
       type: 'array',
-      items: { type: 'string' },
+      items: searchShape(typeIds),
       description:
-        'The Discord user ids of everyone the question is about: the digits from their <@ID> mention. '
-        + 'Empty when it is about nobody in particular.',
-    },
-    channels: {
-      type: 'array',
-      items: { type: 'string' },
-      description: 'The ids of any channels the question is about: the digits from <#ID>. Empty when none.',
-    },
-    dateFrom: {
-      type: 'string',
-      pattern: DAY_MONTH_YEAR,
-      description:
-        'When the question is about a particular time, its first day as day.month.year, like "3.10.2026", '
-        + 'worked out from the message timestamps. Empty otherwise.',
-    },
-    dateTo: {
-      type: 'string',
-      pattern: DAY_MONTH_YEAR,
-      description: 'The last day of that time, as day.month.year. The same as dateFrom for a single day. Empty otherwise.',
+        `Everything worth looking up before answering, as separate searches — at most ${MAX_TOPIC_SEARCHES}, and `
+        + 'anything past that is dropped. Split the question rather than flattening it: one search per person '
+        + 'it is about, and a separate one per kind of fact, so "what did Alice and Bob say about the server '
+        + 'rules" is a message search naming Alice, a message search naming Bob, and a rule search about the '
+        + 'server. They are all run, and the bot is given everything they find. An empty array is right only '
+        + 'when nothing needs remembering at all.',
     },
     staySilent: {
       type: 'boolean',
@@ -145,12 +183,29 @@ export const topicSchema: JsonSchema = {
         + 'nothing is missing.',
     },
   },
-  required: [
-    'coreTopic', 'whatTaggingMessageIsAbout', 'searchQuery', 'people', 'channels', 'dateFrom', 'dateTo',
-    'staySilent', 'needsMoreContext', 'contextHint',
-  ],
+  required: ['coreTopic', 'whatTaggingMessageIsAbout', 'searches', 'staySilent', 'needsMoreContext', 'contextHint'],
   additionalProperties: false,
-};
+});
+
+/** One search as the model asked for it, before the host bounds it. */
+export interface FactSearch {
+  query: string;
+  type: string;
+  people: string[];
+  channels: string[];
+  dateFrom: string;
+  dateTo: string;
+}
+
+export interface TopicResult {
+  coreTopic: string;
+  whatTaggingMessageIsAbout: string;
+  searches: FactSearch[];
+  /** Send nothing at all. Decided here, as a field, rather than by the reply calling a tool. */
+  staySilent: boolean;
+  needsMoreContext: boolean;
+  contextHint: string;
+}
 
 export interface ExtractedFact {
   text: string;
@@ -165,49 +220,77 @@ export interface ExtractionResult {
   contextHint: string;
 }
 
-export interface TopicResult {
-  coreTopic: string;
-  whatTaggingMessageIsAbout: string;
-  searchQuery: string;
-  people: string[];
-  channels: string[];
-  dateFrom: string;
-  dateTo: string;
-  /** Send nothing at all. Decided here, as a field, rather than by the reply calling a tool. */
-  staySilent: boolean;
-  needsMoreContext: boolean;
-  contextHint: string;
-}
 
-export const requestMoreContextDeclaration: ToolDeclaration = {
-  name: 'request_more_context',
+export const readHistoryDeclaration: ToolDeclaration = {
+  name: 'read_history',
   description:
-    'Ask for older messages from this channel and more stored facts before you answer. ' +
-    'Call this when the question depends on something said earlier than what you can see. ' +
-    'Never guess at what someone said — if it is not in front of you, ask for more or say you do not have it.',
+    'Read older messages from this channel, further back than the ones you can see. ' +
+    'Call this when the question depends on something said earlier than your window. ' +
+    'It reads messages and nothing else — to look something up in memory, use search_facts. ' +
+    'Never guess at what someone said: if it is not in front of you, read further back or say you do not have it.',
   parameters: {
     type: 'object',
     properties: {
       lookingFor: {
         type: 'string',
-        description:
-          'What you need to find, written the way a stored fact would say it: a plain statement, not a '
-          + 'question, like "Someone <@123456> said something about the trip". It is used to search stored facts. '
-          + 'Name every person both ways — their name as people say it and their <@ID> mention. Stored facts '
-          + 'refer to people by ID, while the conversation refers to them by name, so a search carrying only one '
-          + 'of the two finds half of what is there.',
-      },
-      people: {
-        type: 'array',
-        items: { type: 'string' },
-        description:
-          'The Discord ids of anyone it is about — the digits from their <@ID> mention. Memory knows who each '
-          + 'fact concerns, so naming them here finds what is about them even when the wording differs.',
+        description: 'What you are hoping to find back there, in one short line. For the logs; it does not filter anything.',
       },
     },
     required: ['lookingFor'],
   },
 };
+
+export const searchFactsDeclarationFor = (typeIds: string[]): ToolDeclaration => ({
+  name: 'search_facts',
+  description:
+    'Look things up in your memory. Give every search you want in one call — they all run and you get ' +
+    'everything they find, so asking for three things at once costs no more round trips than asking for one. ' +
+    'Use it when what you were handed does not cover the question. It searches stored facts, not messages: ' +
+    'for older messages in this channel use read_history.',
+  parameters: {
+    type: 'object',
+    properties: {
+      searches: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description:
+                'What to find, written the way a stored fact would say it: a plain statement, not a question, '
+                + 'like "Someone <@123456> said something about the trip". Name every person both ways — their '
+                + 'name as people say it and their <@ID> mention. Stored facts refer to people by ID while the '
+                + 'conversation refers to them by name, so a search carrying only one of the two finds half of '
+                + 'what is there.',
+            },
+            type: {
+              type: 'string',
+              ...(typeIds.length > 0 ? { enum: ['', ...typeIds] } : {}),
+              description:
+                'Which kind of fact to look in, from the `factTypes` list you were given. A search naming a '
+                + 'type returns only that kind, which is how asking for a rule does not come back as eight '
+                + 'things somebody said. Empty searches everything.',
+            },
+            people: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'The Discord ids this search is about — the digits from their <@ID> mention. Memory knows who '
+                + 'each fact concerns, so naming them finds what is about them even when the wording differs.',
+            },
+          },
+          required: ['query', 'type', 'people'],
+          additionalProperties: false,
+        },
+        description: `The searches to run, at most ${MAX_TOPIC_SEARCHES}. Split the question rather than flattening it: `
+          + 'one per person it is about, and a separate one per kind of fact.',
+      },
+    },
+    required: ['searches'],
+  },
+});
+
 
 export const listPeopleDeclaration: ToolDeclaration = {
   name: 'list_people',
@@ -216,7 +299,7 @@ export const listPeopleDeclaration: ToolDeclaration = {
     + 'Call this when you are asked about somebody who is not in the conversation in front of you — who they '
     + 'are, whether they are around, what they are playing — or when you need the id behind a name someone '
     + 'typed as plain text. It does not read messages and cannot tell you what anyone said; for that, use '
-    + 'request_more_context instead. The list is everyone visible, not the full membership, so somebody '
+    + 'read_history or search_facts instead. The list is everyone visible, not the full membership, so somebody '
     + 'missing from it is not proof they are not in the server.',
   parameters: {
     type: 'object',
@@ -237,7 +320,7 @@ export const readChannelDeclaration: ToolDeclaration = {
     'Read the recent messages of another channel in this server. Reach for it when what you are asked '
     + 'about happened somewhere else — somebody points at a channel, or asks what is going on in one. '
     + 'Only pass a channel id you were actually given; the channels you may read are listed for you. '
-    + 'For older messages in the channel you are already in, use request_more_context instead.',
+    + 'For older messages in the channel you are already in, use read_history instead.',
   parameters: {
     type: 'object',
     properties: {

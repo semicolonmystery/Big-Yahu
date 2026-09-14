@@ -15,11 +15,14 @@ import {
   listPeopleDeclaration,
   readChannelDeclaration,
   replyToDeclaration,
-  requestMoreContextDeclaration,
+  MAX_TOPIC_SEARCHES,
+  readHistoryDeclaration,
+  searchFactsDeclarationFor,
   saveFactDeclarationFor,
 } from './schemas';
 import { resolveReadableChannel } from '../bot/channelAccess';
-import { addFacts, deleteFact, recallFacts } from '../db/repositories/factsRepo';
+import { addFacts, deleteFact, recallFacts, recallForSearches } from '../db/repositories/factsRepo';
+import type { FactSearchRequest } from '../db/repositories/factsRepo';
 import { cacheMessages, getMessages } from '../db/repositories/cachedMessagesRepo';
 import { getSettings } from '../db/repositories/settingsRepo';
 import { canExtractFrom } from '../db/repositories/channelSettingsRepo';
@@ -158,6 +161,26 @@ function looksLikeToolNarration(text: string): boolean {
 const HOST_EFFECT_TOOLS = new Set(['save_fact', 'delete_fact', 'reply_to']);
 
 /** Discord ids a tool named, ignoring anything that is not one. */
+/**
+ * The searches a `search_facts` call asked for, bounded and cleaned.
+ *
+ * Capped at the same number the topic call is, because a model given an array
+ * will happily fill it, and each entry is an embedding. A type nobody defined is
+ * dropped rather than filtering the search down to nothing.
+ */
+function readSearches(value: unknown): FactSearchRequest[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+    .map((entry) => ({
+      query: typeof entry.query === 'string' ? entry.query.trim() : '',
+      type: knownTypes([entry.type])[0] ?? '',
+      people: readPeople(entry.people),
+    }))
+    .filter((search) => search.query)
+    .slice(0, MAX_TOPIC_SEARCHES);
+}
+
 function readPeople(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string' && /^\d{5,}$/.test(entry)) : [];
 }
@@ -216,6 +239,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
 
   let olderMessages: WindowMessage[] = [];
   let contextRequests = 0;
+  let factSearches = 0;
   const savedFactIds: string[] = [];
   const deletedFactIds: string[] = [];
   let replyToMessageId: string | null = null;
@@ -260,6 +284,8 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
   // the model is going round rather than answering.
   let peopleListings = 0;
   const MAX_PEOPLE_LISTINGS = 2;
+  // Each is several embeddings, so it is bounded like every other paid loop here.
+  const MAX_FACT_SEARCHES = 3;
   // A turn that says nothing at all and calls nothing. Rare, and not a decision.
   let emptyTurns = 0;
   const MAX_EMPTY_TURNS = 2;
@@ -452,7 +478,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     const declarations: ToolDeclaration[] = [replyToDeclaration];
     if (canExtractFrom(context.channelId)) declarations.push(saveFactDeclarationFor(typeIds), deleteFactDeclaration);
     // Keep declarations present for tool calls already in conversation history.
-    declarations.push(requestMoreContextDeclaration, listPeopleDeclaration, readChannelDeclaration,
+    declarations.push(readHistoryDeclaration, searchFactsDeclarationFor(typeIds), listPeopleDeclaration, readChannelDeclaration,
       ...pluginTools.map((tool) => tool.declaration));
     const answer = await chat('reply', {
       system: draft.systemInstruction,
@@ -512,7 +538,7 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
           const result = await applyTurnCalls([call]);
           responses.set(call, result[name] ?? { error: 'Invalid tool arguments.' });
           if (name === 'save_fact' && result[name]?.saved !== true) saveFailed = true;
-        } else if (name === 'request_more_context') {
+        } else if (name === 'read_history') {
           if (contextRequests >= maxDepth) { responses.set(call, { error: 'History budget exhausted.' }); continue; }
           contextRequests += 1;
           needsResult = true;
@@ -530,27 +556,34 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
             channelByMessageId.set(message.id, context.channelId);
             for (const id of mentionedUserIds(message.content)) knownUserIds.add(id);
           }
-          const lookingFor = typeof call.args.lookingFor === 'string' ? call.args.lookingFor : '';
-          const newFacts = lookingFor.trim()
-            ? (await recallFacts({
-              query: lookingFor,
-              topK: settings.factSearchTopK,
-              guildId: context.guildId,
-              people: readPeople(call.args.people),
-            })).filter((fact) => canExtractFrom(fact.metadata.channelId) && !knownFactIds.has(fact.id)) : [];
+          responses.set(call, {
+            olderMessages: messagesMaterial(fetched),
+            note: contextRequests >= maxDepth ? `This was the final history batch. ${REPLY_NOW}` : REPLY_NOW,
+          });
+        } else if (name === 'search_facts') {
+          if (factSearches >= MAX_FACT_SEARCHES) { responses.set(call, { error: 'Memory search budget exhausted.' }); continue; }
+          factSearches += 1;
+          needsResult = true;
+          // Every search in the call runs, and they share one embedding request,
+          // so asking for three things costs no more round trips than one.
+          const asked = readSearches(call.args.searches);
+          const newFacts = asked.length === 0 ? [] : (await recallForSearches(asked, context.guildId))
+            .filter((fact) => canExtractFrom(fact.metadata.channelId) && !knownFactIds.has(fact.id));
           for (const fact of newFacts) knownFactIds.add(fact.id);
           const sources = getMessages(newFacts.flatMap((fact) => fact.metadata.messageIds))
             .filter((source) => source.guildId === context.guildId && canExtractFrom(source.channelId));
           for (const source of sources) {
-      knownMessageIds.add(source.messageId);
-      channelByMessageId.set(source.messageId, source.channelId);
-      knownUserIds.add(source.authorId);
-    }
+            knownMessageIds.add(source.messageId);
+            channelByMessageId.set(source.messageId, source.channelId);
+            knownUserIds.add(source.authorId);
+          }
           for (const fact of newFacts) for (const id of mentionedUserIds(fact.text)) knownUserIds.add(id);
           responses.set(call, {
-            olderMessages: messagesMaterial(fetched),
+            ...(asked.length === 0 ? { error: 'Every search was empty, so nothing was looked up.' } : {}),
             additionalFacts: factsMaterial(newFacts, sources),
-            note: contextRequests >= maxDepth ? `This was the final history batch. ${REPLY_NOW}` : REPLY_NOW,
+            ...(asked.length > 0 && newFacts.length === 0
+              ? { note: `Nothing new matched any of those. ${REPLY_NOW}` }
+              : { note: REPLY_NOW }),
           });
         } else if (name === 'list_people') {
           if (peopleListings >= MAX_PEOPLE_LISTINGS) { responses.set(call, { error: 'People listing budget exhausted.' }); continue; }

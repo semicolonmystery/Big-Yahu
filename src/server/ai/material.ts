@@ -77,12 +77,18 @@ export interface MaterialFact {
   text: string;
   /** What kinds of thing it is. Absent means nobody has sorted it yet. */
   types?: string[];
+  /** Which of the searches turned it up, so a rule hit is not read as something somebody said. */
+  foundBy?: string[];
   /** The messages it came from, where they are still cached. */
   sources?: MaterialSource[];
   notes?: string[];
 }
 
-export function factsMaterial(facts: Fact[], sourceMessages: SourceMessage[] = [], notes?: Map<string, string[]>): MaterialFact[] {
+export function factsMaterial(
+  facts: Array<Fact & { foundBy?: string[] }>,
+  sourceMessages: SourceMessage[] = [],
+  notes?: Map<string, string[]>,
+): MaterialFact[] {
   const byId = new Map(sourceMessages.map((message) => [message.messageId, message]));
   return facts.map((fact) => {
     const sources = fact.metadata.messageIds
@@ -101,6 +107,7 @@ export function factsMaterial(facts: Fact[], sourceMessages: SourceMessage[] = [
       channelId: fact.metadata.channelId,
       text: fact.text,
       ...(fact.metadata.types?.length ? { types: fact.metadata.types } : {}),
+      ...(fact.foundBy?.length ? { foundBy: fact.foundBy } : {}),
       ...(sources.length > 0 ? { sources } : {}),
       ...(factNotes?.length ? { notes: factNotes } : {}),
     };

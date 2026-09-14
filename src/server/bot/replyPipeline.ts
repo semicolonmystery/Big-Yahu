@@ -17,7 +17,7 @@ import { readableChannelRoster, resolveReadableChannel } from './channelAccess';
 import { BillingError, OverloadedError } from '../ai/errors';
 import { AIRequestBudgetError, withAIRequestBudget } from '../ai/requestBudget';
 import { buildReplyInstruction } from '../ai/prompts/build';
-import { recallFacts } from '../db/repositories/factsRepo';
+import { recallForSearches } from '../db/repositories/factsRepo';
 import { isController } from '../db/repositories/controllersRepo';
 import { getMessages, cacheMessages } from '../db/repositories/cachedMessagesRepo';
 import { logReply } from '../db/repositories/replyLogRepo';
@@ -240,15 +240,14 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
   // The topic call worked out what to look for and who and when it is about, so
   // recall matches the people and the days exactly and searches on the meaning
   // of the rest — rather than hoping an embedding noticed an id.
-  const retrievedFacts = (await recallFacts({
-    query: topic.searchQuery || topic.coreTopic,
-    topK: settings.factSearchTopK,
+  const retrievedFacts = (await recallForSearches(
+    // A question about two people and a rule is three searches, and flattening
+    // it into one embedding is why recall used to return the nearest thing to an
+    // average of them. Falling back to the topic keeps a model that asked for
+    // nothing from searching nothing.
+    topic.searches.length > 0 ? topic.searches : [{ query: topic.coreTopic, type: '' }],
     guildId,
-    people: topic.people,
-    channels: topic.channels,
-    dateFrom: topic.dateFrom,
-    dateTo: topic.dateTo,
-  })).filter((fact) => canExtractFrom(fact.metadata.channelId));
+  )).filter((fact) => canExtractFrom(fact.metadata.channelId));
   const sourceMessages = getMessages(retrievedFacts.flatMap((fact) => fact.metadata.messageIds))
     .filter((source) => source.guildId === guildId && canExtractFrom(source.channelId));
 

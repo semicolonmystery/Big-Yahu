@@ -2,8 +2,9 @@ import type { Message } from 'discord.js';
 import { markHostFailures, runEscalatableExtraction, windowMessagesWithAttachments } from './context';
 import type { TextAttachmentBudget } from '../bot/textAttachments';
 import type { WindowMessage } from './context';
-import { topicSchema } from './schemas';
+import { MAX_TOPIC_SEARCHES, topicSchemaFor } from './schemas';
 import type { TopicResult } from './schemas';
+import { factTypeIds, knownTypes } from '../db/repositories/factTypesRepo';
 import { buildTopicExtractionInstruction } from './prompts/build';
 
 /**
@@ -32,8 +33,8 @@ export async function extractTopic(
 
   const topic = await runEscalatableExtraction<TopicResult>({
     aiTask: 'topicExtraction',
-    schema: topicSchema,
-    hint: (result) => result.searchQuery,
+    schema: topicSchemaFor(factTypeIds()),
+    hint: (result) => result.searches.map((search) => search.query).join(' '),
     systemInstruction: buildTopicExtractionInstruction(),
     task: 'Work out what is being asked.',
     material: { channelId: taggedMessage.channelId, taggingMessageId: taggedMessage.id },
@@ -42,6 +43,19 @@ export async function extractTopic(
     guildId,
     attachmentBudget,
   });
+
+  // The schema requires `searches`, and a missing one would still only mean the
+  // reply searches on the topic itself — not worth failing a reply over.
+  const asked = Array.isArray(topic.searches) ? topic.searches : [];
+  // The cap is enforced here rather than in the schema, which has no maxItems:
+  // one topic call must not be able to fan out into arbitrary cost.
+  if (asked.length > MAX_TOPIC_SEARCHES) {
+    console.warn(`[ai] topicExtraction asked for ${asked.length} searches; keeping the first ${MAX_TOPIC_SEARCHES}`);
+  }
+  // A type nobody defined would filter the search down to nothing, which is
+  // worse than searching everything.
+  topic.searches = asked.slice(0, MAX_TOPIC_SEARCHES)
+    .map((search) => ({ ...search, type: knownTypes([search.type])[0] ?? '' }));
 
   return { topic, windowMessages, discordMessages };
 }

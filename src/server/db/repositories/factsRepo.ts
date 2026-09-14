@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto';
 import type { Metadata } from 'chromadb';
 import { collectionNameFor, getFactsCollection } from '../chroma';
 import { activeEmbedding } from '../../ai/embeddings';
-import { getSettings } from './settingsRepo';
 import { dropFromSnapshot, noteFactsChanged, recallIsPaused } from './reembedRepo';
-import { embedDocuments, embedQuery } from '../../ai/embeddings';
-import { duplicateDistanceFor } from './factTypesRepo';
-import { clearFactIndex, indexFacts, indexedCount, pageOfFactIds, unindexFact } from './factIndexRepo';
+import { embedDocuments, embedQuery, embedWith } from '../../ai/embeddings';
+import { getSettings } from './settingsRepo';
+import { duplicateDistanceFor, searchLimitsFor } from './factTypesRepo';
+import { clearFactIndex, indexFacts, indexedCount, pageOfFactIds, unindexFact, untypedFactIds } from './factIndexRepo';
 import { mentionedUserIds } from '@shared/discord';
 import { getAIRequestSignal } from '../../ai/requestBudget';
 
@@ -111,6 +111,12 @@ const FACET_BONUS = 0.05;
 const MAX_PEOPLE = 5;
 /** At least this many facet matches survive the cut when there are any. */
 const KEEP_FACET_MATCHES = 2;
+/**
+ * How many untyped facts a type-filtered search will reach for alongside.
+ * Bounded because it is a literal id list on a query; it shrinks to nothing as
+ * the cleanup pass sorts the store, which is the point.
+ */
+const UNTYPED_COMPANION_CAP = 2000;
 
 export interface RecallOptions {
   /** Written the way a stored fact is written — the topic call and the lookup tools both ask for that. */
@@ -123,8 +129,10 @@ export interface RecallOptions {
   /** day.month.year, as the model writes dates everywhere else. */
   dateFrom?: string;
   dateTo?: string;
-  /** An extra Chroma filter, such as one channel. */
+  /** An extra Chroma filter, such as one channel or one type. */
   where?: Record<string, unknown>;
+  /** Restricts the search to these records, which is how untyped facts are reached. */
+  ids?: string[];
   /** Overrides the configured ceiling, as a distance rather than hundredths. */
   maxDistance?: number;
 }
@@ -201,6 +209,9 @@ async function recallWith(
       queryEmbeddings: [embedding],
       nResults: options.topK,
       where: search.where as never,
+      // Restricting to a set of records is how a type-filtered search still
+      // reaches the facts nobody has typed: Chroma cannot match a missing key.
+      ...(options.ids ? { ids: options.ids } : {}),
       include: ['documents', 'metadatas', 'distances'],
     });
     return { facet: search.facet, rows: result.rows()[0] ?? [] };
@@ -243,6 +254,97 @@ async function recallWith(
   }
 
   return chosen.map((entry) => entry.fact);
+}
+
+/** A fact, plus which of the searches turned it up. */
+export type RecalledFact = Fact & { distance: number | null; foundBy: string[] };
+
+export interface FactSearchRequest {
+  query: string;
+  /** One of the operator's fact types, or empty to search everything. */
+  type?: string;
+  people?: string[];
+  channels?: string[];
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+/**
+ * Several searches at once, merged.
+ *
+ * A question about two people and a rule is three different searches, and
+ * flattening it into one embedding was the reason recall kept returning the
+ * nearest thing to an average of them. Every query is embedded in **one**
+ * request, so N searches cost N embeddings and no extra chat calls.
+ *
+ * A search naming a type is filtered to it. That is the one facet that filters
+ * rather than lifts, and it has to be: once `message` outnumbers everything
+ * else, an unfiltered search for a rule comes back as eight things somebody
+ * said. Facts nobody has typed yet are included in every typed search — they
+ * are the whole store as it stood before types existed, and a filter that hid
+ * them would lose the lot until the cleanup pass runs.
+ */
+export async function recallForSearches(
+  searches: FactSearchRequest[],
+  guildId?: string,
+): Promise<RecalledFact[]> {
+  if (recallIsPaused()) return [];
+  const wanted = searches.filter((search) => search.query.trim());
+  if (wanted.length === 0) return [];
+
+  const collection = await getFactsCollection();
+  // One request for every query: the batch is what keeps fanning out cheap.
+  const embeddings = await embedWith(wanted.map((search) => embeddingText(search.query)), activeEmbedding());
+  // Only worth asking while any remain; once the cleanup pass has sorted the
+  // store this is empty and the extra query disappears on its own.
+  const untyped = untypedFactIds(UNTYPED_COMPANION_CAP);
+
+  const found = new Map<string, RecalledFact>();
+  const results = await Promise.all(wanted.map(async (search, index) => {
+    const limits = searchLimitsFor(search.type || undefined);
+    const base: RecallOptions = {
+      query: search.query,
+      topK: limits.topK,
+      guildId,
+      people: search.people,
+      channels: search.channels,
+      dateFrom: search.dateFrom,
+      dateTo: search.dateTo,
+      maxDistance: limits.maxDistance,
+    };
+    if (!search.type) return { search, rows: await recallWith(collection, embeddings[index], base) };
+
+    // Chroma cannot match a where-clause against a key that is not there, so
+    // the untyped ones are asked for by id alongside rather than folded in.
+    const [typed, unsorted] = await Promise.all([
+      recallWith(collection, embeddings[index], {
+        ...base,
+        where: bothOf(guildId ? { guildId } : undefined, { types: { $contains: search.type } }),
+      }),
+      untyped.length === 0 ? Promise.resolve([]) : recallWith(collection, embeddings[index], { ...base, ids: untyped }),
+    ]);
+    return { search, rows: [...typed, ...unsorted] };
+  }));
+
+  for (const { search, rows } of results) {
+    for (const row of rows) {
+      const existing = found.get(row.id);
+      const label = search.type ? `${search.type}: ${search.query}` : search.query;
+      if (!existing) {
+        found.set(row.id, { ...row, foundBy: [label] });
+        continue;
+      }
+      // Several searches can turn up the same fact. Keep the best distance and
+      // remember every search that wanted it, so the model can tell a rule hit
+      // from something somebody said.
+      if (!existing.foundBy.includes(label)) existing.foundBy.push(label);
+      if (row.distance !== null && (existing.distance === null || row.distance < existing.distance)) {
+        existing.distance = row.distance;
+      }
+    }
+  }
+
+  return [...found.values()].sort((first, second) => (first.distance ?? 1) - (second.distance ?? 1));
 }
 
 /** Text alone, for the callers that have nothing else to go on. */

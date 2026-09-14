@@ -99,11 +99,14 @@ vi.mock('../../src/server/db/repositories/settingsRepo', () => ({ getSettings: (
 vi.mock('../../src/server/ai/embeddings', () => ({
   activeEmbedding: () => ({ model: 'test/embeddings', dimensions: 3 }),
   embedDocuments: state.embedDocuments,
+  // Several searches share one request, which is the whole reason fanning out
+  // is cheap, so the stub has to be the same batching call.
+  embedWith: state.embedDocuments,
   embedQuery: async (text: string) => [state.index(text)],
 }));
 
 import {
-  addFacts, deleteFact, embeddingText, listFactsPage, recallFacts,
+  addFacts, deleteFact, embeddingText, listFactsPage, recallFacts, recallForSearches,
 } from '../../src/server/db/repositories/factsRepo';
 import { withAIRequestBudget } from '../../src/server/ai/requestBudget';
 import { db } from '../../src/server/db/client';
@@ -538,5 +541,77 @@ describe('browsing without reading the whole store', () => {
     const page = await listFactsPage({ page: 1, pageSize: 10 });
     expect(page.total).toBe(1);
     expect(page.facts.map((fact) => fact.text)).toEqual(['Alice teaches physics']);
+  });
+});
+
+describe('several searches at once', () => {
+  const typed = (text: string, types: string[], overrides: Partial<FactCandidate> = {}) =>
+    candidate(text, { types, ...overrides });
+
+  it('embeds every query in one request rather than one apiece', async () => {
+    await addFacts([typed('<@111> hosts on Fridays', ['rule'])]);
+    state.embedDocuments.mockClear();
+    await recallForSearches([
+      { query: 'the hosting rule', type: 'rule' },
+      { query: 'what <@111> said', type: 'message' },
+      { query: 'anything at all' },
+    ], 'guild');
+    // Three searches, one embedding request: the batch is what keeps fanning out cheap.
+    expect(state.embedDocuments).toHaveBeenCalledTimes(1);
+    expect(state.embedDocuments.mock.calls[0][0]).toHaveLength(3);
+  });
+
+  it('filters a typed search to that type, which an unfiltered one would bury', async () => {
+    state.distance.different = 0.5;
+    await addFacts([typed('<@111> hosts on Fridays', ['rule'])]);
+    for (const [index, text] of ['<@111> said hi', '<@111> said bye', '<@111> said ok'].entries()) {
+      await addFacts([typed(text, ['message'], { messageIds: [`m${index}`] })]);
+    }
+    const rules = await recallForSearches([{ query: 'hosting', type: 'rule' }], 'guild');
+    expect(rules.map((fact) => fact.text)).toEqual(['<@111> hosts on Fridays']);
+  });
+
+  it('still finds a fact nobody has typed, whichever type is asked for', async () => {
+    state.distance.different = 0.5;
+    await addFacts([candidate('<@111> hosts on Fridays')]);
+    const rules = await recallForSearches([{ query: 'hosting', type: 'rule' }], 'guild');
+    // The whole store looked like this before types existed; a filter that hid
+    // it would lose the lot until the cleanup pass runs.
+    expect(rules.map((fact) => fact.text)).toEqual(['<@111> hosts on Fridays']);
+  });
+
+  it('merges what several searches find, keeping the best distance and every search that wanted it', async () => {
+    state.distance.different = 0.5;
+    await addFacts([typed('<@111> hosts on Fridays', ['rule', 'message'])]);
+    const found = await recallForSearches([
+      { query: 'hosting', type: 'rule' },
+      { query: 'what <@111> said', type: 'message' },
+    ], 'guild');
+    expect(found).toHaveLength(1);
+    expect(found[0].foundBy).toEqual(['rule: hosting', 'message: what <@111> said']);
+  });
+
+  it('gives each search its own type’s budget', async () => {
+    state.distance.different = 0.5;
+    for (let index = 0; index < 14; index += 1) {
+      await addFacts([typed(`<@111> said thing ${index}`, ['message'], { messageIds: [`m${index}`] })]);
+    }
+    // `message` ships with a bigger budget than the global 8, because once it is
+    // most of the store a smaller one is the whole answer.
+    expect(await recallForSearches([{ query: 'things said', type: 'message' }], 'guild')).toHaveLength(12);
+    expect(await recallForSearches([{ query: 'things said' }], 'guild')).toHaveLength(8);
+  });
+
+  it('ignores an empty query rather than searching for nothing', async () => {
+    await addFacts([candidate('<@111> owns a dog')]);
+    state.embedDocuments.mockClear();
+    expect(await recallForSearches([{ query: '   ' }], 'guild')).toEqual([]);
+    expect(state.embedDocuments).not.toHaveBeenCalled();
+  });
+
+  it('answers nothing at all while a re-embed is still filling the store', async () => {
+    await addFacts([candidate('<@111> owns a dog')]);
+    state.recallPaused = true;
+    expect(await recallForSearches([{ query: 'dogs' }], 'guild')).toEqual([]);
   });
 });

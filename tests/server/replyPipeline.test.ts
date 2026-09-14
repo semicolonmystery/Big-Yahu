@@ -13,7 +13,7 @@ vi.mock('../../src/server/ai/replyGeneration', () => ({ generateReply: m.generat
 vi.mock('../../src/server/db/repositories/settingsRepo', () => ({ getSettings: m.settings }));
 vi.mock('../../src/server/db/repositories/channelSettingsRepo', () => ({ canExtractFrom: m.canExtract }));
 vi.mock('../../src/server/db/repositories/controllersRepo', () => ({ isController: m.controller }));
-vi.mock('../../src/server/db/repositories/factsRepo', () => ({ recallFacts: m.facts }));
+vi.mock('../../src/server/db/repositories/factsRepo', () => ({ recallForSearches: m.facts }));
 vi.mock('../../src/server/db/repositories/cachedMessagesRepo', () => ({ cacheMessages: m.cache, getMessages: m.sources }));
 vi.mock('../../src/server/db/repositories/replyLogRepo', () => ({ logReply: m.log }));
 vi.mock('../../src/server/bot/replyAdmission', () => ({ admitReply: m.admit }));
@@ -52,7 +52,10 @@ describe('complete reply pipeline boundaries', () => {
   beforeEach(() => {
     m.settings.mockReturnValue({ ...DEFAULT_SETTINGS });
     m.extract.mockResolvedValue({
-      topic: { coreTopic: 'topic', whatTaggingMessageIsAbout: 'question', searchQuery: 'the question', people: [] },
+      topic: {
+        coreTopic: 'topic', whatTaggingMessageIsAbout: 'question', staySilent: false,
+        searches: [{ query: 'the question', type: '', people: [], channels: [], dateFrom: '', dateTo: '' }],
+      },
       windowMessages: [window], discordMessages: [],
     });
     m.generate.mockResolvedValue({ text: 'answer', silent: false, savedFactIds: [], deletedFactIds: [], replyToMessageId: null });
@@ -70,29 +73,30 @@ describe('complete reply pipeline boundaries', () => {
     expect(m.log).toHaveBeenCalledWith(expect.objectContaining({ replyMessageId: 'sent', taggedMessageId: '22' }));
     expect(m.release).toHaveBeenCalledTimes(1); expect(m.stopTyping).toHaveBeenCalledTimes(1);
   });
-  it('searches memory with the topic search query and who, where and when it is about', async () => {
+  // A question about two people and a rule is three searches. Flattening it into
+  // one embedding is what made recall return the nearest thing to their average.
+  it('runs every search the topic call asked for, in one go', async () => {
+    const searches = [
+      { query: 'Someone owns a dog', type: 'message', people: ['12345678901234567'], channels: ['555'], dateFrom: '3.4.2026', dateTo: '5.4.2026' },
+      { query: 'the rule about pets', type: 'rule', people: [], channels: [], dateFrom: '', dateTo: '' },
+    ];
     m.extract.mockResolvedValueOnce({
-      topic: {
-        coreTopic: 'pets', whatTaggingMessageIsAbout: 'whose dog', searchQuery: 'Someone owns a dog',
-        people: ['12345678901234567'], channels: ['555'], dateFrom: '3.4.2026', dateTo: '5.4.2026',
-      },
+      topic: { coreTopic: 'pets', whatTaggingMessageIsAbout: 'whose dog', staySilent: false, searches },
       windowMessages: [window], discordMessages: [],
     });
     await handleMention(message() as unknown as Message);
     // The ids go as facets, not glued onto the text: an embedding cannot mean an id.
-    expect(m.facts).toHaveBeenCalledWith({
-      query: 'Someone owns a dog', topK: DEFAULT_SETTINGS.factSearchTopK, guildId: 'guild',
-      people: ['12345678901234567'], channels: ['555'], dateFrom: '3.4.2026', dateTo: '5.4.2026',
-    });
+    expect(m.facts).toHaveBeenCalledTimes(1);
+    expect(m.facts).toHaveBeenCalledWith(searches, 'guild');
   });
 
-  it('falls back to the core topic when the model gave no search query', async () => {
+  it('falls back to the core topic when the model asked for no searches at all', async () => {
     m.extract.mockResolvedValueOnce({
-      topic: { coreTopic: 'pets', whatTaggingMessageIsAbout: 'whose dog', searchQuery: '', people: [] },
+      topic: { coreTopic: 'pets', whatTaggingMessageIsAbout: 'whose dog', staySilent: false, searches: [] },
       windowMessages: [window], discordMessages: [],
     });
     await handleMention(message() as unknown as Message);
-    expect(m.facts).toHaveBeenCalledWith(expect.objectContaining({ query: 'pets' }));
+    expect(m.facts).toHaveBeenCalledWith([{ query: 'pets', type: '' }], 'guild');
   });
   it('hands the model one JSON document: who is asking, what they asked, the messages and what it remembers', async () => {
     m.controller.mockReturnValueOnce(true);
@@ -131,7 +135,7 @@ describe('complete reply pipeline boundaries', () => {
   // model that stays quiet has no way to post the words by mistake.
   it('says nothing, and never composes a reply, when the topic call asks for silence', async () => {
     m.extract.mockResolvedValueOnce({
-      topic: { coreTopic: 'bait', whatTaggingMessageIsAbout: 'nothing', searchQuery: '', people: [], staySilent: true },
+      topic: { coreTopic: 'bait', whatTaggingMessageIsAbout: 'nothing', searches: [], staySilent: true },
       windowMessages: [window], discordMessages: [],
     });
     const msg = message();
@@ -146,7 +150,7 @@ describe('complete reply pipeline boundaries', () => {
 
   it('answers normally when it is false', async () => {
     m.extract.mockResolvedValueOnce({
-      topic: { coreTopic: 'topic', whatTaggingMessageIsAbout: 'question', searchQuery: 'q', people: [], staySilent: false },
+      topic: { coreTopic: 'topic', whatTaggingMessageIsAbout: 'question', searches: [], staySilent: false },
       windowMessages: [window], discordMessages: [],
     });
     const msg = message();
@@ -222,7 +226,10 @@ describe('complete reply pipeline boundaries', () => {
     const recentImage = imageMessage(window.id);
     const oldImage = imageMessage('old');
     m.extract.mockResolvedValueOnce({
-      topic: { coreTopic: 'images', whatTaggingMessageIsAbout: 'pictures', searchQuery: 'pictures', people: [] },
+      topic: {
+        coreTopic: 'images', whatTaggingMessageIsAbout: 'pictures', staySilent: false,
+        searches: [{ query: 'pictures', type: '', people: [], channels: [], dateFrom: '', dateTo: '' }],
+      },
       windowMessages: [{ ...window, content: '' }], discordMessages: [recentImage],
     });
     m.referenceWindow.mockResolvedValueOnce([{ ...window, id: 'old', content: '' }]);

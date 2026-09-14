@@ -90,7 +90,7 @@ Two model calls: one to work out what is being asked, one to write the reply. Be
 Two mechanisms, both bounded by `maxEscalationDepth` (default 1, hard cap 3):
 
 - **Extraction stage** — the structured schemas carry `needsMoreContext` and `contextHint`. When set, older messages and hint-matched facts are fetched and the call is repeated.
-- **Reply stage** — the model has a `request_more_context` tool. Calling it fetches the next 100 older messages (within `escalationLookbackHours`) plus facts matching what it says it is looking for, and hands them back as a tool response so it can answer or ask again. On the last permitted round the tool is withdrawn and the model is told to answer with what it has or say it isn't there.
+- **Reply stage** — two tools, `read_history` and `search_facts`. The first fetches the next 100 older messages (within `escalationLookbackHours`); the second runs as many memory searches as the model asks for in one call. They were one tool, which meant every request for older messages also paid for a fact search and vice versa. On the last permitted round both are withdrawn and the model is told to answer with what it has or say it isn't there.
 
 Tool-call turns are echoed back exactly as received: they carry the model's own reasoning (`reasoning_details`), which the provider documents must not be rebuilt.
 
@@ -348,6 +348,28 @@ embedded — facts are stored as declarative sentences and a question embeds
 poorly against those — keeping names and specifics verbatim and never trying to
 answer. It is the same call that says who and when the question is about, which
 is why the separate query-rewrite request was deleted rather than kept.
+
+**A question is several searches, not one.** The topic call returns an array of
+them, each with its own query, type, people, channels and dates — "what did Alice
+and Bob say about the server rules" is a message search naming Alice, a message
+search naming Bob, and a rule search about the server. Flattening that into one
+embedding is why recall used to return the nearest thing to their average. All of
+them run, every query is embedded in a single request (so N searches cost N
+embeddings and no extra chat calls), and what they find is merged by fact id
+keeping the best distance. Each fact carries `foundBy`, naming the searches that
+turned it up, because a rule the model deliberately looked up and something
+somebody happened to say read identically otherwise.
+
+A search naming a type is **filtered** to it. That is the one facet that filters
+rather than lifts, and it has to be: once `message` outnumbers everything else,
+an unfiltered search for a rule comes back as eight things somebody said. Facts
+nobody has typed are reached by id alongside, since Chroma cannot match a
+where-clause against a key that is not there — an extra query that shrinks to
+nothing as the cleanup pass sorts the store.
+
+The cap is four searches, enforced in code rather than in the schema, which has
+no `maxItems`: a model given an array will fill it, and one topic call must not
+be able to fan out into arbitrary cost.
 
 Facts carry `authorIds` and `subjectIds`, so the admin panel can list everyone
 facts exist about and filter to one person.
@@ -985,7 +1007,8 @@ does not queue or invoke AI.
 | Single-guild scoping | IMPL | required in bot mode; missing/foreign guilds rejected before work |
 | Reply-to triggers a response | IMPL | replying to a bot message works like an @mention |
 | Typing indicator while replying | IMPL | refcounted per channel |
-| Reply-stage `request_more_context` tool | IMPL | the reply can pull more history when the window is not enough |
+| Reply-stage `read_history` and `search_facts` | IMPL | pulling older messages and searching memory are separate tools, so neither pays for the other; `search_facts` takes several searches in one call, each naming a type |
+| Multi-search recall | IMPL | the topic call returns an array of searches instead of one query, capped at four in code since the validator has no `maxItems`. All of them run, every query embedded in one request, and what they find is merged by fact id keeping the best distance; each fact carries `foundBy` so the model can tell a rule it looked up from something somebody happened to say |
 | Retry + overload message | IMPL | attempts, delay and message all in Settings |
 | Configurable model lists | IMPL | one ordered list per job, edited in Settings, applies to the next request |
 | Fact types | IMPL | `fact_types`, seven shipped and operator-extendable in Settings; a fact carries several at once and nearly anything informative is also a `message`. Each type owns its own duplicate distance, result count and search ceiling, with the globals as the seed and the fallback; 0 now means "never merge" and skips the neighbour query outright. The list reaches the model in the material and as a schema enum, never in the prompt |
@@ -1010,7 +1033,7 @@ does not queue or invoke AI.
 | Vision settings | IMPL | `visionEnabled` toggle and `maxImages` cap, applying to replies and extraction alike |
 | `list_people` tool | IMPL | who is around and what they are doing, on demand, with an optional name filter |
 | Reply threading in the material | IMPL | every message carries `replyTo`; prompts follow the chain, not the order |
-| Fact search is told who and when | IMPL | the topic call returns `searchQuery` plus the people, channels and dates in play, and those are matched as metadata rather than glued onto the text |
+| Fact search is told who and when | IMPL | each search carries the people, channels and dates in play, matched as metadata rather than glued onto the text |
 | Plugin `annotateContext` hook | IMPL | plugins annotate users, messages and facts as the reply prompt is built; reply-only |
 | Reputation plugin (short + long term scores) | IMPL | bundled; drizzle + own migrations, scores injected automatically, scored via a tool on the reply call |
 | Prose kept when a tool is called in the same turn | IMPL | text and tool calls in one turn are both honoured, rather than the text being dropped |

@@ -5,7 +5,7 @@ import type { ReplyContext } from '../../src/server/ai/replyGeneration';
 import { DEFAULT_SETTINGS } from '../../src/shared/constants';
 
 const m = vi.hoisted(() => ({
-  chat: vi.fn(), addFacts: vi.fn(), deleteFact: vi.fn(), searchFacts: vi.fn(),
+  chat: vi.fn(), addFacts: vi.fn(), deleteFact: vi.fn(), searchFacts: vi.fn(), recall: vi.fn(),
   canExtract: vi.fn(), runTool: vi.fn(), fetchOlder: vi.fn(), readChannel: vi.fn(),
   collectTools: vi.fn(),
 }));
@@ -17,7 +17,10 @@ vi.mock('../../src/server/ai/chat', async (importOriginal) => ({
 }));
 vi.mock('../../src/server/db/repositories/settingsRepo', () => ({ getSettings: () => DEFAULT_SETTINGS }));
 vi.mock('../../src/server/db/repositories/channelSettingsRepo', () => ({ canExtractFrom: m.canExtract }));
-vi.mock('../../src/server/db/repositories/factsRepo', () => ({ addFacts: m.addFacts, deleteFact: m.deleteFact, searchFacts: m.searchFacts }));
+vi.mock('../../src/server/db/repositories/factsRepo', () => ({
+  addFacts: m.addFacts, deleteFact: m.deleteFact, searchFacts: m.searchFacts,
+  recallFacts: m.recall, recallForSearches: m.recall,
+}));
 vi.mock('../../src/server/db/repositories/cachedMessagesRepo', () => ({ cacheMessages: vi.fn(), getMessages: () => [] }));
 vi.mock('../../src/server/plugins/engine', () => ({ collectTools: m.collectTools, runTool: m.runTool }));
 vi.mock('../../src/server/bot/channelAccess', () => ({ resolveReadableChannel: m.readChannel }));
@@ -70,6 +73,7 @@ const toolResults = (call: number) => sentMessages(call)
 describe('the reply protocol', () => {
   beforeEach(() => {
     m.canExtract.mockReturnValue(true); m.searchFacts.mockResolvedValue([]); m.fetchOlder.mockResolvedValue([]);
+    m.recall.mockResolvedValue([]);
     m.addFacts.mockResolvedValue(['saved']); m.deleteFact.mockResolvedValue(true); m.runTool.mockResolvedValue({ ok: true });
     m.collectTools.mockReturnValue([{ pluginId: 'example', tool: { name: 'assess' }, declaration: { name: 'example__assess', description: 'Assess', parameters: {} } }]);
     m.chat.mockReset(); m.chat.mockResolvedValue(answer());
@@ -275,5 +279,71 @@ describe('the reply protocol', () => {
 
     m.chat.mockResolvedValue(answer('a'.repeat(2500)));
     expect((await generateReply(draft(), context())).text).toHaveLength(2000);
+  });
+});
+
+describe('looking things up mid-reply', () => {
+  const fact = (id: string, text: string) => ({
+    id, text, distance: 0.1, foundBy: ['rule: the rule'],
+    metadata: { guildId: 'g', channelId: 'c', messageIds: [], authorIds: [], referencedFactIds: [], timePeriodStart: 0, timePeriodEnd: 0, source: 'auto', createdAt: 0 },
+  });
+
+  it('offers reading history and searching memory as two separate tools', async () => {
+    m.chat.mockResolvedValue(answer('odpověď'));
+    await generateReply(draft(), context());
+    const offered = m.chat.mock.calls[0][1].tools.map((tool: { name: string }) => tool.name);
+    expect(offered).toContain('read_history');
+    expect(offered).toContain('search_facts');
+    // The one that did both is gone: reading messages and searching memory are
+    // different questions, and pairing them meant paying for both every time.
+    expect(offered).not.toContain('request_more_context');
+  });
+
+  it('runs every search in one call and hands back everything they found', async () => {
+    m.recall.mockResolvedValueOnce([fact('f1', 'the hosting rule')]);
+    m.chat
+      .mockResolvedValueOnce(answer('', [{ name: 'search_facts', args: { searches: [
+        { query: 'the hosting rule', type: 'rule', people: [] },
+        { query: 'what Alice said', type: 'message', people: ['12345678901234567'] },
+      ] } }]))
+      .mockResolvedValueOnce(answer('odpověď'));
+    await generateReply(draft(), context());
+
+    expect(m.recall).toHaveBeenCalledTimes(1);
+    expect(m.recall.mock.calls[0][0]).toEqual([
+      { query: 'the hosting rule', type: 'rule', people: [] },
+      { query: 'what Alice said', type: 'message', people: ['12345678901234567'] },
+    ]);
+    const [, result] = toolResults(1)[0];
+    expect(result.additionalFacts[0]).toMatchObject({ id: 'f1', foundBy: ['rule: the rule'] });
+  });
+
+  it('drops a type nobody defined rather than filtering the search into nothing', async () => {
+    m.chat
+      .mockResolvedValueOnce(answer('', [{ name: 'search_facts', args: { searches: [{ query: 'anything', type: 'invented', people: [] }] } }]))
+      .mockResolvedValueOnce(answer('odpověď'));
+    await generateReply(draft(), context());
+    expect(m.recall.mock.calls[0][0]).toEqual([{ query: 'anything', type: '', people: [] }]);
+  });
+
+  it('says so plainly when every search was empty, rather than searching for nothing', async () => {
+    m.chat
+      .mockResolvedValueOnce(answer('', [{ name: 'search_facts', args: { searches: [{ query: '  ', type: '', people: [] }] } }]))
+      .mockResolvedValueOnce(answer('odpověď'));
+    await generateReply(draft(), context());
+    expect(m.recall).not.toHaveBeenCalled();
+    expect(toolResults(1)[0][1].error).toContain('empty');
+  });
+
+  it('reads older messages without touching memory', async () => {
+    m.fetchOlder.mockResolvedValueOnce([{ id: 'older', authorId: 'u', authorUsername: 'U', displayName: 'U', content: 'earlier', createdAt: 1, isSelf: false }]);
+    m.chat
+      .mockResolvedValueOnce(answer('', [{ name: 'read_history', args: { lookingFor: 'the earlier bit' } }]))
+      .mockResolvedValueOnce(answer('odpověď'));
+    await generateReply(draft(), context());
+    const [, result] = toolResults(1)[0];
+    expect(result.olderMessages).toHaveLength(1);
+    expect(result).not.toHaveProperty('additionalFacts');
+    expect(m.recall).not.toHaveBeenCalled();
   });
 });

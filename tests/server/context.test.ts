@@ -36,7 +36,7 @@ import {
 import { factsMaterial, messageMaterial, messagesMaterial } from '../../src/server/ai/material';
 import { extractTopic } from '../../src/server/ai/topicExtraction';
 import { UnreadableAnswerError } from '../../src/server/ai/structured';
-import { extractionSchemaFor, topicSchema } from '../../src/server/ai/schemas';
+import { extractionSchemaFor } from '../../src/server/ai/schemas';
 
 // The type list is the operator's, so the schema is built per call; these tests
 // only care that the same shape reaches the model each time.
@@ -341,15 +341,20 @@ describe('topic extraction', () => {
     const budget = { bytes: 1000, files: 2 };
     state.attachments.mockResolvedValueOnce(new Map([['30', '[message.txt]\nWhat did Bob decide?']]));
     state.structured.mockResolvedValueOnce({
-      coreTopic: 'Decision', whatTaggingMessageIsAbout: 'Bob decision', searchQuery: 'Bob decided something',
-      people: ['222'], channels: [], dateFrom: '', dateTo: '', needsMoreContext: false, contextHint: '',
+      coreTopic: 'Decision', whatTaggingMessageIsAbout: 'Bob decision', staySilent: false,
+      searches: [{ query: 'Bob decided something', type: 'decision', people: ['222'], channels: [], dateFrom: '', dateTo: '' }],
+      needsMoreContext: false, contextHint: '',
     });
     const result = await extractTopic(tagged, 'guild', 20, budget);
     expect(fetch).toHaveBeenCalledWith({ before: '30', limit: 20 });
     expect(result.discordMessages.map((entry) => entry.id)).toEqual(['10', '20', '30']);
     expect(result.windowMessages.at(-1)?.content).toContain('What did Bob decide?');
-    expect(result.topic).toMatchObject({ coreTopic: 'Decision', searchQuery: 'Bob decided something', people: ['222'] });
-    expect(state.structured).toHaveBeenCalledWith('topicExtraction', expect.objectContaining({ schema: topicSchema }));
+    expect(result.topic).toMatchObject({
+      coreTopic: 'Decision',
+      searches: [expect.objectContaining({ query: 'Bob decided something', type: 'decision', people: ['222'] })],
+    });
+    expect(state.structured).toHaveBeenCalledWith('topicExtraction',
+      expect.objectContaining({ schema: expect.objectContaining({ type: 'object' }) }));
     expect(request(0).user).toContain('What did Bob decide?');
     expect(state.attachments.mock.calls[0][1]).toBe(budget);
   });
