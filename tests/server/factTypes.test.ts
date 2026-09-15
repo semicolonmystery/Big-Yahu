@@ -194,18 +194,26 @@ describe('the topic prompt describes the answer it actually asks for', () => {
     expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/being sworn at/i);
   });
 
-  // Observed: "@big jahler welcome back 👋" got silence, and the log showed it
-  // had understood the message exactly. The rule had said silence was for a tag
-  // "with no question and nothing to react to", which describes a welcome.
-  it('does not let the absence of a question decide it', () => {
-    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/whether there is a question in it decides nothing/i);
-    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/saying something to the bot is opening something/i);
-    // What earns silence is closing something, not lacking a question.
-    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/closes something the bot has already finished/i);
+  // An acknowledgement is somebody talking to the bot, so it gets something back.
+  // Only the same one repeating with nothing new in it runs out of things to say,
+  // and anything riding along with it is answered on its own strength.
+  it('does not let a thanks or an acknowledgement decide it', () => {
+    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/a short acknowledgement is not a reason to go quiet/i);
+    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/about the repetition, not about the thanks/i);
+    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/read the whole message rather than the part of it/i);
   });
 
-  it('leaves room for a trap rather than listing every case', () => {
+  it('describes a trap by its shape rather than by quoting one', () => {
     expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/judgement rather than a rule/i);
-    expect(TOPIC_EXTRACTION_DEFAULT).toContain('debil řekne co');
+    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/naming in advance what answering will have proved/i);
+  });
+
+  // The silence rules carry no examples at all: the model was pattern-matching
+  // the ones that were there instead of reading what the rule said.
+  it('carries no examples in the silence rules', () => {
+    const silence = TOPIC_EXTRACTION_DEFAULT.slice(TOPIC_EXTRACTION_DEFAULT.indexOf('Whether to answer at all'));
+    for (const example of ['debil', '"dik"', '"ok"', '"jasný"']) {
+      expect(silence, example).not.toContain(example);
+    }
   });
 });

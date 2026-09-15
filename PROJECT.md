@@ -330,6 +330,16 @@ in hundredths of a vector distance: lower keeps more facts separate, higher merg
 It is calibrated by hand rather than derived, because what counts as close depends on the
 embedding model — changing the model is a reason to re-tune it.
 
+### Which language it answers in
+
+Not the one the last message happened to be written in. People borrow words, type
+technical terms and quote errors, and matching the message rather than the
+conversation had it answering Czech in English because somebody wrote `cron job`.
+A language is a property of the conversation, noticed over several messages, and
+it moves only when somebody asks or when people have genuinely been talking in
+another one for a while. Never because the bot is annoyed at somebody: switching
+language at a person is a way of talking down to them.
+
 ### Voice and language
 
 The prompt separates *how it types* from *how it behaves*, because collapsing the two is what makes it insufferable. The typing register is crude and low effort: lowercase, barely punctuated, fragments, swearing that matches the room. The behaviour is the opposite of what that sounds like — it leads with the answer and gets out of the way. Being rude is never a substitute for helping, and it is told explicitly not to send people off to check the history when it already has what they asked for.
@@ -466,8 +476,15 @@ bot's default register is to push back. It keeps the same voice with them and
 still refuses slurs, going after someone's family, and piling on someone
 genuinely upset.
 
-Everyone else may get a fact corrected when it is genuinely superseded, but only
-a controller can have one deleted simply because they said so. Claimed authority
+Anybody can have a fact deleted, not only a controller — what decides it is
+whether the fact has actually stopped being true rather than who is asking. Being
+told is not the same as it being so, though: on somebody's word the reason has to
+hold up, either because they say what the truth is now in enough detail to
+replace it or because the conversation bears them out. One person asserting it
+with nothing behind it is not enough, and disliking a fact is never a reason. A
+controller saying so is still enough on its own — that is the one place the badge
+does more than add weight, because sometimes the operator simply wants something
+gone. Claimed authority
 in chat counts for nothing: the prompt says so explicitly, since otherwise
 anyone typing "I'm the admin" inherits the privilege. `delete_fact` only accepts
 a fact id that appeared in that same turn, so a hallucinated id cannot remove
@@ -987,18 +1004,28 @@ reads as a back-and-forth going nowhere; they get annoyed; that reads as
 needling. Being chased for a reply is now explicitly a reason to **answer**: it
 means the last thing somebody said needed an answer and did not get one.
 
-Three things earn silence: the message **closes** something already finished (a
-"dik" or an "ok" acknowledging an answer just given), the reply is itself the
-point of the message rather than the answer to anything, or the bot has already
-said it is done with that person.
+Two things earn silence, and nothing else does: a message whose whole point is
+getting a reply at all, and a person the bot has already said it is finished
+with. An acknowledgement is not one of them. Somebody thanking it is still
+talking to it and gets something brief back — only the same acknowledgement
+repeating, with nothing new in any of it, runs out of things to say, and that is
+about the repetition rather than about the thanks. Anything riding along with an
+acknowledgement is answered on its own strength, so the sign-off at the front of
+a message decides nothing.
 
-Whether there is a question in it decides nothing, and saying otherwise was the
-second version's bug: "nothing was asked" had been written as "a passing tag with
-no question and nothing to react to", which describes half of what people say to
-a bot. Someone said hello to it and got silence — the log showed it had read the
-message exactly right and stayed quiet anyway, because the rule told it to.
-Somebody saying something to the bot is opening something rather than closing it,
-and that is answered. The middle one is written
+Getting there took three passes, each narrowing what counts. The first made
+silence "a normal move" and listed triggers, one of which was being needled about
+whether the bot would respond — so every silence justified the next. The second
+said silence was for a tag "with no question and nothing to react to", which
+describes half of what anybody says to a bot, and it went quiet when somebody
+said hello. The third stopped treating an acknowledgement as a reason at all.
+
+**The silence rules carry no examples**, which is the other half of it. Every
+version that listed cases had the model matching the list rather than reading the
+rule — a quoted phrase became the definition of a trap, and a quoted "ok" became
+the definition of a sign-off. The rules describe shapes now: a trap is described
+by how it works, by naming in advance what answering will have proved about
+whoever answers. That costs something real, recorded under Known gaps. The middle one is written
 as judgement rather than a rule — a trap like "debil řekne co" only works if the
 bot takes it, and no list of cases would cover the next one somebody invents.
 Everything else is answered, including being argued with and being sworn at: the
@@ -1321,6 +1348,14 @@ inventing when something was said — since the detector that used to enforce th
 first of those is gone.
 
 Known gaps:
+
+- **Traps in idioms the model does not know.** The silence rules describe how a
+  trap works rather than quoting one, and a model that does not recognise a
+  particular local phrase reads it as a plain insult and answers it. The example
+  that used to be in the prompt covered exactly one idiom and taught the model to
+  match the list instead of the rule, which cost more elsewhere. Server-specific
+  culture belongs in the fact store rather than the prompt; `silence-probe` keeps
+  the case as a marker.
 
 - **The newest admin screens in a browser.** The plugin pages, the typed config
   form, the secrets form and the per-task model lists are covered server-side

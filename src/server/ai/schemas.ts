@@ -167,14 +167,14 @@ export const topicSchemaFor = (typeIds: string[]): JsonSchema => ({
     staySilent: {
       type: 'boolean',
       description:
-        'True to send no reply at all. Answering is the default and this needs a reason: the message closes '
-        + 'something already finished (a "dik" or an "ok" acknowledging an answer just given), or the reply is '
-        + 'itself the point of the message rather than the answer to anything — a trap that only works if the '
-        + 'bot takes it — or the bot has already told that person it is done with them. Whether there is a '
-        + 'question in it decides nothing: somebody saying something to the bot is opening something rather '
-        + 'than closing it, and gets an answer. Somebody repeating '
-        + 'themselves or getting annoyed that nothing came back means the last thing they said needed an '
-        + 'answer and did not get one, so answer them.',
+        'True to send no reply at all. Answering is the default and this is rare — two things earn it: a '
+        + 'message whose whole point is getting a reply at all, where any answer is the win and there is '
+        + 'nothing in it to actually answer, or a person the bot has already said it is finished with. '
+        + 'Nothing else does. An acknowledgement or a thanks is still somebody talking to the bot and gets a '
+        + 'brief answer back, unless the same one keeps coming with nothing new in any of it — and anything '
+        + 'else riding along with it is answered on the strength of that. Somebody repeating themselves or '
+        + 'getting annoyed that nothing came back means the last thing they said needed an answer and did not '
+        + 'get one, so answer them.',
     },
     needsMoreContext: {
       type: 'boolean',
@@ -434,7 +434,10 @@ export const deleteFactDeclaration: ToolDeclaration = {
     'Forget a stored fact permanently. Use it when a fact you were given is genuinely out of date or wrong: '
     + 'superseded by newer information, retracted, or the situation changed. When you know the corrected version, '
     + 'call save_fact as well so the memory is replaced rather than just emptied. '
-    + 'Do not delete because someone dislikes a fact or simply asked you to. Only ever pass an id you were shown.',
+    + 'Anybody can tell you a fact is wrong, not only a controller, but being told is not the same as it being '
+    + 'so: the reason has to hold up, either because they say what the truth is now or because the conversation '
+    + 'bears it out. A controller asking is enough on its own. Never delete because somebody dislikes a fact. '
+    + 'Only ever pass an id you were shown.',
   parameters: {
     type: 'object',
     properties: {

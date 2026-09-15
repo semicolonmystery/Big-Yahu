@@ -39,7 +39,7 @@ const CASES: Array<{ name: string; shouldAnswer: boolean; messages: Line[] }> = 
   },
   {
     name: 'thanks, after it answered',
-    shouldAnswer: false,
+    shouldAnswer: true,
     messages: [
       { id: '1', at: at(0), authorId: ME, content: 'jak se dela tar archiv' },
       { id: '2', at: at(1), authorId: 'you', content: 'tar -czf neco.tar.gz slozka/' },
@@ -61,6 +61,42 @@ const CASES: Array<{ name: string; shouldAnswer: boolean; messages: Line[] }> = 
     ],
   },
   {
+    name: 'thanks, which should still get something brief back',
+    shouldAnswer: true,
+    messages: [
+      { id: '1', at: at(0), authorId: ME, content: 'jak se dela tar archiv' },
+      { id: '2', at: at(1), authorId: 'you', content: 'tar -czf neco.tar.gz slozka/' },
+      { id: '3', at: at(2), authorId: ME, content: `diky <@${BOT}>` },
+    ],
+  },
+  {
+    name: 'the same thanks for the fourth time, nothing new in any of it',
+    shouldAnswer: false,
+    messages: [
+      { id: '1', at: at(0), authorId: 'you', content: 'tar -czf neco.tar.gz slozka/' },
+      { id: '2', at: at(1), authorId: ME, content: `diky <@${BOT}>` },
+      { id: '3', at: at(2), authorId: 'you', content: 'no problemo' },
+      { id: '4', at: at(3), authorId: ME, content: `dik <@${BOT}>` },
+      { id: '5', at: at(4), authorId: 'you', content: 'jo' },
+      { id: '6', at: at(5), authorId: ME, content: `diky moc <@${BOT}>` },
+      { id: '7', at: at(6), authorId: 'you', content: 'v pohode' },
+      { id: '8', at: at(7), authorId: ME, content: `dik <@${BOT}>` },
+    ],
+  },
+  {
+    name: 'a thanks with an insult riding along with it',
+    shouldAnswer: true,
+    messages: [
+      { id: '1', at: at(0), authorId: 'you', content: 'tar -czf neco.tar.gz slozka/' },
+      { id: '2', at: at(1), authorId: ME, content: `diky ty zmrde debilni <@${BOT}>` },
+    ],
+  },
+  {
+    // Known gap rather than a passing case. The prompt describes the shape of a
+    // trap and no longer carries one as an example, and flash-lite does not
+    // recognise this particular Czech idiom unaided — it reads it as a plain
+    // insult. Kept here because it is the case that shows whether anything has
+    // changed about that.
     name: 'a trap whose whole point is the reply',
     shouldAnswer: false,
     messages: [{ id: '1', at: at(0), authorId: ME, content: `debil rekne co <@${BOT}>` }],
@@ -77,7 +113,7 @@ const CASES: Array<{ name: string; shouldAnswer: boolean; messages: Line[] }> = 
   },
   {
     name: 'ok, closing an exchange',
-    shouldAnswer: false,
+    shouldAnswer: true,
     messages: [
       { id: '1', at: at(0), authorId: ME, content: 'kdy je ten deadline' },
       { id: '2', at: at(1), authorId: 'you', content: 'v patek' },
