@@ -943,12 +943,26 @@ A field cannot be typed. It is part of a schema-validated answer that the
 operator's own prompt describes, so the decision is made where it is checked
 rather than where it can be narrated.
 
-The rules moved with it, into the topic prompt: silence is for bait and for a
-slanging match going nowhere, a real question always gets an answer even if the
-answer is not knowing, and a bare mention is explicitly not noise — people split
-the ping from the message, so it reads what is above and answers that. The reply
-prompt now says the opposite, plainly: the decision to answer has already been
-taken, so write a reply.
+**Answering is the default and silence is what needs a reason**, because ignoring
+somebody who was talking to the bot is much the worse of the two mistakes. The
+first version of these rules got that backwards. They opened with "silence is a
+normal move, not a failure" and then named three triggers, one of which was
+somebody needling the bot about whether it would respond — which made every
+silence justify the next one. Ignored once, a person repeats themselves; that
+reads as a back-and-forth going nowhere; they get annoyed; that reads as
+needling. Being chased for a reply is now explicitly a reason to **answer**: it
+means the last thing somebody said needed an answer and did not get one.
+
+Three things earn silence: nothing was asked ("dik", "ok", a passing tag), the
+reply is itself the point of the message rather than the answer to anything, or
+the bot has already said it is done with that person. The middle one is written
+as judgement rather than a rule — a trap like "debil řekne co" only works if the
+bot takes it, and no list of cases would cover the next one somebody invents.
+Everything else is answered, including being argued with and being sworn at: the
+bot gives that back rather than sulking.
+
+The reply prompt now says the opposite, plainly: the decision to answer has
+already been taken, so write a reply.
 
 A backstop survives, because a model carrying the old habit can still type the
 words. A reply that is *nothing but* a silence phrase — or nothing but a tool's
@@ -1139,7 +1153,7 @@ does not queue or invoke AI.
 | Split failure messages | IMPL | five configurable messages, chosen by the API's own status: rate limit, overload, spent budget, no credit, bug. Every failure still logged in full with its status |
 | Billing cut-out | IMPL | a 402 throws `BillingError` on the first request — no next model, no failure recorded, since one key pays for everything. Other 429s stay ordinary rate limits |
 | Retiring dead models | IMPL | a 400 saying the model id is not valid retires it permanently instead of resting it; excluded from the pool and from the "everything is resting" revive, and cleared only by Reset errors. A routing block (404 with the account's ineligibility reasons) moves to the next model and never retires one |
-| Choosing not to reply | IMPL | `staySilent` on the topic answer — a validated field, not a tool that can be typed instead of called. Nothing sent, nothing logged, and the reply call never made |
+| Choosing not to reply | IMPL | answering is the default and silence needs a reason; being chased for a reply is a reason to answer rather than the "needling" trigger it used to be, and a trap is left to judgement rather than listed. `staySilent` on the topic answer — a validated field, not a tool that can be typed instead of called. Nothing sent, nothing logged, and the reply call never made |
 | Controller accounts | IMPL | Discord IDs in Settings; may add and delete facts |
 | Plugin tools + panels | IMPL | JSON-schema tools, declarative admin screens |
 | Plugin tool invocation and access gates | IMPL | host-owned turn metadata; `requiresController` and `enabledByConfig`, with live config/controller rechecks before execution |

@@ -15,7 +15,9 @@ import {
 } from '../../src/server/db/repositories/factTypesRepo';
 import { updateSettings } from '../../src/server/db/repositories/settingsRepo';
 import { ANY_FACT_TYPE, BUILT_IN_FACT_TYPES } from '../../src/shared/factTypes';
-import { FACT_EXTRACTION_DEFAULT, REPLY_DEFAULT } from '../../src/server/ai/prompts/systemInstructions';
+import {
+  FACT_EXTRACTION_DEFAULT, REPLY_DEFAULT, TOPIC_EXTRACTION_DEFAULT,
+} from '../../src/server/ai/prompts/systemInstructions';
 
 beforeEach(() => {
   db.delete(factTypes).run();
@@ -169,4 +171,31 @@ describe('the rules both fact-writing prompts carry', () => {
       expect(prompt).toMatch(/"message"/);
     },
   );
+});
+
+// The prompt names the fields the model has to fill in, so a prompt describing
+// a shape the schema no longer has leaves the two contradicting each other on
+// every call — which is what happened when one search became several and only
+// the reply prompt was updated.
+describe('the topic prompt describes the answer it actually asks for', () => {
+  it('names the fields the schema has, and none it does not', () => {
+    for (const field of ['searches', 'query', 'type', 'people', 'channels', 'dateFrom', 'dateTo', 'staySilent']) {
+      expect(TOPIC_EXTRACTION_DEFAULT, field).toContain(field);
+    }
+    expect(TOPIC_EXTRACTION_DEFAULT).not.toContain('searchQuery');
+  });
+
+  // Ignoring somebody who was talking to the bot is the worse of the two
+  // mistakes, and the rules used to make each silence justify the next one:
+  // being chased for a reply read as a reason to keep quiet.
+  it('makes answering the default and being chased a reason to answer', () => {
+    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/answering is the default/i);
+    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/never read being chased for a reply as noise/i);
+    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/being sworn at/i);
+  });
+
+  it('leaves room for a trap rather than listing every case', () => {
+    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/judgement rather than a rule/i);
+    expect(TOPIC_EXTRACTION_DEFAULT).toContain('debil řekne co');
+  });
 });
