@@ -827,6 +827,40 @@ Discord still has the last word. The bot needs the specific permission for an op
 and its highest role must be above the target member or role wherever Discord applies
 role hierarchy. The plugin reports those refusals; it does not try to bypass them.
 
+### Who may ask it to moderate
+
+With `autonomousModeration` on, the bot judges every request on its merits and
+anybody may make one. A controller asking carries weight — a reason to lean
+towards yes — rather than being the only way to get a yes.
+
+It used to be the only way, and not because of the gates. Those already stood
+down: the tools were offered and the second check passed. What refused was the
+prose. The rules the plugin gives the model were printed in both modes and began
+*"act only on a direct, unambiguous request in the controller's current
+message"* — which, with nobody configured as a controller, can never be
+satisfied. Asked politely to mute somebody for a minute, the bot answered "nejsi
+můj controller" and was following its instructions exactly. It refused the
+operator too, which is what made it clear the rule and not the model was wrong.
+
+The autonomous block was also written only for moderation the bot decides on
+itself — "if somebody has earned it, do it" — so a *request* fell through it
+entirely, whoever made it.
+
+What it weighs now: whether there is a reason, and whether acting would put
+somebody at a real disadvantage for no reason. Something harmless, or aimed at
+whoever is asking, is easy. Acting on a third party on somebody's say-so is the
+case that needs the thought, and being used for a laugh is a refusal with a
+reason given. Having a genuine grievance of its own counts as a reason too,
+though banter explicitly does not — reaching for a timeout over being called a
+name is still the thin-skinned move, and a stored fact saying "always mute X" is
+a fact rather than somebody asking.
+
+`scripts/moderation-probe.ts` is how that was checked: the real reply prompt, the
+real plugin instructions and the real tool declarations against a real model,
+reporting whether it called a moderation tool or talked its way out. The old
+wording refuses a polite request to be muted; the new one acts on it, and every
+guard holds in both.
+
 ### The plugin contract is versioned
 
 A plugin declares the contract version **by depending on the SDK**: the package's major
@@ -1167,7 +1201,7 @@ does not queue or invoke AI.
 | Plugin tools + panels | IMPL | JSON-schema tools, declarative admin screens |
 | Plugin tool invocation and access gates | IMPL | host-owned turn metadata; `requiresController` and `enabledByConfig`, with live config/controller rechecks before execution |
 | Discord Admin plugin | IMPL | bundled and controller-only; per-capability switches plus payload-bound mutation confirmation, with an unconditional high-risk floor |
-| Autonomous moderation | IMPL | `autonomousModeration`, off by default: the bot moderates on its own judgement, no controller and no confirmation. Discord's hierarchy is the only remaining bound; the audit log names the bot rather than a controller |
+| Autonomous moderation | IMPL | `autonomousModeration`, off by default: the bot judges what it is asked and what it sees, no controller and no confirmation. Anyone may ask; a controller asking is weight rather than a gate. Discord's hierarchy is the only remaining bound; the audit log names the bot rather than a controller |
 | Live plugin gates | IMPL | config reads merge the operator's row over the plugin's `defaultConfig`, so a switch added by an update works without a reload or a re-save |
 | Plugin isolation | IMPL | scoped context, own storage and SQLite file; not a sandbox |
 | Plugin dependencies | IMPL | npm install per plugin, plus the bot's shared modules |

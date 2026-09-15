@@ -922,3 +922,42 @@ describe('moderating on its own judgement', () => {
     expect(confirmationPhrase(result)).toMatch(/^CONFIRM KICK /);
   });
 });
+
+// The gates were never the problem here: with autonomous moderation on, both
+// stand down and the tools are offered. What refused was the prose, and a rule
+// that can never be satisfied is worse than no rule.
+describe('what autonomous moderation actually tells the model', () => {
+  const told = (over: Partial<typeof DEFAULT_CONFIG> = {}): string => {
+    const config = { ...DEFAULT_CONFIG, ...over };
+    return typeof discordAdminPlugin.instructions === 'function'
+      ? discordAdminPlugin.instructions({ getConfig: () => config } as never)
+      : String(discordAdminPlugin.instructions ?? '');
+  };
+
+  it('stops requiring a controller once the bot moderates on its own', () => {
+    const autonomous = told({ autonomousModeration: true });
+    // With nobody configured as a controller this could never be satisfied, so
+    // the bot correctly refused everybody, including the people who run it.
+    expect(autonomous).not.toContain("the controller's current message");
+    expect(autonomous).toMatch(/anyone can ask/i);
+  });
+
+  it('keeps the controller gate word for word when it is switched off', () => {
+    const gated = told({ autonomousModeration: false });
+    expect(gated).toContain("the controller's current message");
+    expect(gated).toMatch(/only while replying to a configured Big Yahu controller/i);
+  });
+
+  it('makes a controller weight rather than a gate', () => {
+    expect(told({ autonomousModeration: true })).toMatch(/lean towards yes, not the only way to get a yes/i);
+  });
+
+  it('still says what must not be done on somebody else’s say-so', () => {
+    const autonomous = told({ autonomousModeration: true });
+    expect(autonomous).toMatch(/real\s+disadvantage for no reason/i);
+    expect(autonomous).toMatch(/not banter/i);
+    expect(autonomous).toMatch(/never touch anyone for disagreeing/i);
+    // A stored fact is a fact, not somebody asking.
+    expect(autonomous).toMatch(/is a fact, not a request/i);
+  });
+});
