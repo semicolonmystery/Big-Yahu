@@ -1,5 +1,6 @@
 import type { ToolDeclaration } from './chat';
 import type { JsonSchema } from './jsonSchema';
+import { ANY_FACT_TYPE } from '@shared/factTypes';
 
 /**
  * The shapes of the structured answers, as plain JSON Schema. Every property is
@@ -101,12 +102,12 @@ const searchShape = (typeIds: string[]): JsonSchema => ({
     },
     type: {
       type: 'string',
-      ...(typeIds.length > 0 ? { enum: ['', ...typeIds] } : {}),
+      ...(typeIds.length > 0 ? { enum: [ANY_FACT_TYPE, ...typeIds] } : {}),
       description:
         'Which kind of fact to search, from the `factTypes` list you were given — read what each one says it '
         + 'is for. A search naming a type returns only that kind, which is the point: asking for "message" '
         + 'finds what somebody said, asking for "rule" finds what the rule is, and neither buries the other. '
-        + 'Leave it empty to search everything at once, which is right when the question fits no one kind.',
+        + `Use "${ANY_FACT_TYPE}" to search everything at once, which is right when the question fits no one kind.`,
     },
     people: {
       type: 'array',
@@ -323,11 +324,11 @@ export const searchFactsDeclarationFor = (typeIds: string[]): ToolDeclaration =>
             },
             type: {
               type: 'string',
-              ...(typeIds.length > 0 ? { enum: ['', ...typeIds] } : {}),
+              ...(typeIds.length > 0 ? { enum: [ANY_FACT_TYPE, ...typeIds] } : {}),
               description:
                 'Which kind of fact to look in, from the `factTypes` list you were given. A search naming a '
                 + 'type returns only that kind, which is how asking for a rule does not come back as eight '
-                + 'things somebody said. Empty searches everything.',
+                + `things somebody said. "${ANY_FACT_TYPE}" searches everything.`,
             },
             people: {
               type: 'array',

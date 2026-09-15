@@ -99,6 +99,16 @@ export const BUILT_IN_FACT_TYPES: readonly BuiltInFactType[] = [
 /** Slugs an operator may invent: the shape a Chroma metadata value and a schema enum both tolerate. */
 export const FACT_TYPE_ID = /^[a-z][a-z0-9_-]{0,30}$/;
 
+/**
+ * "Search everything", as a value the model can actually send.
+ *
+ * It used to be the empty string, which Google's API rejects outright — *"enum[0]:
+ * cannot be empty"* — and took down every reply the moment the bot moved onto a
+ * Gemini endpoint. An enum member has to be a real word, so this is one, and it
+ * is reserved: a type an operator names `any` would mean two things at once.
+ */
+export const ANY_FACT_TYPE = 'any';
+
 export const FACT_TYPE_LABEL_MAX = 60;
 export const FACT_TYPE_DESCRIPTION_MAX = 2000;
 /** More than this and the model is choosing from a catalogue rather than a list. */

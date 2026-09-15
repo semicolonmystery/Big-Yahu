@@ -14,7 +14,7 @@ import {
   updateFactType,
 } from '../../src/server/db/repositories/factTypesRepo';
 import { updateSettings } from '../../src/server/db/repositories/settingsRepo';
-import { BUILT_IN_FACT_TYPES } from '../../src/shared/factTypes';
+import { ANY_FACT_TYPE, BUILT_IN_FACT_TYPES } from '../../src/shared/factTypes';
 import { FACT_EXTRACTION_DEFAULT, REPLY_DEFAULT } from '../../src/server/ai/prompts/systemInstructions';
 
 beforeEach(() => {
@@ -92,6 +92,12 @@ describe('types the operator owns', () => {
 
   it('refuses a type with no description, because the model would have nothing to go on', () => {
     expect(() => addFactType({ id: 'project', label: 'Project', description: '  ' })).toThrow(FactTypeError);
+  });
+
+  // The models are told this one means "search everything", so a type by that
+  // name would mean two things at once.
+  it('refuses the reserved id that means "every type"', () => {
+    expect(() => addFactType({ id: ANY_FACT_TYPE, label: 'Any', description: 'Everything.' })).toThrow(FactTypeError);
   });
 
   it('refuses a second type with the same id', () => {

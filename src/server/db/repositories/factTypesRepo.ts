@@ -4,6 +4,7 @@ import { factTypes } from '../schema';
 import { getSettings } from './settingsRepo';
 import { DEFAULT_SETTINGS } from '@shared/constants';
 import {
+  ANY_FACT_TYPE,
   BUILT_IN_FACT_TYPES,
   FACT_TYPES_MAX,
   FACT_TYPE_DESCRIPTION_MAX,
@@ -149,6 +150,9 @@ export function addFactType(input: FactTypeInput): FactType {
   if (!FACT_TYPE_ID.test(id)) {
     throw new FactTypeError('An id is lowercase letters, digits, hyphens and underscores, starting with a letter');
   }
+  // The models are told this one means "search everything", so a type by that
+  // name would mean two things at once.
+  if (id === ANY_FACT_TYPE) throw new FactTypeError(`"${ANY_FACT_TYPE}" is reserved — it is how a search says it wants every type`);
   const existing = listFactTypes();
   if (existing.some((type) => type.id === id)) throw new FactTypeError(`There is already a "${id}" type`);
   if (existing.length >= FACT_TYPES_MAX) throw new FactTypeError(`${FACT_TYPES_MAX} types is the most the model can choose between`);

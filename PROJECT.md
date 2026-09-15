@@ -510,6 +510,14 @@ The cap is four searches, enforced in code rather than in the schema, which has
 no `maxItems`: a model given an array will fill it, and one topic call must not
 be able to fan out into arbitrary cost.
 
+"Search everything" is the word `any`, not an empty string. Google refuses an
+empty enum member outright — *"enum[0]: cannot be empty"* — and because the tool
+list is part of the request, that is a 400 on every reply rather than on one
+call. It is a reserved type id for the same reason: a type somebody named `any`
+would mean two things at once. Every schema and tool declaration the model is
+handed is checked for empty and duplicate enum members, since this is a mistake
+that costs nothing to make and takes the bot down.
+
 Facts carry `authorIds` and `subjectIds`, so the admin panel can list everyone
 facts exist about and filter to one person.
 
@@ -1163,6 +1171,7 @@ does not queue or invoke AI.
 | Themes | IMPL | system, light and dark from the sidebar, `next-themes` against the `.dark` variant the stylesheet already had; sonner's own `useTheme` starts working as a side effect |
 | Controllers by name | IMPL | picked from the guild roster rather than typed as a snowflake; `label` dropped, and no user id shown anywhere in the UI |
 | `read_audit_log` | IMPL | Discord Admin gains a controller-gated read of the audit log with a configurable look-back, answering in Discord only; executor and target come back as mentions |
+| No empty enum member reaches a model | IMPL | "search everything" is `any` rather than an empty string, which Google refuses outright and, being in the tool list, fails every reply rather than one call; `any` is reserved as a type id, and every declaration is checked |
 | Reasoning on every task | IMPL | effort is the task's own setting for structured calls as well as the reply, default `none`; an endpoint that refuses to have it switched off is asked again without the field and remembered, rather than killing the reply |
 | Anti-fabrication (prompt + mention/link sanitising) | IMPL | strips unknown channels, users and message links |
 | Reply voice (vulgar, room-matching, light gen-z) | IMPL | in the reply system instruction |
