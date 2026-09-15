@@ -194,6 +194,16 @@ describe('the topic prompt describes the answer it actually asks for', () => {
     expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/being sworn at/i);
   });
 
+  // Observed: "@big jahler welcome back 👋" got silence, and the log showed it
+  // had understood the message exactly. The rule had said silence was for a tag
+  // "with no question and nothing to react to", which describes a welcome.
+  it('does not let the absence of a question decide it', () => {
+    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/whether there is a question in it decides nothing/i);
+    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/saying something to the bot is opening something/i);
+    // What earns silence is closing something, not lacking a question.
+    expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/closes something the bot has already finished/i);
+  });
+
   it('leaves room for a trap rather than listing every case', () => {
     expect(TOPIC_EXTRACTION_DEFAULT).toMatch(/judgement rather than a rule/i);
     expect(TOPIC_EXTRACTION_DEFAULT).toContain('debil řekne co');

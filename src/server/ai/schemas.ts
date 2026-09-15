@@ -167,13 +167,14 @@ export const topicSchemaFor = (typeIds: string[]): JsonSchema => ({
     staySilent: {
       type: 'boolean',
       description:
-        'True to send no reply at all. Answering is the default and this needs a reason: there is nothing to '
-        + 'answer (a thanks, an "ok", a passing tag with no question in it), or the reply is itself the point '
-        + 'of the message rather than the answer to anything — a trap that only works if the bot takes it — or '
-        + 'the bot has already told that person it is done with them. False for everything else: a question, a '
-        + 'request, being told something, being argued with, being sworn at. Somebody repeating themselves or '
-        + 'getting annoyed that nothing came back means the last thing they said needed an answer and did not '
-        + 'get one, so answer them.',
+        'True to send no reply at all. Answering is the default and this needs a reason: the message closes '
+        + 'something already finished (a "dik" or an "ok" acknowledging an answer just given), or the reply is '
+        + 'itself the point of the message rather than the answer to anything — a trap that only works if the '
+        + 'bot takes it — or the bot has already told that person it is done with them. Whether there is a '
+        + 'question in it decides nothing: somebody saying something to the bot is opening something rather '
+        + 'than closing it, and gets an answer. Somebody repeating '
+        + 'themselves or getting annoyed that nothing came back means the last thing they said needed an '
+        + 'answer and did not get one, so answer them.',
     },
     needsMoreContext: {
       type: 'boolean',

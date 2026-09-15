@@ -953,9 +953,18 @@ reads as a back-and-forth going nowhere; they get annoyed; that reads as
 needling. Being chased for a reply is now explicitly a reason to **answer**: it
 means the last thing somebody said needed an answer and did not get one.
 
-Three things earn silence: nothing was asked ("dik", "ok", a passing tag), the
-reply is itself the point of the message rather than the answer to anything, or
-the bot has already said it is done with that person. The middle one is written
+Three things earn silence: the message **closes** something already finished (a
+"dik" or an "ok" acknowledging an answer just given), the reply is itself the
+point of the message rather than the answer to anything, or the bot has already
+said it is done with that person.
+
+Whether there is a question in it decides nothing, and saying otherwise was the
+second version's bug: "nothing was asked" had been written as "a passing tag with
+no question and nothing to react to", which describes half of what people say to
+a bot. Someone said hello to it and got silence — the log showed it had read the
+message exactly right and stayed quiet anyway, because the rule told it to.
+Somebody saying something to the bot is opening something rather than closing it,
+and that is answered. The middle one is written
 as judgement rather than a rule — a trap like "debil řekne co" only works if the
 bot takes it, and no list of cases would cover the next one somebody invents.
 Everything else is answered, including being argued with and being sworn at: the
@@ -1243,6 +1252,13 @@ usage accounting.
 Playwright runs a real isolated admin server and Chromium through setup, login,
 logout, settings persistence, session expiry, retry and mobile navigation. Its
 facts and stats responses are explicit fixtures.
+
+`scripts/silence-probe.ts` is the one thing here that talks to a real model. A
+prompt change cannot be unit-tested — a test can only check that the words are in
+the file — so this asks an actual model the cases that have gone wrong in the
+channel and says which way each went. Running it against the old prompt and the
+new one is how a rewrite is checked rather than hoped over. It costs about a cent
+a run, so it is never part of `npm run check` and nothing calls it on its own.
 
 `npm run test:integration` exercises a real pinned Chroma server with
 deterministic embeddings and a temporary collection, including metadata arrays,
