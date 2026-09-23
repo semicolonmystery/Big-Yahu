@@ -38,6 +38,9 @@ export const DEFAULT_SETTINGS = {
   /** Off: `maxImages` applies. On: every picture in the window goes, and the cap is not shown. */
   imageLimitDisabled: false,
   replySplitDelayMs: 400,
+  /** Off by default: it trades tokens for cache hits, and that is an operator's call. */
+  messageBundlingEnabled: false,
+  messageBundleSize: 5,
   textAttachmentMaxKb: 16,
   crossChannelMessages: 30,
   overloadMessage: 'every model I can reach is busy right now, try again in a minute',

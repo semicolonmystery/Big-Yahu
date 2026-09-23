@@ -53,6 +53,8 @@ export const settings = sqliteTable('settings', {
   imageLimitDisabled: integer('image_limit_disabled', { mode: 'boolean' }).notNull().default(false),
   /** Between the messages a split reply is sent as. 0 sends them as fast as Discord allows. */
   replySplitDelayMs: integer('reply_split_delay_ms').notNull().default(400),
+  messageBundlingEnabled: integer('message_bundling_enabled', { mode: 'boolean' }).notNull().default(false),
+  messageBundleSize: integer('message_bundle_size').notNull().default(5),
   textAttachmentMaxKb: integer('text_attachment_max_kb').notNull().default(16),
   crossChannelMessages: integer('cross_channel_messages').notNull().default(30),
   overloadMessage: text('overload_message')
@@ -346,3 +348,30 @@ export const factIndex = sqliteTable('fact_index', {
   index('fact_index_created_at').on(table.createdAt),
   index('fact_index_types').on(table.types),
 ]);
+
+
+/**
+ * Fixed groups of messages, so a conversation's history is the same bytes on
+ * every call and a provider can cache it.
+ *
+ * Caching is prefix-based: it pays only when a request begins with exactly what
+ * an earlier one began with. A sliding window of the last N messages never does
+ * — every new message shifts everything — so the history is cut into bundles at
+ * points that never move once set, and a bundle is always sent whole.
+ *
+ * A bundle is sealed only when it can be filled exactly. A short bundle would
+ * have to grow later, which is the one thing that must never happen to it: the
+ * bytes would change and every request built on it would miss.
+ *
+ * Nothing here is the truth — the messages are — so throwing the table away only
+ * costs cache hits, which is what makes changing the bundle size safe.
+ */
+export const messageBundles = sqliteTable('message_bundles', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  channelId: text('channel_id').notNull(),
+  /** Space-packed, oldest first, and always exactly the configured size. */
+  messageIds: text('message_ids').notNull(),
+  /** The oldest message in it, which is what puts bundles in order. */
+  firstMessageId: text('first_message_id').notNull(),
+  sealedAt: integer('sealed_at').notNull(),
+}, (table) => [index('message_bundles_channel').on(table.channelId, table.firstMessageId)]);

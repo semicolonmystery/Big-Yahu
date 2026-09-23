@@ -201,7 +201,15 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
   });
 
   const materialText = renderMaterial(draft.material);
-  const messages: ChatMessage[] = [userMessageWithImages(materialText, draft.images)];
+  // Bundles first and unchanging, the volatile document after them, and the
+  // pictures last of all. That order is the whole mechanism: caching works on
+  // the front of a request, so anything that changes between calls has to sit
+  // behind everything that does not — and an image never caches at all, so one
+  // placed earlier would cut the cacheable prefix off at itself.
+  const messages: ChatMessage[] = [
+    ...(draft.historyBundles ?? []).map((bundle): ChatMessage => ({ role: 'user', content: renderMaterial(bundle) })),
+    userMessageWithImages(materialText, draft.images),
+  ];
   // Everything already read out of another channel counts as seen, or the
   // sanitisers below would strip the very jump links and mentions the prompt
   // just handed the model.

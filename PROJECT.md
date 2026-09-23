@@ -225,6 +225,52 @@ Stopping keeps what it has already corrected. Those facts were improved, and
 putting the old wording back would undo the work — which is why reset, which
 removes what a re-embed copied, removes nothing here.
 
+### Sending history so it can be cached
+
+Caching is prefix-based: a provider charges the cheap rate only when a request
+*begins* with exactly what an earlier one began with. Almost nothing about a
+reply qualifies. The material's first field is `now`, which changes every call,
+so a single document holding the whole context breaks the prefix at the first
+character however large it is — measured at 0% cached, at every size tried.
+
+Bundling is what makes any of it possible. A channel's history is cut into fixed
+groups whose boundaries never move once set, and those go ahead of the volatile
+document as their own messages. A bundle is sealed **only when it can be filled
+exactly**: a short one would have to grow when the next message arrives, and
+growing is the one thing a bundle must never do — its bytes would change and
+every request built on it would miss.
+
+Pictures go last, after every bundle. They do not cache: measured, an image
+added 1089 prompt tokens and none of them ever came back cached, while the text
+around it did. Because caching stops at the first thing that differs, an image
+placed inside a bundle would cap the cacheable prefix at itself.
+
+What it is actually worth, on `gemini-3.5-flash-lite` with 120 messages of
+history and bundles of five:
+
+| | one document | bundled |
+|---|---|---|
+| window slides by 2 | 0% | 69% |
+| window slides by 5 | 0% | 0% |
+| history anchored | 0% | 87% |
+
+Two things follow. The gain dies when the window slides by a whole bundle
+between replies, because the leading bundle falls off the front and the prefix
+moves — a larger bundle size rides out longer gaps. And there is a floor: at
+roughly 8k and 12k prompt tokens nothing cached in any shape, and it only
+engaged around 18k, so a quiet channel gets nothing from this.
+
+A cached prefix belongs to one model on one host, and the reply, topic
+extraction and the periodic fact extraction all read the same history. Bundles
+cut for one are worth nothing to another unless the three answer on the same
+model at the same host, so the panel names which of them disagree rather than
+warning in general.
+
+Changing the bundle size throws every bundle away, because bundles of five and
+bundles of two cannot be told apart once stored and a request mixing them caches
+nothing while looking like it should. That costs only cache hits — the messages
+are elsewhere — but it costs all of them, so the panel asks first.
+
 ### Changing the embedding model
 
 A Chroma collection holds one embedding model at one width — a query embedded with one
@@ -1261,6 +1307,7 @@ does not queue or invoke AI.
 | Reputation is unmistakable | IMPL | somebody it rates gets the aside, the benefit of the doubt and its backing against a stranger; liking somebody still does not make them right — they get an argument where a stranger gets a correction |
 | In the conversation, not narrating it | IMPL | no recapping what everyone just read, no describing a picture everyone can see, no making the same point twice |
 | Presence is not evidence about a person | IMPL | a status says what an account is doing and nothing about the room somebody is in; reaching for it to argue against what somebody in that room says is answering a different question |
+| Bundled history for caching | IMPL | `message_bundles` holds cut points that never move; bundles go ahead of the volatile material and pictures go after all of them, since an image never caches and would cap the prefix at itself. Sealed only when exactly full. Off by default, warns when the three jobs sharing a channel's history answer on different models, and clears every bundle behind a confirmation when the size changes |
 | Reasoning on every task | IMPL | effort is the task's own setting for structured calls as well as the reply, default `none`; an endpoint that refuses to have it switched off is asked again without the field and remembered, rather than killing the reply |
 | Anti-fabrication (prompt + mention/link sanitising) | IMPL | strips unknown channels, users and message links |
 | Reply voice (vulgar, room-matching, light gen-z) | IMPL | in the reply system instruction |

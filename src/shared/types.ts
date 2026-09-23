@@ -188,6 +188,10 @@ export interface AppSettings {
   imageLimitDisabled: boolean;
   /** Between the messages a split reply is sent as. 0 sends them as fast as Discord allows. */
   replySplitDelayMs: number;
+  /** Send history in fixed bundles so the request prefix repeats and can be cached. */
+  messageBundlingEnabled: boolean;
+  /** How many messages one bundle holds. Changing it throws every bundle away. */
+  messageBundleSize: number;
   /** Maximum message.txt file size in KiB; 0 disables reading. Hard cap 64. */
   textAttachmentMaxKb: number;
   /** Messages pulled from another channel the bot was pointed at. 0 turns cross-channel reading off. */
@@ -419,4 +423,13 @@ export interface GuildMember {
   /** What the panel shows. The id is the storage key and is never displayed. */
   name: string;
   username: string | null;
+}
+
+export interface BundlingStatus {
+  /** How many bundles exist, which is what changing the size would throw away. */
+  bundles: number;
+  /** The model the first of the three sharing jobs answers on, for the warning. */
+  sharedModel: string;
+  /** Those that answer on something else, named, since a cached prefix belongs to one model on one host. */
+  differing: string[];
 }

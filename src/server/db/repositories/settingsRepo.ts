@@ -62,12 +62,15 @@ const BOUNDS: Record<NumericSetting, { min: number; max: number }> = {
   maxImages: { min: 0, max: 16 },
   // 0 sends them instantly, which is still several messages rather than one block.
   replySplitDelayMs: { min: 0, max: 5000 },
+  // Below two there is nothing to bundle; far above this a single message drags
+  // a wall of unrelated history in with it.
+  messageBundleSize: { min: 2, max: 50 },
   textAttachmentMaxKb: { min: 0, max: 64 },
   // 0 is meaningful: it switches cross-channel reading off entirely.
   crossChannelMessages: { min: 0, max: 100 },
 };
 
-const BOOLEAN_SETTINGS: BooleanSetting[] = ['visionEnabled', 'imageLimitDisabled'];
+const BOOLEAN_SETTINGS: BooleanSetting[] = ['visionEnabled', 'imageLimitDisabled', 'messageBundlingEnabled'];
 
 const TEXT_LIMITS: Record<TextSetting, number> = {
   embeddingModel: 100,

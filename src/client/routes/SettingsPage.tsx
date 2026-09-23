@@ -8,6 +8,7 @@ import { api } from '@/lib/api';
 import { AiTasksSection } from '@/components/settings/AiTasksSection';
 import { FactTypesSection } from '@/components/settings/FactTypesSection';
 import { FactCleanupSection } from '@/components/settings/FactCleanupSection';
+import { BundlingSection } from '@/components/settings/BundlingSection';
 import type { FactType } from '@shared/factTypes';
 import { EmbeddingSection } from '@/components/settings/EmbeddingSection';
 import { Label } from '@/components/ui/label';
@@ -794,6 +795,9 @@ export default function SettingsPage() {
 
       {/* Wide by nature: a row of tabs, and a table that scrolls sideways if it must. */}
       <div className="col-span-full"><AiTasksSection /></div>
+      <div className="col-span-full lg:col-span-1">
+        <BundlingSection draft={draft} settings={original} onChange={(patch) => draft && setDraft({ ...draft, ...patch })} />
+      </div>
       <div className="col-span-full lg:col-span-1"><EmbeddingSection /></div>
       <div className="col-span-full lg:col-span-1"><FactCleanupSection types={factTypes} /></div>
       <div className="col-span-full"><FactTypesSection onTypes={setFactTypes} /></div>

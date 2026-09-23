@@ -4,8 +4,10 @@ import { latestJob, openJob } from '../../db/repositories/reembedRepo';
 import { continueReembed, pauseReembed, planReembed, resetReembed, runReembed, startReembed } from '../../ai/reembed';
 import { DEFAULT_BUNDLE_SIZE, UNTYPED_FILTER, planCleanup, startCleanup } from '../../ai/factCleanup';
 import { factTypeIds } from '../../db/repositories/factTypesRepo';
+import { bundleCount, clearBundles } from '../../db/repositories/messageBundlesRepo';
+import { listTaskModels } from '../../db/repositories/taskModelsRepo';
 import { DEFAULT_SETTINGS } from '@shared/constants';
-import type { AppSettings, CleanupStatus, EmbeddingStatus } from '@shared/types';
+import type { AppSettings, BundlingStatus, CleanupStatus, EmbeddingStatus } from '@shared/types';
 
 export const settingsRouter = Router();
 
@@ -33,7 +35,19 @@ settingsRouter.patch('/', (req, res) => {
     return;
   }
   try {
-    res.json({ success: true, data: updateSettings(patch) });
+    // Bundles of five and bundles of two are indistinguishable once they are in
+    // the table, and a request mixing the two caches nothing while looking like
+    // it should. So the size changing throws them all away — which is safe,
+    // since a bundle is only a record of where a cut was, and costly enough in
+    // lost cache hits that the panel asks before sending it.
+    const before = getSettings();
+    const clearing = patch.messageBundleSize !== undefined && patch.messageBundleSize !== before.messageBundleSize;
+    const updated = updateSettings(patch);
+    if (clearing && updated.messageBundleSize !== before.messageBundleSize) {
+      clearBundles();
+      console.log(`[bundles] bundle size ${before.messageBundleSize} -> ${updated.messageBundleSize}; every bundle dropped`);
+    }
+    res.json({ success: true, data: updated });
   } catch (error) {
     if (!(error instanceof SettingsValidationError)) throw error;
     res.status(400).json({ success: false, error: error.message });
@@ -148,3 +162,41 @@ control('/cleanup/start', async (req) => {
 control('/embedding/pause', () => { pauseReembed(); });
 control('/embedding/continue', () => { continueReembed(); });
 control('/embedding/reset', async () => { await resetReembed(); });
+
+
+/**
+ * Whether bundling will actually pay, and what is stopping it.
+ *
+ * A cached prefix belongs to one model on one host. The reply, the topic call
+ * and the periodic fact extraction all read the same channel's history, so
+ * bundles cut for one are worth nothing to another unless the three answer on
+ * the same model at the same host — the work would be done and the saving would
+ * not arrive. The panel says which of them disagree rather than warning in
+ * general, because "check your models" is not something anybody can act on.
+ */
+settingsRouter.get('/bundling', (_req, res) => {
+  const SHARING: Array<[string, string]> = [
+    ['reply', 'the reply'],
+    ['topicExtraction', 'topic extraction'],
+    ['factExtraction', 'fact extraction'],
+  ];
+  const heads = SHARING.map(([task, label]) => {
+    const [first] = listTaskModels(task);
+    return { task, label, model: first?.model ?? '', upstream: first?.upstream ?? '' };
+  });
+
+  const present = heads.filter((head) => head.model);
+  const target = present[0];
+  const differing = present
+    .filter((head) => head.model !== target?.model || head.upstream !== target?.upstream)
+    .map((head) => `${head.label} (${head.model}${head.upstream ? ` on ${head.upstream}` : ''})`);
+
+  res.json({
+    success: true,
+    data: {
+      bundles: bundleCount(),
+      sharedModel: target ? `${target.model}${target.upstream ? ` on ${target.upstream}` : ''}` : '',
+      differing,
+    } satisfies BundlingStatus,
+  });
+});

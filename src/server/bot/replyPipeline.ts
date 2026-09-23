@@ -31,6 +31,7 @@ import { formatNow, languageName } from '@shared/constants';
 import { mentionedUserIds } from '@shared/discord';
 import { startTyping } from './typing';
 import { replyParts } from './replyParts';
+import { bundleWindow } from '../ai/bundling';
 import { imageLimitFrom, imagePartsFor } from './attachments';
 
 /**
@@ -296,6 +297,14 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
     : [];
   const channelName = 'name' in message.channel ? message.channel.name : undefined;
 
+  // The older part of the history, cut at points that do not move, so the front
+  // of the request is the same bytes on every call and the provider can cache
+  // it. Off by default; when it is off `loose` is simply the whole window.
+  const bundled = bundleWindow(message.channelId, window, {
+    enabled: settings.messageBundlingEnabled,
+    size: settings.messageBundleSize,
+  });
+
   const material: Record<string, unknown> = {
     now: formatNow(settings.timezone),
     you: selfMaterial(message),
@@ -304,7 +313,7 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
     requester: { id: message.author.id, name: message.author.username, isController: controller },
     whatIsBeingAsked: topic.whatTaggingMessageIsAbout,
     language: languageName(settings.replyLanguage),
-    messages: messagesMaterial(window),
+    messages: messagesMaterial(bundled.loose),
   };
   if (quoted.length > 0) material.quoted = messagesMaterial(quoted);
   if (images.length > 0) {
@@ -366,6 +375,7 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
       ...pluginInstructions,
     ].join('\n\n'),
     material,
+    ...(bundled.bundles.length > 0 ? { historyBundles: bundled.bundles } : {}),
     images,
     retrievedFacts,
     sourceMessages,

@@ -147,6 +147,12 @@ export interface DraftImage {
 export interface DraftPrompt {
   systemInstruction: string;
   material: Record<string, unknown>;
+  /**
+   * Older history, already cut into fixed groups, sent ahead of `material` as
+   * documents of its own so the request begins with the same bytes every time
+   * and a provider can cache them. Empty unless bundling is switched on.
+   */
+  historyBundles?: Array<Record<string, unknown>>;
   images: DraftImage[];
   retrievedFacts: Fact[];
   sourceMessages: SourceMessage[];
