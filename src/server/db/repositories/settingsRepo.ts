@@ -60,12 +60,14 @@ const BOUNDS: Record<NumericSetting, { min: number; max: number }> = {
   modelFailureThreshold: { min: 1, max: 20 },
   modelRestMinutes: { min: 1, max: 24 * 60 },
   maxImages: { min: 0, max: 16 },
+  // 0 sends them instantly, which is still several messages rather than one block.
+  replySplitDelayMs: { min: 0, max: 5000 },
   textAttachmentMaxKb: { min: 0, max: 64 },
   // 0 is meaningful: it switches cross-channel reading off entirely.
   crossChannelMessages: { min: 0, max: 100 },
 };
 
-const BOOLEAN_SETTINGS: BooleanSetting[] = ['visionEnabled'];
+const BOOLEAN_SETTINGS: BooleanSetting[] = ['visionEnabled', 'imageLimitDisabled'];
 
 const TEXT_LIMITS: Record<TextSetting, number> = {
   embeddingModel: 100,

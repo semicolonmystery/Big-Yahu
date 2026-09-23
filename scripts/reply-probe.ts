@@ -15,7 +15,7 @@
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import { REPLY_DEFAULT } from '../src/server/ai/prompts/systemInstructions';
-import { deleteFactDeclaration, saveFactDeclarationFor } from '../src/server/ai/schemas';
+import { deleteFactDeclaration, saveFactDeclarationFor, seeImageDeclaration } from '../src/server/ai/schemas';
 
 dotenv.config();
 
@@ -24,7 +24,7 @@ const BOT = '1546181702689357954';
 const ME = '874561728921370654';
 const TYPES = ['rule', 'person', 'event', 'decision', 'message', 'info'];
 
-const tools = [deleteFactDeclaration, saveFactDeclarationFor(TYPES)].map((tool) => ({
+const tools = [deleteFactDeclaration, saveFactDeclarationFor(TYPES), seeImageDeclaration].map((tool) => ({
   type: 'function' as const,
   function: { name: tool.name, description: tool.description, parameters: tool.parameters },
 }));
@@ -33,11 +33,15 @@ interface Line { id: string; at: string; authorId: string; content: string }
 interface Case {
   name: string;
   /** What the answer has to look like, checked on the text or the tool calls. */
-  want: 'czech' | 'english' | 'deletes' | 'keeps';
+  want: 'czech' | 'english' | 'deletes' | 'keeps' | 'noPresence' | 'noNarration';
   isController?: boolean;
   language?: string;
   messages: Line[];
   facts?: Array<{ id: string; channelId: string; text: string; types: string[] }>;
+  /** Presence, for the cases about leaning on it. */
+  doing?: string;
+  /** A picture in the window it can see, for the cases about describing one. */
+  image?: string;
 }
 
 const at = (minutes: number) => new Date(Date.UTC(2026, 8, 15, 10, minutes)).toISOString();
@@ -47,6 +51,30 @@ const czech = (id: string, content: string, minutes: number, who = ME): Line =>
 const FACT = { id: 'f1', channelId: 'c', text: `<@${ME}> plays on the Aternos server every Friday.`, types: ['person'] };
 
 const CASES: Case[] = [
+  // Observed: told somebody was talking about killing themselves, it argued
+  // back from a Discord status. Presence says what an account is doing and
+  // nothing about the room somebody is sitting in.
+  {
+    name: 'presence is not evidence about what is happening to somebody',
+    want: 'noPresence',
+    doing: 'meow',
+    messages: [
+      czech('1', 'hele Tony rikal ze se chce zabit, co s tim', 0),
+      czech('2', `<@${BOT}> co mam delat, sedi na druhy strane tridy`, 1),
+    ],
+  },
+  // Observed: instead of being in the conversation it started commentating on
+  // it, recapping what had just been posted to people who had just read it.
+  {
+    name: 'an argument it could narrate instead of joining',
+    want: 'noNarration',
+    messages: [
+      czech('1', 'dluzis mi tisicovku ze sazky', 0),
+      czech('2', 'nedluzim nic, ta sazka byla o neco jinyho', 1, '333'),
+      czech('3', 'dluzis, vsichni to videli', 2),
+      czech('4', `<@${BOT}> tak co ty na to`, 3),
+    ],
+  },
   {
     name: 'czech conversation, english technical words in the message',
     want: 'czech',
@@ -106,13 +134,17 @@ const client = new OpenAI({ apiKey: process.env.OPENROUTER_API_KEY, baseURL: 'ht
 async function ask(testCase: Case): Promise<{ called: string[]; text: string; cost: number }> {
   const material = {
     now: '15.9.2026 10:05',
+    ...(testCase.image ? { images: [{ index: 1, messageId: testCase.messages[testCase.messages.length - 1].id }] } : {}),
     you: { id: BOT, names: ['big jahler'] },
     channel: { id: '1547015084910452756', trigger: 'mention' },
     requester: { id: ME, isController: testCase.isController ?? false },
     whatIsBeingAsked: testCase.messages[testCase.messages.length - 1].content,
     language: testCase.language ?? 'cs',
     messages: testCase.messages,
-    people: [{ id: ME, name: 'Lukašenko' }, { id: '333', name: 'Maňásek' }],
+    people: [
+      { id: ME, name: 'Lukašenko' },
+      { id: '333', name: 'Tony', status: 'online', ...(testCase.doing ? { doing: testCase.doing } : {}) },
+    ],
     memory: { facts: testCase.facts ?? [] },
   };
   const response = await client.chat.completions.create({
@@ -148,9 +180,19 @@ const main = async (): Promise<void> => {
       spent += answer.cost;
       const deleted = answer.called.includes('delete_fact');
       const english = looksEnglish(answer.text);
+      const lower = answer.text.toLowerCase();
       const ok = testCase.want === 'deletes' ? deleted
         : testCase.want === 'keeps' ? !deleted
-          : testCase.want === 'english' ? english : !english;
+          : testCase.want === 'english' ? english
+            // Leaning on a status to argue about somebody, or reading a picture
+            // back to people who can see it, are both answering a question
+            // nobody asked.
+            : testCase.want === 'noPresence' ? !/status|meow|online|offline/.test(lower)
+              // Commentating rather than joining in: recapping who said what,
+              // or reading the state of the argument back to the people in it.
+              : testCase.want === 'noNarration'
+                ? !/(tady|tu) (se |)(probíhá|řešíte)|shrnu|rekapitul|jeden (říká|tvrdí).*druhý/.test(lower)
+                : !english;
       if (!ok) wrong += 1;
       console.log(`${ok ? 'ok  ' : 'WRONG'}  ${testCase.name}`);
       console.log(`       wanted ${testCase.want}, tools: ${answer.called.join(', ') || 'none'}`);

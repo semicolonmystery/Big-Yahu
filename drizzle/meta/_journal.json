@@ -239,6 +239,13 @@
       "when": 1789422929941,
       "tag": "0033_kind_invaders",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1790155596732,
+      "tag": "0034_hot_kang",
+      "breakpoints": true
     }
   ]
 }

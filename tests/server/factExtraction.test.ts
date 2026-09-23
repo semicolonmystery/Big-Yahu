@@ -38,7 +38,11 @@ vi.mock('../../src/server/plugins/engine', () => ({
 vi.mock('../../src/server/db/repositories/settingsRepo', () => ({
   getSettings: state.settings,
 }));
-vi.mock('../../src/server/bot/attachments', () => ({ imagePartsFor: state.images }));
+vi.mock('../../src/server/bot/attachments', async (importOriginal) => ({
+  imagePartsFor: state.images,
+  // The real one: which limit applies is the thing being exercised, not a stub.
+  imageLimitFrom: (await importOriginal<typeof import('../../src/server/bot/attachments')>()).imageLimitFrom,
+}));
 vi.mock('../../src/server/bot/textAttachments', () => ({
   readTextAttachments: state.text, createTextAttachmentBudget: () => ({ bytes: 64 * 1024, files: 8 }),
 }));

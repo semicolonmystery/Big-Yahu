@@ -49,6 +49,10 @@ export const settings = sqliteTable('settings', {
   modelRestMinutes: integer('model_rest_minutes').notNull().default(120),
   visionEnabled: integer('vision_enabled', { mode: 'boolean' }).notNull().default(true),
   maxImages: integer('max_images').notNull().default(4),
+  /** On, every picture in the window goes and `maxImages` stops applying. */
+  imageLimitDisabled: integer('image_limit_disabled', { mode: 'boolean' }).notNull().default(false),
+  /** Between the messages a split reply is sent as. 0 sends them as fast as Discord allows. */
+  replySplitDelayMs: integer('reply_split_delay_ms').notNull().default(400),
   textAttachmentMaxKb: integer('text_attachment_max_kb').notNull().default(16),
   crossChannelMessages: integer('cross_channel_messages').notNull().default(30),
   overloadMessage: text('overload_message')

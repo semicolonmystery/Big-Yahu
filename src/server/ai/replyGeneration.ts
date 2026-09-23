@@ -17,6 +17,7 @@ import {
   replyToDeclaration,
   MAX_TOPIC_SEARCHES,
   readHistoryDeclaration,
+  seeImageDeclaration,
   searchFactsDeclarationFor,
   saveFactDeclarationFor,
 } from './schemas';
@@ -27,6 +28,7 @@ import { cacheMessages, getMessages } from '../db/repositories/cachedMessagesRep
 import { getSettings } from '../db/repositories/settingsRepo';
 import { canExtractFrom } from '../db/repositories/channelSettingsRepo';
 import { factTypeIds, knownTypes } from '../db/repositories/factTypesRepo';
+import { imagePartsFor, type MessageImage } from '../bot/attachments';
 import type { TextAttachmentBudget } from '../bot/textAttachments';
 import { DISCORD_MESSAGE_LIMIT } from '@shared/constants';
 import {
@@ -283,6 +285,11 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
   // The roster does not change between turns, so asking twice is already a sign
   // the model is going round rather than answering.
   let peopleListings = 0;
+  let imageRequests = 0;
+  /** Each is a download and a vision call, so it is bounded like every other paid loop here. */
+  const MAX_IMAGE_REQUESTS = 2;
+  /** Pictures fetched mid-reply, appended to the conversation once the turn's tools are answered. */
+  let pendingImages: MessageImage[] = [];
   const MAX_PEOPLE_LISTINGS = 2;
   // Each is several embeddings, so it is bounded like every other paid loop here.
   const MAX_FACT_SEARCHES = 3;
@@ -478,7 +485,8 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     const declarations: ToolDeclaration[] = [replyToDeclaration];
     if (canExtractFrom(context.channelId)) declarations.push(saveFactDeclarationFor(typeIds), deleteFactDeclaration);
     // Keep declarations present for tool calls already in conversation history.
-    declarations.push(readHistoryDeclaration, searchFactsDeclarationFor(typeIds), listPeopleDeclaration, readChannelDeclaration,
+    declarations.push(readHistoryDeclaration, searchFactsDeclarationFor(typeIds), seeImageDeclaration,
+      listPeopleDeclaration, readChannelDeclaration,
       ...pluginTools.map((tool) => tool.declaration));
     const answer = await chat('reply', {
       system: draft.systemInstruction,
@@ -585,6 +593,30 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
               ? { note: `Nothing new matched any of those. ${REPLY_NOW}` }
               : { note: REPLY_NOW }),
           });
+        } else if (name === 'see_image') {
+          if (imageRequests >= MAX_IMAGE_REQUESTS) { responses.set(call, { error: 'Picture budget exhausted.' }); continue; }
+          const wanted = typeof call.args.messageId === 'string' ? call.args.messageId : '';
+          // Only a message it was actually shown, the same rule every other id
+          // here follows: an invented id must not make the bot fetch anything.
+          if (!knownMessageIds.has(wanted)) {
+            responses.set(call, {
+              shown: false,
+              reason: 'That is not a message you were shown, so there is nothing to look at.',
+              note: REPLY_NOW,
+            });
+            needsResult = true;
+            continue;
+          }
+          imageRequests += 1;
+          needsResult = true;
+          const source = await context.taggedMessage.channel.messages.fetch(wanted).catch(() => null);
+          // The cap is what hid it in the first place, so it does not apply
+          // here: the model has asked for this one picture in particular.
+          const found = source ? await imagePartsFor([source], MAX_IMAGE_REQUESTS * 4) : { images: [], unseen: new Map() };
+          pendingImages = [...pendingImages, ...found.images];
+          responses.set(call, found.images.length > 0
+            ? { shown: found.images.length, note: `The picture is below. ${REPLY_NOW}` }
+            : { shown: 0, reason: 'That message has no picture that could be fetched.', note: REPLY_NOW });
         } else if (name === 'list_people') {
           if (peopleListings >= MAX_PEOPLE_LISTINGS) { responses.set(call, { error: 'People listing budget exhausted.' }); continue; }
           peopleListings += 1;
@@ -640,6 +672,15 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
         tool_call_id: call.id,
         content: JSON.stringify(responses.get(call) ?? { error: 'This tool was not executed.', note: REPLY_NOW }),
       });
+    }
+    // A tool result is JSON and cannot carry a picture, so one the model asked
+    // for arrives as its own message straight after the results it belongs to.
+    if (pendingImages.length > 0) {
+      messages.push(userMessageWithImages(
+        renderMaterial({ images: pendingImages.map((image) => ({ messageId: image.messageId })) }),
+        pendingImages,
+      ));
+      pendingImages = [];
     }
     answeredTools = true;
   }

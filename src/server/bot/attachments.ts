@@ -111,6 +111,20 @@ function countBy(candidates: Candidate[]): UnseenImages {
  * message so it does not read as empty, and the model knows a picture was there
  * without being invited to guess what was in it.
  */
+/**
+ * How many pictures may go in one call.
+ *
+ * Vision off means none, whatever else is set. With the cap switched off there
+ * is no number to apply — every picture in the window goes, and the byte
+ * allowance below is what actually bounds the request. `maxImages` is the
+ * ordinary case and the panel hides it when the cap is off, because a number
+ * that does nothing is worse than no number.
+ */
+export function imageLimitFrom(settings: { visionEnabled: boolean; maxImages: number; imageLimitDisabled: boolean }): number {
+  if (!settings.visionEnabled) return 0;
+  return settings.imageLimitDisabled ? Number.MAX_SAFE_INTEGER : settings.maxImages;
+}
+
 export async function imagePartsFor(messages: (Message | null)[], limit: number): Promise<ImageSelection> {
   const seen = new Set<string>();
   const candidates: Candidate[] = [];

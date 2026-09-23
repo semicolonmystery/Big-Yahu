@@ -35,6 +35,9 @@ export const DEFAULT_SETTINGS = {
   modelRestMinutes: 120,
   visionEnabled: true,
   maxImages: 4,
+  /** Off: `maxImages` applies. On: every picture in the window goes, and the cap is not shown. */
+  imageLimitDisabled: false,
+  replySplitDelayMs: 400,
   textAttachmentMaxKb: 16,
   crossChannelMessages: 30,
   overloadMessage: 'every model I can reach is busy right now, try again in a minute',
@@ -164,3 +167,14 @@ export const MAX_BUNDLE_SIZE = 50;
  * supports is prose in its description — which the panel shows beside this.
  */
 export const EMBEDDING_DIMENSIONS = [256, 512, 768, 1024, 1536, 2048, 3072] as const;
+
+/**
+ * A reply written as several lines is sent as several messages, because that is
+ * how a person types: a thought, send, another thought. One block of text with
+ * newlines in it reads as a document.
+ *
+ * Bounded so a model that answers with a twenty-item list does not post twenty
+ * times and meet Discord's rate limiter. Past the cap the remainder is joined
+ * back onto the last message rather than dropped.
+ */
+export const MAX_REPLY_PARTS = 8;

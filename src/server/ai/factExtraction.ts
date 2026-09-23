@@ -10,7 +10,7 @@ import { advanceCheckpoint, getCheckpoint } from '../db/repositories/checkpointR
 import { collectExtractionAnnotations, runOnHourlyCheck } from '../plugins/engine';
 import { getSettings } from '../db/repositories/settingsRepo';
 import { normaliseFactMentions } from '@shared/discord';
-import { imagePartsFor } from '../bot/attachments';
+import { imageLimitFrom, imagePartsFor } from '../bot/attachments';
 import { createTextAttachmentBudget, readTextAttachments } from '../bot/textAttachments';
 
 const FETCH_LIMIT = 100;
@@ -87,7 +87,7 @@ async function extractPage(channel: TextBasedChannel, guildId: string, messages:
   // nothing about them. Whatever does not fit the budget is marked in the
   // transcript rather than dropped silently.
   const settings = getSettings();
-  const { images, unseen } = await imagePartsFor(messages, settings.visionEnabled ? settings.maxImages : 0);
+  const { images, unseen } = await imagePartsFor(messages, imageLimitFrom(settings));
 
   const windowMessages = markUnseenImages(expandedMessages, unseen);
 

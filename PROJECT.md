@@ -1256,6 +1256,11 @@ does not queue or invoke AI.
 | Controllers by name | IMPL | picked from the guild roster rather than typed as a snowflake; `label` dropped, and no user id shown anywhere in the UI |
 | `read_audit_log` | IMPL | Discord Admin gains a controller-gated read of the audit log with a configurable look-back, answering in Discord only; executor and target come back as mentions |
 | No empty enum member reaches a model | IMPL | "search everything" is `any` rather than an empty string, which Google refuses outright and, being in the tool list, fails every reply rather than one call; `any` is reserved as a type id, and every declaration is checked |
+| A reply is sent the way somebody types | IMPL | every newline is a message, 0.4s apart by default and configurable; the first hangs under the tagging message and the rest do not, capped at eight parts with the tail joined on rather than dropped |
+| Asking to see a picture | IMPL | `see_image` fetches the pictures of one message it was shown, ignoring the cap that hid them, and they arrive as their own message since a tool result cannot carry an image. Plus a switch that turns the cap off entirely and hides the number |
+| Reputation is unmistakable | IMPL | somebody it rates gets the aside, the benefit of the doubt and its backing against a stranger; liking somebody still does not make them right — they get an argument where a stranger gets a correction |
+| In the conversation, not narrating it | IMPL | no recapping what everyone just read, no describing a picture everyone can see, no making the same point twice |
+| Presence is not evidence about a person | IMPL | a status says what an account is doing and nothing about the room somebody is in; reaching for it to argue against what somebody in that room says is answering a different question |
 | Reasoning on every task | IMPL | effort is the task's own setting for structured calls as well as the reply, default `none`; an endpoint that refuses to have it switched off is asked again without the field and remembered, rather than killing the reply |
 | Anti-fabrication (prompt + mention/link sanitising) | IMPL | strips unknown channels, users and message links |
 | Reply voice (vulgar, room-matching, light gen-z) | IMPL | in the reply system instruction |

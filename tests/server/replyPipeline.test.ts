@@ -158,6 +158,47 @@ describe('complete reply pipeline boundaries', () => {
     expect(msg.reply).toHaveBeenCalled();
   });
 
+  it('sends a multi-line answer as several messages, the first one threaded', async () => {
+    m.generate.mockResolvedValueOnce({
+      text: 'prvni vec\ndruha vec\ntreti vec', silent: false, savedFactIds: [], deletedFactIds: [], replyToMessageId: null,
+    });
+    m.settings.mockReturnValue({ ...DEFAULT_SETTINGS, replySplitDelayMs: 0 });
+    const msg = message();
+    await handleMention(msg as unknown as Message);
+
+    // Only the first hangs under anything: Discord repeats the quoted header on
+    // every reply, and three repetitions of a message everybody just read is noise.
+    expect(msg.reply).toHaveBeenCalledWith({ content: 'prvni vec', allowedMentions: { parse: ['users'], repliedUser: true } });
+    expect(msg.channel.send).toHaveBeenCalledTimes(2);
+    expect(msg.channel.send).toHaveBeenNthCalledWith(1, { content: 'druha vec', allowedMentions: { parse: ['users'], repliedUser: true } });
+    expect(msg.channel.send).toHaveBeenNthCalledWith(2, { content: 'treti vec', allowedMentions: { parse: ['users'], repliedUser: true } });
+  });
+
+  it('logs the reply once, whatever it was sent as', async () => {
+    m.generate.mockResolvedValueOnce({
+      text: 'jedna\ndva', silent: false, savedFactIds: [], deletedFactIds: [], replyToMessageId: null,
+    });
+    m.settings.mockReturnValue({ ...DEFAULT_SETTINGS, replySplitDelayMs: 0 });
+    await handleMention(message() as unknown as Message);
+    expect(m.log).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps what is already in the channel when a later part will not send', async () => {
+    m.generate.mockResolvedValueOnce({
+      text: 'jedna\ndva\ntri', silent: false, savedFactIds: [], deletedFactIds: [], replyToMessageId: null,
+    });
+    m.settings.mockReturnValue({ ...DEFAULT_SETTINGS, replySplitDelayMs: 0 });
+    const msg = message();
+    msg.channel.send = vi.fn().mockRejectedValue(new Error('channel went away'));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await handleMention(msg as unknown as Message);
+    // The first part is in the channel, so the reply happened and is logged —
+    // throwing it away would answer a delivered message with an apology.
+    expect(msg.reply).toHaveBeenCalled();
+    expect(m.log).toHaveBeenCalledTimes(1);
+  });
+
   it('propagates the controller result as authoritative reply context', async () => {
     m.controller.mockReturnValueOnce(true);
     const msg = message(); await handleMention(msg as unknown as Message);

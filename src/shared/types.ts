@@ -184,6 +184,10 @@ export interface AppSettings {
   visionEnabled: boolean;
   /** Ceiling on pictures sent in one model call, newest first. Vision is the expensive part. */
   maxImages: number;
+  /** On, `maxImages` stops applying and every picture in the window is sent. */
+  imageLimitDisabled: boolean;
+  /** Between the messages a split reply is sent as. 0 sends them as fast as Discord allows. */
+  replySplitDelayMs: number;
   /** Maximum message.txt file size in KiB; 0 disables reading. Hard cap 64. */
   textAttachmentMaxKb: number;
   /** Messages pulled from another channel the bot was pointed at. 0 turns cross-channel reading off. */

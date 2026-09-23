@@ -30,7 +30,8 @@ import type { ContextUser, DraftPrompt } from '@big-yahu/plugin-sdk';
 import { formatNow, languageName } from '@shared/constants';
 import { mentionedUserIds } from '@shared/discord';
 import { startTyping } from './typing';
-import { imagePartsFor } from './attachments';
+import { replyParts } from './replyParts';
+import { imageLimitFrom, imagePartsFor } from './attachments';
 
 /**
  * Everyone the material actually refers to.
@@ -103,6 +104,9 @@ function usersInPlay(
  * behaviour of notifying whoever is being replied to.
  */
 const ALLOWED_MENTIONS = { parse: ['users'], repliedUser: true } as const;
+
+/** Between the messages of a split reply, so it reads as typing rather than a dump. */
+const pause = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 /** Mentioning half the server is not a question; two channels is already generous. */
 const MAX_AUTOMATIC_CHANNEL_READS = 2;
@@ -266,9 +270,7 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
   // Pictures come first: what could not be sent is marked in the transcript, so
   // a message whose whole content was an image does not read as blank.
   // A zero budget counts unseen images without downloading them.
-  const { images, unseen } = await imagePartsFor(
-    [...discordMessages, repliedTo], settings.visionEnabled ? settings.maxImages : 0,
-  );
+  const { images, unseen } = await imagePartsFor([...discordMessages, repliedTo], imageLimitFrom(settings));
   const window = markUnseenImages(windowMessages, unseen);
   const quoted = markUnseenImages(quotedMessages, unseen);
 
@@ -404,15 +406,39 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
   // occasionally the one it is actually answering, when somebody pinged it into
   // a question another person asked. failIfNotExists keeps a deleted target from
   // swallowing the whole reply.
-  const sent =
-    reply.replyToMessageId && reply.replyToMessageId !== message.id && message.channel.isSendable()
-      ? await message.channel.send({
-          content: reply.text,
-          reply: { messageReference: reply.replyToMessageId, failIfNotExists: false },
-          allowedMentions: ALLOWED_MENTIONS,
-        })
-      : await message.reply({ content: reply.text, allowedMentions: ALLOWED_MENTIONS });
+  // A reply written as several lines goes out as several messages, the way
+  // somebody typing actually sends them. Only the first hangs under anything:
+  // Discord repeats the quoted header on every reply, which on a four-part
+  // answer is three repetitions of a message everybody just read.
+  const parts = replyParts(reply.text);
+  const channel = message.channel;
+  const under = reply.replyToMessageId && reply.replyToMessageId !== message.id && channel.isSendable()
+    ? reply.replyToMessageId
+    : null;
+
+  const sent = under && channel.isSendable()
+    ? await channel.send({
+        content: parts[0],
+        reply: { messageReference: under, failIfNotExists: false },
+        allowedMentions: ALLOWED_MENTIONS,
+      })
+    : await message.reply({ content: parts[0], allowedMentions: ALLOWED_MENTIONS });
   outcome.replied = true;
+
+  for (const part of parts.slice(1)) {
+    if (!channel.isSendable()) break;
+    // Paced rather than fired at once: a burst reads as a bot dumping output,
+    // and Discord's rate limiter has opinions about it too. A send that fails
+    // part way through leaves what was already sent — the alternative is
+    // throwing away an answer that is already half in the channel.
+    if (settings.replySplitDelayMs > 0) await pause(settings.replySplitDelayMs);
+    try {
+      await channel.send({ content: part, allowedMentions: ALLOWED_MENTIONS });
+    } catch (error) {
+      console.warn(`[bot] could not send the rest of the reply to ${message.id}:`, error);
+      break;
+    }
+  }
   logReply({
     guildId,
     channelId: message.channelId,

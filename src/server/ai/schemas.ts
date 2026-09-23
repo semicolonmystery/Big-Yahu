@@ -353,6 +353,25 @@ export const searchFactsDeclarationFor = (typeIds: string[]): ToolDeclaration =>
 });
 
 
+export const seeImageDeclaration: ToolDeclaration = {
+  name: 'see_image',
+  description:
+    'Look at a picture you were not sent. A message marked with `unseenImages` had pictures that did not fit '
+    + "the call's budget, so you cannot see them — call this with that message's id and they are shown to you. "
+    + 'Use it when somebody is talking about a picture you have not been given and the answer depends on what '
+    + 'is in it. Never guess at what a picture you have not seen contains.',
+  parameters: {
+    type: 'object',
+    properties: {
+      messageId: {
+        type: 'string',
+        description: 'The id of the message whose pictures you want, exactly as it appears in the material.',
+      },
+    },
+    required: ['messageId'],
+  },
+};
+
 export const listPeopleDeclaration: ToolDeclaration = {
   name: 'list_people',
   description:

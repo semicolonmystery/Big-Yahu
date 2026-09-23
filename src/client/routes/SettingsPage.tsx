@@ -133,6 +133,15 @@ const FIELDS: FieldSpec[] = [
     max: 1000,
   },
   {
+    key: 'replySplitDelayMs',
+    label: 'Delay between reply messages (ms)',
+    help: 'A reply written as several lines is sent as several messages, the way somebody typing actually sends '
+      + 'them. This is the pause between them; 0 sends them as fast as Discord allows.',
+    type: 'number',
+    min: 0,
+    max: 5000,
+  },
+  {
     key: 'retryAttempts',
     label: 'Retry attempts',
     help: 'How many extra times to retry a model when it returns a temporary error like 503 (high demand).',
@@ -602,21 +611,43 @@ export default function SettingsPage() {
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="maxImages">Max images per call</Label>
-                <Input
-                  id="maxImages"
-                  type="number"
-                  min={0}
-                  max={16}
-                  value={draft.maxImages}
-                  onChange={(event) => handleNumberChange('maxImages', event.target.value)}
-                  className="max-w-xs"
-                />
+                <div className="flex items-center gap-3">
+                  <Switch
+                    id="imageLimitDisabled"
+                    checked={draft.imageLimitDisabled}
+                    disabled={!draft.visionEnabled}
+                    onCheckedChange={(checked) => setDraft({ ...draft, imageLimitDisabled: checked })}
+                    aria-label="Toggle the image limit"
+                  />
+                  <Label htmlFor="imageLimitDisabled">No limit on images</Label>
+                </div>
                 <p className="text-xs text-muted-foreground">
-                  Ceiling on how many pictures go into one model call, newest first. Applies to both the reply
-                  pipeline and the periodic fact-extraction pass.
+                  Every picture in the window goes to the model. Vision is the expensive part of a call, so this
+                  is the setting that costs money — it exists because a question about a picture the bot was not
+                  sent cannot be answered.
                 </p>
               </div>
+
+              {/* Hidden rather than disabled when the cap is off: a number that
+                  does nothing, greyed out, still reads as the number in force. */}
+              {!draft.imageLimitDisabled && (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="maxImages">Max images per call</Label>
+                  <Input
+                    id="maxImages"
+                    type="number"
+                    min={0}
+                    max={16}
+                    value={draft.maxImages}
+                    onChange={(event) => handleNumberChange('maxImages', event.target.value)}
+                    className="max-w-xs"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Ceiling on how many pictures go into one model call, newest first. Applies to both the reply
+                    pipeline and the periodic fact-extraction pass.
+                  </p>
+                </div>
+              )}
 
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="crossChannelMessages">Messages read from another channel</Label>
