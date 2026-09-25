@@ -222,6 +222,17 @@ describe('dashboard statistics HTTP API', () => {
     expect(body.data.latestReplies[4].jumpLink).toBeNull();
   });
 
+  it('names whoever tagged the bot, and leaves the id when nobody can be named', async () => {
+    // '111' wrote cached messages, so the cache can name them; '777' exists
+    // nowhere the server can look, which is the one case the panel shows an id.
+    logReply({ guildId: 'guild', channelId: 'channel', taggedMessageId: '1', userId: '111',
+      replyMessageId: 'reply-1', content: 'Named', factIdsUsed: [] });
+    logReply({ guildId: 'guild', channelId: 'channel', taggedMessageId: '2', userId: '777',
+      replyMessageId: 'reply-2', content: 'Nameless', factIdsUsed: [] });
+    const body = await (await request('/stats')).json();
+    expect(body.data.latestReplies.map((entry: { userName: string }) => entry.userName)).toEqual(['777', 'Alice Current']);
+  });
+
   it('returns empty statistics consistently', async () => {
     state.facts = [];
     db.delete(factIndex).run();

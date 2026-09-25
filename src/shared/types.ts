@@ -158,7 +158,16 @@ export interface ChannelPermission {
 export interface Controller {
   userId: string;
   addedAt: number;
+  /**
+   * What Discord calls them now, resolved by the server. The id is what is
+   * stored, because names change and ids do not, and it is never what the panel
+   * shows — except when nobody can be named, when the id is all there is.
+   */
+  name: string;
 }
+
+/** A controller as the database holds it, before the server names them. */
+export type ControllerRow = Omit<Controller, 'name'>;
 
 export interface AppSettings {
   checkIntervalMinutes: number;
@@ -230,7 +239,17 @@ export interface ReplyLogEntry {
   factIdsUsed: string[];
   createdAt: number;
   jumpLink: string | null;
+  /**
+   * Whoever tagged the bot, named by the server. A snowflake tells the person
+   * reading the dashboard nothing, and the panel has no gateway of its own to
+   * ask, so the name is resolved on the way out and falls back to the id when
+   * neither Discord nor the message cache can put a name to it.
+   */
+  userName: string;
 }
+
+/** A logged reply as the database holds it, before the server names the person. */
+export type ReplyLogRow = Omit<ReplyLogEntry, 'userName'>;
 
 export interface DashboardStats {
   totalFacts: number;

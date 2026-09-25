@@ -29,6 +29,11 @@ async function fixtureUnavailableChroma(page: Page, testInfo: TestInfo): Promise
   return true;
 }
 
+/** Settings is four tabs, and Base UI keeps only the showing panel in the DOM. */
+async function openSettingsTab(page: Page, name: string) {
+  await page.getByRole('tab', { name, exact: true }).click();
+}
+
 async function signIn(page: Page) {
   await page.getByLabel('Username', { exact: true }).fill(credentials.username);
   await page.getByLabel('Password', { exact: true }).fill(credentials.password);
@@ -59,6 +64,9 @@ test('real admin setup, session lifecycle, persisted attachment settings and mob
 
   await test.step('Save and reload the real message.txt size setting', async () => {
     await page.getByRole('link', { name: 'Settings', exact: true }).click();
+    // Settings is tabbed, and the panel that is not showing is not in the DOM,
+    // so every visit has to open the tab the control lives under.
+    await openSettingsTab(page, 'Memory');
     const size = page.getByRole('spinbutton', { name: 'Maximum message.txt size (KiB)' });
     await expect(size).toHaveValue('16');
     for (const value of ['32', '0']) {
@@ -67,6 +75,7 @@ test('real admin setup, session lifecycle, persisted attachment settings and mob
       await page.getByRole('button', { name: 'Save changes' }).click();
       expect((await saved).status()).toBe(200);
       await page.reload();
+      await openSettingsTab(page, 'Memory');
       await expect(size).toHaveValue(value);
       expect((await (await page.request.get('/api/settings')).json()).data.textAttachmentMaxKb).toBe(Number(value));
     }
@@ -75,6 +84,7 @@ test('real admin setup, session lifecycle, persisted attachment settings and mob
   // Nothing here depends on OpenRouter answering: the lists come from the
   // isolated database, and a catalog that cannot be reached only adds a notice.
   await test.step('Every AI task has its own OpenRouter list, seeded with DeepSeek pinned to its own host', async () => {
+    await openSettingsTab(page, 'Models');
     await expect(page.getByText('AI models (OpenRouter)', { exact: true })).toBeVisible();
     await expect(page.getByRole('tab', { name: /^Reply/ })).toBeVisible();
     await expect(page.getByText('deepseek/deepseek-v4.1-flash', { exact: true }).first()).toBeVisible();
@@ -102,6 +112,7 @@ test('real admin setup, session lifecycle, persisted attachment settings and mob
     await page.getByRole('link', { name: 'Settings', exact: true }).click();
     await expect(page.getByText('Your session has expired. Please sign in again.', { exact: true })).toBeVisible();
     await signIn(page);
+    await openSettingsTab(page, 'Memory');
     await expect(page.getByRole('spinbutton', { name: 'Maximum message.txt size (KiB)' })).toHaveValue('0');
   });
 

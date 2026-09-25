@@ -3,10 +3,10 @@ import { factCountsByPerson } from '../../db/repositories/factIndexRepo';
 import {
   searchFacts, listFactsPage, ensureFactIndex, deleteFact, peopleIn } from '../../db/repositories/factsRepo';
 import { factTypeIds } from '../../db/repositories/factTypesRepo';
-import { getMessages, getUsernames } from '../../db/repositories/cachedMessagesRepo';
+import { getMessages } from '../../db/repositories/cachedMessagesRepo';
 import { getSettings } from '../../db/repositories/settingsRepo';
 import { mentionedUserIds } from '@shared/discord';
-import { knownDisplayNames } from '../../bot/identity';
+import { displayNames } from '../names';
 import type { Fact, FactWithSources, SourceMessage, FactPage, FactAuthor } from '@shared/types';
 
 export const factsRouter = Router();
@@ -58,7 +58,7 @@ function resolvePeopleNames(facts: Fact[]): Record<string, string>[] {
 
 function namesPerFact(idsByFact: string[][]): Record<string, string>[] {
   const allIds = [...new Set(idsByFact.flat())];
-  const names = { ...knownDisplayNames(allIds), ...getUsernames(allIds) };
+  const names = displayNames(allIds);
   return idsByFact.map((ids) =>
     Object.fromEntries(ids.filter((id) => names[id]).map((id) => [id, names[id]])),
   );
@@ -155,7 +155,7 @@ factsRouter.get('/authors', async (_req, res) => {
   // Resolve all indexed people from the full cache and Discord, just as the
   // mentions inside the fact text are resolved.
   const authorIds = [...counts.keys()];
-  const names = { ...knownDisplayNames(authorIds), ...getUsernames(authorIds) };
+  const names = displayNames(authorIds);
 
   const data: FactAuthor[] = [...counts.entries()]
     .map(([authorId, factCount]) => ({

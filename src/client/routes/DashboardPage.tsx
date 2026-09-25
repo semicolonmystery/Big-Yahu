@@ -34,27 +34,43 @@ function UsageStat({ label, value, detail }: { label: string; value: string; det
   );
 }
 
+/**
+ * The spend tables are read one under the other, so their columns have to land
+ * in the same places. They stay two tables — they count different things and
+ * each needs its own first heading — which is exactly why the widths are stated
+ * here instead of left to the content: a model id is several times longer than
+ * a task name, and auto layout put every column somewhere different.
+ */
+const USAGE_COLUMN = {
+  label: 'w-[40%]',
+  calls: 'w-[16%] text-right',
+  cached: 'w-[22%] text-right',
+  cost: 'w-[22%] text-right',
+};
+
 function UsageTable({ title, groups }: { title: string; groups: AiUsageSummary['byTask'] }) {
   return (
-    <Table>
+    <Table className="table-fixed">
       <TableHeader>
         <TableRow>
-          <TableHead>{title}</TableHead>
-          <TableHead className="text-right">Calls</TableHead>
-          <TableHead className="text-right">Cached input</TableHead>
-          <TableHead className="text-right">Cost</TableHead>
+          <TableHead className={USAGE_COLUMN.label}>{title}</TableHead>
+          <TableHead className={USAGE_COLUMN.calls}>Calls</TableHead>
+          <TableHead className={USAGE_COLUMN.cached}>Cached input</TableHead>
+          <TableHead className={USAGE_COLUMN.cost}>Cost</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {groups.map((group) => (
           <TableRow key={group.key}>
-            <TableCell>{group.key}</TableCell>
-            <TableCell className="text-right">
+            {/* A fixed column cannot grow to fit `deepseek/deepseek-v4.1-flash`,
+                so the whole id goes on the tooltip. */}
+            <TableCell className="truncate" title={group.key}>{group.key}</TableCell>
+            <TableCell className={USAGE_COLUMN.calls}>
               {group.calls}
               {group.failures > 0 && <span className="text-muted-foreground"> ({group.failures} failed)</span>}
             </TableCell>
-            <TableCell className="text-right">{cachedShare(group)}</TableCell>
-            <TableCell className="text-right">{formatCost(group.cost)}</TableCell>
+            <TableCell className={USAGE_COLUMN.cached}>{cachedShare(group)}</TableCell>
+            <TableCell className={USAGE_COLUMN.cost}>{formatCost(group.cost)}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -234,7 +250,7 @@ export default function DashboardPage() {
                         formatDateTime(reply.createdAt)
                       )}
                     </TableCell>
-                    <TableCell>{reply.userId}</TableCell>
+                    <TableCell title={`user id ${reply.userId}`}>{reply.userName}</TableCell>
                     <TableCell className="max-w-md whitespace-normal" title={reply.content}>
                       {truncate(reply.content)}
                     </TableCell>

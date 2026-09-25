@@ -14,6 +14,10 @@ vi.mock('../../src/server/env', () => ({ env: { discordGuildId: fixture.guildId 
 vi.mock('../../src/server/bot/client', () => ({
   discordClient: {
     channels: { cache: fixture.channels },
+    // A gateway that knows nobody, so a controller comes back as the id it is
+    // stored under — the fallback every screen falls to when nothing can name
+    // somebody.
+    users: { cache: new Map() },
     guilds: { cache: new Map([[fixture.guildId, { channels: { cache: fixture.channels } }]]) },
     isReady: () => true,
   },
@@ -179,11 +183,13 @@ describe('controller administration', () => {
     expect((await (await fetch(`${baseUrl}/controllers`)).json()).data).toEqual([]);
     const added = await send('POST', '/controllers', { userId: ` ${userId} ` });
     expect(added.status).toBe(200);
-    expect((await added.json()).data).toMatchObject({ userId });
+    expect((await added.json()).data).toMatchObject({ userId, name: userId });
     expect(isController(userId)).toBe(true);
 
     expect((await send('POST', '/controllers', { userId })).status).toBe(200);
-    expect((await (await fetch(`${baseUrl}/controllers`)).json()).data).toHaveLength(1);
+    const listed = (await (await fetch(`${baseUrl}/controllers`)).json()).data;
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ userId, name: userId });
 
     expect((await send('DELETE', `/controllers/${userId}`)).status).toBe(200);
     expect(isController(userId)).toBe(false);

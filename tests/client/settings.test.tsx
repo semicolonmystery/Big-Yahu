@@ -8,6 +8,14 @@ import { DEFAULT_SETTINGS, DUPLICATE_DISTANCE_MAX } from '../../src/shared/const
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 afterEach(cleanup);
 
+/**
+ * Settings is four tabs now, and Base UI unmounts the panel that is not showing,
+ * so a control under another tab has to be opened before it exists at all.
+ */
+async function openTab(name: string) {
+  fireEvent.click(await screen.findByRole('tab', { name }));
+}
+
 function stubSettingsApi() {
   vi.spyOn(api, 'getSettings').mockResolvedValue({ ...DEFAULT_SETTINGS });
   vi.spyOn(api, 'listChannels').mockResolvedValue({ channels: [], botOnline: true });
@@ -19,6 +27,7 @@ describe('attachment size setting', () => {
   it('shows the default budget and saves 0 to disable text attachments', async () => {
     stubSettingsApi();
     render(<SettingsPage />);
+    await openTab('Memory');
     const input = await screen.findByRole('spinbutton', { name: 'Maximum message.txt size (KiB)' });
     expect((input as HTMLInputElement).value).toBe('16');
     expect(input.getAttribute('min')).toBe('0');
@@ -34,6 +43,7 @@ describe('duplicate fact distance', () => {
   it('is editable, bounded, and saved as the integer the server clamps', async () => {
     stubSettingsApi();
     render(<SettingsPage />);
+    await openTab('Memory');
     const input = await screen.findByRole('spinbutton', { name: 'Duplicate fact distance' });
     expect((input as HTMLInputElement).value).toBe(String(DEFAULT_SETTINGS.duplicateDistance));
     // 0 switches the duplicate check off, the same way it switches the recall

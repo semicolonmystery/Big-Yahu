@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Check, ChevronsUpDown, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -15,13 +15,14 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from '@/components/ui/command';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table';
 import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Dialog,
   DialogContent,
@@ -45,120 +46,214 @@ function searchValue(language: (typeof LANGUAGES)[number]): string {
   return `${language.name} ${language.native} ${foldDiacritics(language.native)}`;
 }
 
-interface FieldSpec {
-  key: keyof AppSettings;
+/** One numeric setting, so the card that shows it only has to name it. */
+interface NumberSettingSpec {
   label: string;
   help: string;
-  type: 'number' | 'textarea';
-  min?: number;
-  max?: number;
+  min: number;
+  max: number;
 }
 
-const FIELDS: FieldSpec[] = [
-  {
-    key: 'checkIntervalMinutes',
+const NUMBER_SETTINGS = {
+  checkIntervalMinutes: {
     label: 'Check interval (minutes)',
     help: 'How often the bot scans channels for new facts.',
-    type: 'number',
     min: 1,
     max: 1440,
   },
-  {
-    key: 'replyContextMessages',
+  replyContextMessages: {
     label: 'Reply context messages',
     help: 'How many recent messages it reads when replying.',
-    type: 'number',
     min: 1,
     max: 100,
   },
-  {
-    key: 'textAttachmentMaxKb',
+  textAttachmentMaxKb: {
     label: 'Maximum message.txt size (KiB)',
     help: 'Largest message.txt attachment the bot reads. 0 disables text attachments; up to 64 KiB per file and 64 KiB total per conversation context.',
-    type: 'number',
     min: 0,
     max: 64,
   },
-  {
-    key: 'factSearchTopK',
+  factSearchTopK: {
     label: 'Fact search top K',
     help: 'How many remembered facts it retrieves.',
-    type: 'number',
     min: 1,
     max: 50,
   },
-  {
-    key: 'factSearchMaxDistance',
+  factSearchMaxDistance: {
     label: 'Fact search maximum distance',
-    help: 'How far a fact may be from the question and still be recalled, in the same hundredths as the '
-      + 'duplicate distance. It caps what the top-K search returns, so a question with nothing relevant '
-      + 'behind it comes back empty instead of with the least-bad matches. 0 switches the ceiling off.',
-    type: 'number',
+    help: 'How far a fact may be from the question and still be recalled, in the same hundredths as the duplicate '
+      + 'distance. Without a ceiling, a question with nothing behind it is answered out of the least-bad matches. '
+      + '0 switches it off.',
     min: 0,
     max: FACT_SEARCH_MAX_DISTANCE_MAX,
   },
-  {
-    key: 'duplicateDistance',
+  duplicateDistance: {
     label: 'Duplicate fact distance',
-    help: 'How close two facts must be before a new one replaces the old instead of being stored beside it. '
-      + 'Hundredths of a vector distance, so 25 means 0.25: lower keeps more separate facts, higher merges more, '
-      + 'and 0 never merges anything. What counts as close depends on the embedding model, so re-tune this after '
-      + 'changing it. Each fact type carries its own; this is the seed for a new one and the fallback for a fact '
-      + 'with no type.',
-    type: 'number',
+    help: 'How close two facts must be before a new one replaces the old, in hundredths of a vector distance: lower '
+      + 'keeps more apart, higher merges more, 0 never merges. Re-tune it after changing the embedding model. Each '
+      + 'fact type carries its own; this is the seed for a new one and the fallback for a fact with no type.',
     min: 0,
     max: DUPLICATE_DISTANCE_MAX,
   },
-  {
-    key: 'escalationLookbackHours',
+  escalationLookbackHours: {
     label: 'Escalation lookback (hours)',
     help: 'How far back it digs when it needs more context.',
-    type: 'number',
     min: 1,
     max: 720,
   },
-  {
-    key: 'maxEscalationDepth',
+  maxEscalationDepth: {
     label: 'Max escalation depth',
     help: 'How many times it may ask for more context.',
-    type: 'number',
     min: 0,
     max: 3,
   },
-  {
-    key: 'rateLimitPerHour',
+  rateLimitPerHour: {
     label: 'Rate limit per hour',
     help: 'How many replies one person can get per hour. 0 disables replies.',
-    type: 'number',
     min: 0,
     max: 1000,
   },
-  {
-    key: 'replySplitDelayMs',
+  replySplitDelayMs: {
     label: 'Delay between reply messages (ms)',
     help: 'A reply written as several lines is sent as several messages, the way somebody typing actually sends '
       + 'them. This is the pause between them; 0 sends them as fast as Discord allows.',
-    type: 'number',
     min: 0,
     max: 5000,
   },
-  {
-    key: 'retryAttempts',
+  retryAttempts: {
     label: 'Retry attempts',
     help: 'How many extra times to retry a model when it returns a temporary error like 503 (high demand).',
-    type: 'number',
     min: 0,
     max: 5,
   },
-  {
-    key: 'retryDelayMs',
+  retryDelayMs: {
     label: 'Retry delay (ms)',
     help: 'How long to wait between retries.',
-    type: 'number',
     min: 0,
     max: 60000,
   },
-];
+  maxImages: {
+    label: 'Max images per call',
+    help: 'Ceiling on how many pictures go into one model call, newest first. Applies to both the reply pipeline '
+      + 'and the periodic fact-extraction pass.',
+    min: 0,
+    max: 16,
+  },
+  crossChannelMessages: {
+    label: 'Messages read from another channel',
+    help: 'How much history the bot pulls from a channel it was pointed at — either because the message tagging it '
+      + 'mentioned that channel, or because it asked to read one. Only channels with “read for facts” left on can '
+      + 'be read this way. 0 switches cross-channel reading off entirely.',
+    min: 0,
+    max: 100,
+  },
+} satisfies Partial<Record<keyof AppSettings, NumberSettingSpec>>;
+
+type NumberSettingKey = keyof typeof NUMBER_SETTINGS;
+
+interface DraftProps {
+  draft: AppSettings;
+  onChange: (patch: Partial<AppSettings>) => void;
+}
+
+function NumberSetting({ name, draft, onChange }: DraftProps & { name: NumberSettingKey }) {
+  const spec = NUMBER_SETTINGS[name];
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={name}>{spec.label}</Label>
+      <Input
+        id={name}
+        type="number"
+        min={spec.min}
+        max={spec.max}
+        value={draft[name]}
+        // An emptied box is 0 rather than NaN, which would save as null and
+        // read back as the default.
+        onChange={(event) => onChange({ [name]: event.target.value === '' ? 0 : Number(event.target.value) })}
+        className="max-w-xs"
+      />
+      <p className="text-xs text-muted-foreground">{spec.help}</p>
+    </div>
+  );
+}
+
+/**
+ * One of the sentences the bot sends when it cannot answer. Capped rather than
+ * stretched to the card: a message is a line or two, and a box the width of the
+ * screen invites an essay nobody wants in a channel.
+ */
+function MessageSetting({
+  name,
+  label,
+  help,
+  draft,
+  onChange,
+}: DraftProps & { name: 'rateLimitMessage' | 'overloadMessage' | 'noCreditsMessage' | 'busyMessage' | 'errorMessage'; label: string; help: string }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={name}>{label}</Label>
+      <Textarea
+        id={name}
+        value={draft[name]}
+        onChange={(event) => onChange({ [name]: event.target.value })}
+        className="max-w-md"
+      />
+      <p className="text-xs text-muted-foreground">{help}</p>
+    </div>
+  );
+}
+
+/** A switch with its explanation under it, which several behaviour settings are. */
+function SwitchSetting({
+  name,
+  label,
+  help,
+  checked,
+  disabled,
+  onChange,
+}: {
+  name: string;
+  label: string;
+  help: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-3">
+        <Switch id={name} checked={checked} disabled={disabled} onCheckedChange={onChange} aria-label={label} />
+        <Label htmlFor={name}>{label}</Label>
+      </div>
+      <p className="text-xs text-muted-foreground">{help}</p>
+    </div>
+  );
+}
+
+/** Every card on this page: a title, a sentence of its own, and a column of controls. */
+function SettingsCard({
+  title,
+  description,
+  className,
+  children,
+}: {
+  title: string;
+  description: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Card className={className}>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-col gap-5">{children}</div>
+      </CardContent>
+    </Card>
+  );
+}
 
 function ChannelPermissionsSection() {
   const [channels, setChannels] = useState<ChannelPermission[] | null>(null);
@@ -331,10 +426,6 @@ function ControllersSection() {
     return () => { cancelled = true; };
   }, []);
 
-  // The id is the key; this is the only thing that turns it back into a person.
-  const nameOf = (userId: string) => people.find((person) => person.id === userId)?.name
-    ?? 'somebody the bot cannot see right now';
-
   const add = async (person: GuildMember) => {
     setBusy(true);
     try {
@@ -403,12 +494,12 @@ function ControllersSection() {
             <TableBody>
               {controllers.map((controller) => (
                 <TableRow key={controller.userId}>
-                  <TableCell className="font-medium">{nameOf(controller.userId)}</TableCell>
+                  <TableCell className="font-medium">{controller.name}</TableCell>
                   <TableCell>
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      aria-label={`Remove ${nameOf(controller.userId)}`}
+                      aria-label={`Remove ${controller.name}`}
                       onClick={() => setRemoveTarget(controller)}
                     >
                       <Trash2 />
@@ -454,7 +545,7 @@ function ControllersSection() {
           <DialogHeader>
             <DialogTitle>Remove this controller?</DialogTitle>
             <DialogDescription>
-              {removeTarget ? nameOf(removeTarget.userId) : ''} will no longer be able to direct the bot.
+              {removeTarget?.name ?? ''} will no longer be able to direct the bot.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -467,6 +558,64 @@ function ControllersSection() {
   );
 }
 
+/** The language it answers in absent a signal, picked from a searchable list of 47. */
+function LanguageSetting({ draft, onChange }: DraftProps) {
+  const [open, setOpen] = useState(false);
+  const selected = LANGUAGES.find((language) => language.code === draft.replyLanguage);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor="replyLanguage">Reply language</Label>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger
+          render={
+            <Button
+              id="replyLanguage"
+              variant="outline"
+              role="combobox"
+              aria-expanded={open}
+              className="w-full max-w-xs justify-between font-normal"
+            />
+          }
+        >
+          {selected ? formatLanguage(selected) : 'Select language…'}
+          <ChevronsUpDown className="opacity-50" />
+        </PopoverTrigger>
+        <PopoverContent className="w-72 p-0">
+          <Command>
+            <CommandInput placeholder="Search language…" />
+            <CommandList>
+              <CommandEmpty>No language found.</CommandEmpty>
+              <CommandGroup>
+                {LANGUAGES.map((language) => (
+                  <CommandItem
+                    key={language.code}
+                    value={searchValue(language)}
+                    onSelect={() => {
+                      onChange({ replyLanguage: language.code });
+                      setOpen(false);
+                    }}
+                  >
+                    <Check className={cn('mr-2', draft.replyLanguage === language.code ? 'opacity-100' : 'opacity-0')} />
+                    {formatLanguage(language)}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+      <p className="text-xs text-muted-foreground">
+        The default language for replies. If someone tags the bot in a different language, it replies in that
+        language instead.
+      </p>
+    </div>
+  );
+}
+
+/** Small cards side by side, so a screen of settings is not one column three scrolls long. */
+const TAB_GRID = 'grid items-start gap-4 lg:grid-cols-2';
+
 export default function SettingsPage() {
   // Loaded once by the types section and handed on, so the cleanup section can
   // offer them without asking for the same list a second time.
@@ -476,7 +625,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [languagePickerOpen, setLanguagePickerOpen] = useState(false);
+  const [tab, setTab] = useState('behaviour');
 
   useEffect(() => {
     let cancelled = false;
@@ -511,11 +660,8 @@ export default function SettingsPage() {
 
   const hasChanges = Object.keys(patch).length > 0;
 
-  const handleNumberChange = (key: keyof AppSettings, value: string) => {
-    if (!draft) return;
-    const parsed = value === '' ? 0 : Number(value);
-    setDraft({ ...draft, [key]: parsed });
-  };
+  const change = (values: Partial<AppSettings>) =>
+    setDraft((current) => (current ? { ...current, ...values } : current));
 
   const handleSave = async () => {
     if (!draft || !hasChanges) return;
@@ -533,276 +679,208 @@ export default function SettingsPage() {
   };
 
   return (
-    // A grid rather than one long column: most of these cards are a few fields
-    // wide and were being stretched across the whole screen, which put the ones
-    // that matter three scrolls apart. `items-start` so a short card does not
-    // grow to match a tall neighbour, and the wide ones — the model tabs, the
-    // tables, the message textareas — say so themselves.
-    <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2 2xl:grid-cols-3">
-      <h1 className="col-span-full text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
+    <div className="flex flex-col gap-6">
+      {/* The one Save on the page, and it stays put: a patch covers every tab,
+          so hiding the button under the tab a change was made in would mean
+          hunting for it. */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
+        <Button onClick={() => void handleSave()} disabled={saving || !hasChanges}>
+          {saving ? 'Saving…' : 'Save changes'}
+        </Button>
+      </div>
 
       {error && (
-        <Alert variant="destructive" className="col-span-full">
-          <AlertTitle>Couldn't load settings</AlertTitle>
+        <Alert variant="destructive">
+          <AlertTitle>Couldn&apos;t load settings</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 
       {loading || !draft ? (
-        <div className="col-span-full flex flex-col gap-4">
+        <div className="flex flex-col gap-4">
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-24 w-full" />
         </div>
       ) : (
-        // Five message textareas and a language picker: readable at full width,
-        // cramped in a third of one.
-        <Card className="col-span-full">
-          <CardHeader>
-            <CardTitle>Bot behavior</CardTitle>
-            <CardDescription>Changes only apply once saved.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-col gap-5">
+        <Tabs value={tab} onValueChange={(value) => setTab(String(value))}>
+          {/* The row of tabs is wider than a phone; it scrolls rather than
+              pushing the page sideways. */}
+          <div className="max-w-full overflow-x-auto">
+            <TabsList>
+              <TabsTrigger value="behaviour">Behaviour</TabsTrigger>
+              <TabsTrigger value="memory">Memory</TabsTrigger>
+              <TabsTrigger value="models">Models</TabsTrigger>
+              <TabsTrigger value="places">Channels &amp; people</TabsTrigger>
+            </TabsList>
+          </div>
 
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="timezone">Timezone</Label>
-                <Input
-                  id="timezone"
-                  value={draft.timezone}
-                  onChange={(event) => setDraft({ ...draft, timezone: event.target.value })}
-                  className="max-w-xs font-mono"
-                />
-                <p className="text-xs text-muted-foreground">
-                  IANA name, e.g. Europe/Prague. The bot is told the current date and time in this zone, so it can
-                  answer questions about what day it is.
-                </p>
-              </div>
+          <TabsContent value="behaviour">
+            <div className={TAB_GRID}>
+              <SettingsCard
+                title="Replying"
+                description="How much of the conversation it reads, and how the answer comes back out."
+              >
+                <NumberSetting name="replyContextMessages" draft={draft} onChange={change} />
+                <NumberSetting name="replySplitDelayMs" draft={draft} onChange={change} />
+                <NumberSetting name="crossChannelMessages" draft={draft} onChange={change} />
+              </SettingsCard>
 
-              {FIELDS.map((field) => (
-                <div key={field.key} className="flex flex-col gap-1.5">
-                  <Label htmlFor={field.key}>{field.label}</Label>
-                  <Input
-                    id={field.key}
-                    type="number"
-                    min={field.min}
-                    max={field.max}
-                    value={draft[field.key] as number}
-                    onChange={(event) => handleNumberChange(field.key, event.target.value)}
-                    className="max-w-xs"
-                  />
-                  <p className="text-xs text-muted-foreground">{field.help}</p>
-                </div>
-              ))}
-
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center gap-3">
-                  <Switch
-                    id="visionEnabled"
-                    checked={draft.visionEnabled}
-                    onCheckedChange={(checked) => setDraft({ ...draft, visionEnabled: checked })}
-                    aria-label="Toggle vision"
-                  />
-                  <Label htmlFor="visionEnabled">Vision</Label>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Whether the bot can see pictures at all. Vision is the expensive part of a model call, so turning
-                  this off makes every call text-only, even for messages with attachments.
-                </p>
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center gap-3">
-                  <Switch
-                    id="imageLimitDisabled"
-                    checked={draft.imageLimitDisabled}
-                    disabled={!draft.visionEnabled}
-                    onCheckedChange={(checked) => setDraft({ ...draft, imageLimitDisabled: checked })}
-                    aria-label="Toggle the image limit"
-                  />
-                  <Label htmlFor="imageLimitDisabled">No limit on images</Label>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Every picture in the window goes to the model. Vision is the expensive part of a call, so this
-                  is the setting that costs money — it exists because a question about a picture the bot was not
-                  sent cannot be answered.
-                </p>
-              </div>
-
-              {/* Hidden rather than disabled when the cap is off: a number that
-                  does nothing, greyed out, still reads as the number in force. */}
-              {!draft.imageLimitDisabled && (
+              <SettingsCard
+                title="Language and time"
+                description="What it answers in, and what it believes the date to be."
+              >
+                <LanguageSetting draft={draft} onChange={change} />
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="maxImages">Max images per call</Label>
+                  <Label htmlFor="timezone">Timezone</Label>
                   <Input
-                    id="maxImages"
-                    type="number"
-                    min={0}
-                    max={16}
-                    value={draft.maxImages}
-                    onChange={(event) => handleNumberChange('maxImages', event.target.value)}
-                    className="max-w-xs"
+                    id="timezone"
+                    value={draft.timezone}
+                    onChange={(event) => change({ timezone: event.target.value })}
+                    className="max-w-xs font-mono"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Ceiling on how many pictures go into one model call, newest first. Applies to both the reply
-                    pipeline and the periodic fact-extraction pass.
+                    IANA name, e.g. Europe/Prague. The bot is told the current date and time in this zone, so it can
+                    answer questions about what day it is.
                   </p>
                 </div>
-              )}
+              </SettingsCard>
 
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="crossChannelMessages">Messages read from another channel</Label>
-                <Input
-                  id="crossChannelMessages"
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={draft.crossChannelMessages}
-                  onChange={(event) => handleNumberChange('crossChannelMessages', event.target.value)}
-                  className="max-w-xs"
+              <SettingsCard
+                title="Rate limit"
+                description="How often one person may be answered, and what they get once they are past it."
+              >
+                <NumberSetting name="rateLimitPerHour" draft={draft} onChange={change} />
+                <MessageSetting
+                  name="rateLimitMessage"
+                  label="Rate limit message"
+                  help="The message sent when someone hits the rate limit cap."
+                  draft={draft}
+                  onChange={change}
                 />
-                <p className="text-xs text-muted-foreground">
-                  How much history the bot pulls from a channel it was pointed at — either because the message
-                  tagging it mentioned that channel, or because it asked to read one. Only channels with
-                  &ldquo;read for facts&rdquo; left on can be read this way. Set it to 0 to switch cross-channel
-                  reading off entirely.
-                </p>
-              </div>
+              </SettingsCard>
 
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="replyLanguage">Reply language</Label>
-                <Popover open={languagePickerOpen} onOpenChange={setLanguagePickerOpen}>
-                  <PopoverTrigger
-                    render={
-                      <Button
-                        id="replyLanguage"
-                        variant="outline"
-                        role="combobox"
-                        aria-expanded={languagePickerOpen}
-                        className="w-full max-w-xs justify-between font-normal"
-                      />
-                    }
-                  >
-                    {(() => {
-                      const selected = LANGUAGES.find((language) => language.code === draft.replyLanguage);
-                      return selected ? formatLanguage(selected) : 'Select language…';
-                    })()}
-                    <ChevronsUpDown className="opacity-50" />
-                  </PopoverTrigger>
-                  <PopoverContent className="w-72 p-0">
-                    <Command>
-                      <CommandInput placeholder="Search language…" />
-                      <CommandList>
-                        <CommandEmpty>No language found.</CommandEmpty>
-                        <CommandGroup>
-                          {LANGUAGES.map((language) => (
-                            <CommandItem
-                              key={language.code}
-                              value={searchValue(language)}
-                              onSelect={() => {
-                                setDraft({ ...draft, replyLanguage: language.code });
-                                setLanguagePickerOpen(false);
-                              }}
-                            >
-                              <Check
-                                className={cn(
-                                  'mr-2',
-                                  draft.replyLanguage === language.code ? 'opacity-100' : 'opacity-0',
-                                )}
-                              />
-                              {formatLanguage(language)}
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
-                <p className="text-xs text-muted-foreground">
-                  The default language for replies. If someone tags the bot in a different language, it replies in
-                  that language instead.
-                </p>
-              </div>
+              <SettingsCard
+                title="Retries"
+                description="What happens when a model answers with a temporary error rather than a reply."
+              >
+                <NumberSetting name="retryAttempts" draft={draft} onChange={change} />
+                <NumberSetting name="retryDelayMs" draft={draft} onChange={change} />
+              </SettingsCard>
 
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="rateLimitMessage">Rate limit message</Label>
-                <Textarea
-                  id="rateLimitMessage"
-                  value={draft.rateLimitMessage}
-                  onChange={(event) => setDraft({ ...draft, rateLimitMessage: event.target.value })}
+              <SettingsCard
+                title="Pictures"
+                description="Vision is the expensive part of a model call, so it is bounded on purpose."
+              >
+                <SwitchSetting
+                  name="visionEnabled"
+                  label="Vision"
+                  help={'Whether the bot can see pictures at all. Turning this off makes every call text-only, even '
+                    + 'for messages with attachments.'}
+                  checked={draft.visionEnabled}
+                  onChange={(checked) => change({ visionEnabled: checked })}
                 />
-                <p className="text-xs text-muted-foreground">The message sent when someone hits the rate limit cap.</p>
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="overloadMessage">High demand message</Label>
-                <Textarea
-                  id="overloadMessage"
-                  value={draft.overloadMessage}
-                  onChange={(event) => setDraft({ ...draft, overloadMessage: event.target.value })}
+                <SwitchSetting
+                  name="imageLimitDisabled"
+                  label="No limit on images"
+                  help={'Every picture in the window goes to the model. This is the setting that costs money — it '
+                    + 'exists because a question about a picture the bot was not sent cannot be answered.'}
+                  checked={draft.imageLimitDisabled}
+                  disabled={!draft.visionEnabled}
+                  onChange={(checked) => change({ imageLimitDisabled: checked })}
                 />
-                <p className="text-xs text-muted-foreground">
-                  The message sent when every model on the list stays unavailable after every retry.
-                </p>
-              </div>
+                {/* Hidden rather than disabled when the cap is off: a number that
+                    does nothing, greyed out, still reads as the number in force. */}
+                {!draft.imageLimitDisabled && <NumberSetting name="maxImages" draft={draft} onChange={change} />}
+              </SettingsCard>
 
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="noCreditsMessage">Out of credit message</Label>
-                <Textarea
-                  id="noCreditsMessage"
-                  value={draft.noCreditsMessage}
-                  onChange={(event) => setDraft({ ...draft, noCreditsMessage: event.target.value })}
+              <SettingsCard
+                title="When it cannot answer"
+                description="Four different failures, four sentences; the log names which one was sent."
+              >
+                <MessageSetting
+                  name="overloadMessage"
+                  label="High demand message"
+                  help="The message sent when every model on the list stays unavailable after every retry."
+                  draft={draft}
+                  onChange={change}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Sent when OpenRouter refuses on billing. Every model shares the key, so nothing retries out
-                  of this one and no model is blamed for it &mdash; it needs you, not another try.
-                </p>
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="busyMessage">Out of budget message</Label>
-                <Textarea
-                  id="busyMessage"
-                  value={draft.busyMessage}
-                  onChange={(event) => setDraft({ ...draft, busyMessage: event.target.value })}
+                <MessageSetting
+                  name="noCreditsMessage"
+                  label="Out of credit message"
+                  help={'Sent when OpenRouter refuses on billing. Every model shares the key, so nothing retries out '
+                    + 'of this one and no model is blamed for it — it needs you, not another try.'}
+                  draft={draft}
+                  onChange={change}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Sent when the reply runs out of attempts or takes too long. The bot&apos;s own limit, not the provider&apos;s.
-                </p>
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="errorMessage">Something went wrong message</Label>
-                <Textarea
-                  id="errorMessage"
-                  value={draft.errorMessage}
-                  onChange={(event) => setDraft({ ...draft, errorMessage: event.target.value })}
+                <MessageSetting
+                  name="busyMessage"
+                  label="Out of budget message"
+                  help={'Sent when the reply runs out of attempts or takes too long. The bot\u2019s own limit, not the '
+                    + 'provider\u2019s.'}
+                  draft={draft}
+                  onChange={change}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Sent when the reply threw, or the model produced no text. Seeing this means a bug, not load —
-                  the console names the cause against the message id.
-                </p>
-              </div>
+                <MessageSetting
+                  name="errorMessage"
+                  label="Something went wrong message"
+                  help={'Sent when the reply threw, or the model produced no text. Seeing this means a bug, not load '
+                    + '— the console names the cause against the message id.'}
+                  draft={draft}
+                  onChange={change}
+                />
+              </SettingsCard>
             </div>
-          </CardContent>
-          <CardFooter>
-            <Button onClick={() => void handleSave()} disabled={saving || !hasChanges}>
-              {saving ? 'Saving…' : 'Save changes'}
-            </Button>
-          </CardFooter>
-        </Card>
-      )}
+          </TabsContent>
 
-      {/* Wide by nature: a row of tabs, and a table that scrolls sideways if it must. */}
-      <div className="col-span-full"><AiTasksSection /></div>
-      <div className="col-span-full lg:col-span-1">
-        <BundlingSection draft={draft} settings={original} onChange={(patch) => draft && setDraft({ ...draft, ...patch })} />
-      </div>
-      <div className="col-span-full lg:col-span-1"><EmbeddingSection /></div>
-      <div className="col-span-full lg:col-span-1"><FactCleanupSection types={factTypes} /></div>
-      <div className="col-span-full"><FactTypesSection onTypes={setFactTypes} /></div>
-      <div className="col-span-full lg:col-span-1"><ChannelPermissionsSection /></div>
-      <div className="col-span-full lg:col-span-1"><ControllersSection /></div>
+          <TabsContent value="memory">
+            <div className={TAB_GRID}>
+              <SettingsCard
+                title="Recall"
+                description="How much the bot digs out of its memory for a question, and how close two facts must be to count as the same one."
+              >
+                <NumberSetting name="factSearchTopK" draft={draft} onChange={change} />
+                <NumberSetting name="factSearchMaxDistance" draft={draft} onChange={change} />
+                <NumberSetting name="duplicateDistance" draft={draft} onChange={change} />
+              </SettingsCard>
+
+              <SettingsCard
+                title="Reading for facts"
+                description="The periodic pass that turns channel history into what the bot remembers."
+              >
+                <NumberSetting name="checkIntervalMinutes" draft={draft} onChange={change} />
+                <NumberSetting name="textAttachmentMaxKb" draft={draft} onChange={change} />
+              </SettingsCard>
+
+              <SettingsCard
+                title="Asking for more context"
+                description="When what it has in front of it is not enough to answer, how much further it may look."
+              >
+                <NumberSetting name="escalationLookbackHours" draft={draft} onChange={change} />
+                <NumberSetting name="maxEscalationDepth" draft={draft} onChange={change} />
+              </SettingsCard>
+
+              <BundlingSection draft={draft} settings={original} onChange={change} />
+              <EmbeddingSection />
+              <FactCleanupSection types={factTypes} />
+              <div className="lg:col-span-2"><FactTypesSection onTypes={setFactTypes} /></div>
+            </div>
+          </TabsContent>
+
+          {/* Wide by nature: a row of tabs of its own, and a six-column table. */}
+          <TabsContent value="models">
+            <AiTasksSection />
+          </TabsContent>
+
+          <TabsContent value="places">
+            <div className={TAB_GRID}>
+              <ChannelPermissionsSection />
+              <ControllersSection />
+            </div>
+          </TabsContent>
+        </Tabs>
+      )}
     </div>
   );
 }

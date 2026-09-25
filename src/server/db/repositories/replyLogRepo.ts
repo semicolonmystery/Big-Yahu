@@ -2,7 +2,7 @@ import { and, count, desc, eq, gte } from 'drizzle-orm';
 import { db } from '../client';
 import { replyLog } from '../schema';
 import { buildJumpLink } from '@shared/discord';
-import type { ReplyLogEntry } from '@shared/types';
+import type { ReplyLogRow } from '@shared/types';
 
 export function logReply(entry: {
   guildId: string;
@@ -18,7 +18,7 @@ export function logReply(entry: {
     .run();
 }
 
-export function getLatestReplies(limit: number): ReplyLogEntry[] {
+export function getLatestReplies(limit: number): ReplyLogRow[] {
   const rows = db.select().from(replyLog).orderBy(desc(replyLog.id)).limit(limit).all();
   return rows.map((row) => ({
     ...row,

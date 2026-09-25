@@ -1,12 +1,24 @@
 import { Router } from 'express';
 import { listControllers, addController, removeController } from '../../db/repositories/controllersRepo';
+import { displayNames } from '../names';
+import type { Controller, ControllerRow } from '@shared/types';
 
 export const controllersRouter = Router();
 
 const SNOWFLAKE_RE = /^\d{17,20}$/;
 
+/**
+ * The panel used to match the stored id against a separately fetched roster of
+ * its own, which is a second way of naming somebody and so a second way of
+ * being wrong. Names come from here now, like everywhere else.
+ */
+function named(rows: ControllerRow[]): Controller[] {
+  const names = displayNames(rows.map((row) => row.userId));
+  return rows.map((row) => ({ ...row, name: names[row.userId] ?? row.userId }));
+}
+
 controllersRouter.get('/', (_req, res) => {
-  res.json({ success: true, data: listControllers() });
+  res.json({ success: true, data: named(listControllers()) });
 });
 
 /**
@@ -21,7 +33,7 @@ controllersRouter.post('/', (req, res) => {
     res.status(400).json({ success: false, error: 'userId must be a Discord snowflake (17-20 digits)' });
     return;
   }
-  res.json({ success: true, data: addController(userId) });
+  res.json({ success: true, data: named([addController(userId)])[0] });
 });
 
 controllersRouter.delete('/:userId', (req, res) => {

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Client } from 'discord.js';
-import { mentionsIn, readMention } from '@shared/discord';
+import { MENTION_SPLIT, mentionsIn, readMention } from '@shared/discord';
 import { getFactsCollection } from '../db/chroma';
 import { addFacts } from '../db/repositories/factsRepo';
 import { chat, userMessageWithImages, type ToolDeclaration } from '../ai/chat';
@@ -742,9 +742,47 @@ function sanitiseElement(element: PanelElement): PanelElement | null {
   return element;
 }
 
+/**
+ * Writes names over the `<@id>` and `<#id>` a panel's prose carries.
+ *
+ * A plugin stores ids because they survive a rename, which leaves a panel
+ * saying "<@1049…> is out of credit" to somebody who cannot read a snowflake —
+ * the same problem a page row has. A page cell can carry a name map beside its
+ * text, but a panel element is the plugin contract's own shape with nowhere to
+ * hang one, so the names go into the string itself. An id nothing can name is
+ * still shown as that id, which is the fallback every other screen uses.
+ */
+function nameMentions(elements: PanelElement[]): PanelElement[] {
+  const names = mentionNamesIn(
+    elements.flatMap((element) => {
+      if (element.type === 'text') return [element.text];
+      if (element.type === 'status') return [element.label, element.value];
+      return [];
+    }),
+  );
+  if (Object.keys(names).length === 0) return elements;
+
+  const named = (text: string): string =>
+    text
+      .split(MENTION_SPLIT)
+      .map((piece, index) => {
+        if (index % 2 === 0) return piece;
+        const { id, isChannel } = readMention(piece);
+        const label = names[piece] ?? (isChannel ? `#${id}` : id);
+        return isChannel ? label : `@${label}`;
+      })
+      .join('');
+
+  return elements.map((element) => {
+    if (element.type === 'text') return { ...element, text: named(element.text) };
+    if (element.type === 'status') return { ...element, label: named(element.label), value: named(element.value) };
+    return element;
+  });
+}
+
 function sanitiseView(view: PanelView): PanelView {
   return {
-    elements: (view.elements ?? []).map(sanitiseElement).filter((element) => element !== null),
+    elements: nameMentions((view.elements ?? []).map(sanitiseElement).filter((element) => element !== null)),
     pollSeconds:
       typeof view.pollSeconds === 'number' && view.pollSeconds >= 2 ? Math.min(view.pollSeconds, 300) : undefined,
   };
@@ -813,46 +851,58 @@ function resolveUserNames(ids: string[]): Record<string, string> {
   return { ...getUsernames(ids), ...knownDisplayNames(ids) };
 }
 
+function channelDisplayName(id: string): string {
+  const channel = discordClient?.channels.cache.get(id);
+  return channel && 'name' in channel && channel.name ? `#${channel.name}` : `#${id}`;
+}
+
+/**
+ * A label for every `<@id>` and `<#id>` across a batch of strings, keyed on the
+ * markup so a user and a channel can never be confused for one another. One
+ * lookup for the whole batch rather than one per string, and an id nothing can
+ * name is labelled with itself.
+ */
+function mentionNamesIn(texts: string[]): Record<string, string> {
+  const markup = new Set<string>();
+  const userIds: string[] = [];
+  for (const text of texts) {
+    for (const mention of mentionsIn(text)) {
+      markup.add(mention);
+      const { id, isChannel } = readMention(mention);
+      if (!isChannel) userIds.push(id);
+    }
+  }
+  if (markup.size === 0) return {};
+
+  const names = resolveUserNames(userIds);
+  return Object.fromEntries([...markup].map((mention) => {
+    const { id, isChannel } = readMention(mention);
+    return [mention, isChannel ? channelDisplayName(id) : (names[id] ?? id)];
+  }));
+}
+
 function resolveCells(rows: PluginPageData['rows']): WirePluginPageData['rows'] {
   // A `user` cell holds an id, and so does a mention inside a `text` cell — a
   // rolling memory is written as "<@1049…> spam emails sent to …", which is
   // right for storage and unreadable in a table. Both are collected in one pass
   // so the lookup happens once for the page rather than once per row.
   const userIds: string[] = [];
-  const markup = new Set<string>();
+  const texts: string[] = [];
   for (const row of rows) {
     for (const cell of Object.values(row.cells)) {
       if (cell.kind === 'user') userIds.push(cell.id);
-      if (cell.kind === 'text') {
-        // Both, because the preview sits in the table and the full text opens
-        // in a dialog: a mention must read the same in either.
-        for (const mention of mentionsIn(`${cell.text}\n${cell.preview ?? ''}`)) {
-          markup.add(mention);
-          const { id, isChannel } = readMention(mention);
-          if (!isChannel) userIds.push(id);
-        }
-      }
+      // Both strings, because the preview sits in the table and the full text
+      // opens in a dialog: a mention must read the same in either.
+      if (cell.kind === 'text') texts.push(`${cell.text}\n${cell.preview ?? ''}`);
     }
   }
 
   const names = resolveUserNames(userIds);
-  const channels = discordClient?.channels.cache;
-
-  const channelName = (id: string): string => {
-    const channel = channels?.get(id);
-    return channel && 'name' in channel && channel.name ? `#${channel.name}` : `#${id}`;
-  };
-
-  // Resolved once for the whole page, then handed to every cell that needs it.
-  const mentionNames: Record<string, string> = {};
-  for (const mention of markup) {
-    const { id, isChannel } = readMention(mention);
-    mentionNames[mention] = isChannel ? channelName(id) : (names[id] ?? id);
-  }
+  const mentionNames = mentionNamesIn(texts);
 
   const resolve = (cell: PluginCell): WirePluginCell => {
     if (cell.kind === 'user') return { ...cell, name: names[cell.id] ?? cell.id };
-    if (cell.kind === 'channel') return { ...cell, name: channelName(cell.id) };
+    if (cell.kind === 'channel') return { ...cell, name: channelDisplayName(cell.id) };
     if (cell.kind === 'text') {
       const present = mentionsIn(`${cell.text}\n${cell.preview ?? ''}`);
       if (present.length === 0) return cell;
@@ -888,7 +938,9 @@ export async function renderPage(
       columns: data.columns ?? [],
       rows: resolveCells(data.rows ?? []),
       total: typeof data.total === 'number' ? data.total : (data.rows ?? []).length,
-      header: (data.header ?? []).map(sanitiseElement).filter((element) => element !== null),
+      // A page header is the same element vocabulary as a panel, so a mention in
+      // one reads the same as a mention in the other.
+      header: nameMentions((data.header ?? []).map(sanitiseElement).filter((element) => element !== null)),
       searchable: data.searchable ?? false,
       emptyMessage: data.emptyMessage,
       page,

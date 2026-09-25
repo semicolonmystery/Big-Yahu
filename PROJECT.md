@@ -505,6 +505,29 @@ else. The window is keyed on the socket's address rather than `req.ip`: `trust
 proxy` is on, so `req.ip` is whatever the caller's own header says, and a limiter
 that believes the caller can be stepped around by changing it.
 
+### A name wherever one can be had
+
+One rule, everywhere a person appears: **show a name where one can be resolved,
+and the raw id when one genuinely cannot be.** The names come from the gateway's
+own caches and the message cache behind them, and they are resolved **on the
+server** — the panel has no Discord connection of its own, so a second lookup in
+the browser is a second thing to keep in step and a second thing to be wrong.
+`api/names.ts` is that one lookup; an id it cannot place is left out rather than
+named after itself, so each screen decides how its own fallback reads.
+
+The dashboard's latest replies used to be the one place that showed a bare
+snowflake: the reply log stores who tagged the bot, and nothing ever turned that
+back into a person. The controllers table was the one place resolving a name in
+the browser, matching the stored id against a roster it fetched separately, which
+is why somebody the roster did not list read as "somebody the bot cannot see
+right now" rather than as the id that is actually stored.
+
+Plugin panels were the remaining gap. A page row can carry a name map beside its
+text, but a panel element is the plugin contract's own shape with nowhere to hang
+one, so a `<@id>` in a panel's prose is rewritten as the name on the way out. No
+bundled plugin writes one today, which is exactly why it was worth closing before
+one does.
+
 ### Controllers
 
 Controllers are added by picking a person, not by typing a snowflake. An id is
@@ -512,8 +535,8 @@ unreadable, so typing one was a transcription exercise with no feedback until it
 silently did nothing, and the label that used to sit beside it was a name
 somebody had made up — shown next to an id nobody could read. The id is still
 what is stored, because names change and ids do not, but it is never displayed:
-what Discord calls somebody today is what the panel says, resolved on every load
-from the gateway's own caches.
+what Discord calls somebody today is what the panel says, resolved by the server
+on every load and arriving on the row already named.
 
 Discord user IDs listed in Settings may direct the bot: tell it to remember
 something and it saves the fact, tell it to forget something and it finds it
@@ -1020,7 +1043,10 @@ connection status, a setup step. It returns a list of declarative elements
 rather than markup, so nothing it supplies becomes HTML or script in the admin
 page. Image sources are restricted to `data:` images and https, so a panel
 cannot point the admin's browser at an arbitrary host. A view may ask to be
-polled, which is how a QR login notices it has been scanned.
+polled, which is how a QR login notices it has been scanned. `<@id>` and `<#id>`
+inside a `text` or `status` element are named by the host before the panel is
+sent, the same treatment a page row's cells get — a page header, being the same
+vocabulary, goes through it too.
 
 Anything an operator reads and pages through belongs in a page instead. Panels
 kept both for a while and it showed: a table of scores in a dialog is a dialog
@@ -1297,9 +1323,11 @@ does not queue or invoke AI.
 | One-off cleanup pass over old facts | IMPL | `ai/factCleanup.ts` on the re-embed's job runner, which now carries a `kind`. Rewrites a bundle at a time under the current rules, in place and re-embedded in the same step; writes nothing for a fact it did not change; can ask once for the messages behind one; a failed bundle changes nothing and the job moves on. Operator-run from Settings over chosen types, never on its own |
 | Host picker shows the slug it stores | IMPL | exact tags in the list and when searching, no display name and no price; hosts load with the row, a prefix-form slug is kept as itself, and only a real user gesture repins a row |
 | Embedding dimensions are a list | IMPL | the standard widths rather than a free number, with the model's own catalog description beside it — OpenRouter exposes no structured dimensions field, only prose |
-| Settings as a grid | IMPL | two and three columns on wider screens, `items-start`, with the model tabs, the fact types and the message textareas spanning the full width |
+| Settings in tabs | IMPL | Behaviour, Memory, Models, and Channels & people, each a grid of small cards. The one "Bot behavior" card — thirteen numbers, a language picker and five textareas in a single column — is broken up by subject, the textareas are capped rather than stretched, and Save sits in the page header because a patch covers every tab. Base UI keeps only the showing panel mounted, so the tests open the tab a control lives under |
+| A name wherever one can be had | IMPL | one server-side lookup (`api/names.ts`) behind the dashboard's latest replies, the facts screen and the controllers table; the id is the fallback and nothing resolves a name in the browser any more. Plugin panels and page headers get the same pass over `<@id>`/`<#id>` that page rows already had |
+| Spend tables that line up | IMPL | the task and model tables stay two tables with their own first headings, and `table-fixed` plus shared column widths puts their columns in the same places; a model id too long for its column is truncated with the whole id on the tooltip |
 | Themes | IMPL | system, light and dark from the sidebar, `next-themes` against the `.dark` variant the stylesheet already had; sonner's own `useTheme` starts working as a side effect |
-| Controllers by name | IMPL | picked from the guild roster rather than typed as a snowflake; `label` dropped, and no user id shown anywhere in the UI |
+| Controllers by name | IMPL | picked from the guild roster rather than typed as a snowflake; `label` dropped, and the name is resolved by the server rather than matched against a roster in the browser |
 | `read_audit_log` | IMPL | Discord Admin gains a controller-gated read of the audit log with a configurable look-back, answering in Discord only; executor and target come back as mentions |
 | No empty enum member reaches a model | IMPL | "search everything" is `any` rather than an empty string, which Google refuses outright and, being in the tool list, fails every reply rather than one call; `any` is reserved as a type id, and every declaration is checked |
 | A reply is sent the way somebody types | IMPL | every newline is a message, 0.4s apart by default and configurable; the first hangs under the tagging message and the rest do not, capped at eight parts with the tail joined on rather than dropped |
