@@ -5,6 +5,7 @@ import {
   fetchOlderMessages,
   fetchRecentMessages,
   listGuildPeople,
+  markUnseenImages,
   mentionRoster,
   toWindowMessage,
 } from './context';
@@ -28,7 +29,7 @@ import { cacheMessages, getMessages } from '../db/repositories/cachedMessagesRep
 import { getSettings } from '../db/repositories/settingsRepo';
 import { canExtractFrom } from '../db/repositories/channelSettingsRepo';
 import { factTypeIds, knownTypes } from '../db/repositories/factTypesRepo';
-import { imagePartsFor, type MessageImage } from '../bot/attachments';
+import { imageLimitFrom, imagePartsFor, type MessageImage } from '../bot/attachments';
 import type { TextAttachmentBudget } from '../bot/textAttachments';
 import { DISCORD_MESSAGE_LIMIT } from '@shared/constants';
 import {
@@ -357,7 +358,12 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
     const access = await resolveReadableChannel(context.taggedMessage.client, context.guildId, channelId);
     if (!access.ok) return { status: access.reason, response: { error: access.reason } };
 
-    const fetched = await fetchRecentMessages(access.channel, settings.crossChannelMessages, context.attachmentBudget);
+    const read = await fetchRecentMessages(access.channel, settings.crossChannelMessages, context.attachmentBudget);
+    // Its pictures come along exactly as the window's do: what fits is shown
+    // after the tool results, and the rest is marked for see_image.
+    const { images, unseen } = await imagePartsFor(read.discord, imageLimitFrom(settings));
+    pendingImages = [...pendingImages, ...images];
+    const fetched = markUnseenImages(read.window, unseen);
     absorbForeign(channelId, fetched);
 
     let relatedFacts: Fact[] = [];
@@ -384,9 +390,12 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
         channel: { id: channelId },
         messages: messagesMaterial(fetched),
         remembered: factsMaterial(relatedFacts, sources),
+        ...(images.length > 0 ? { picturesAttached: images.length } : {}),
         note:
           'These were said in a different channel from the one you are replying in. Say so if it matters, '
-          + `and link them with that channel's id rather than this one's. ${REPLY_NOW}`,
+          + `and link them with that channel's id rather than this one's.`
+          + (images.length > 0 ? ' Pictures from these messages are below.' : '')
+          + ` ${REPLY_NOW}`,
       },
     };
   };
@@ -617,7 +626,19 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
           }
           imageRequests += 1;
           needsResult = true;
-          const source = await context.taggedMessage.channel.messages.fetch(wanted).catch(() => null);
+          // A message read out of another channel lives there, and fetching it
+          // goes through the same gate as reading that channel did.
+          const home = channelByMessageId.get(wanted) ?? context.channelId;
+          let channel: Message['channel'] = context.taggedMessage.channel;
+          if (home !== context.channelId) {
+            const access = await resolveReadableChannel(context.taggedMessage.client, context.guildId, home);
+            if (!access.ok) {
+              responses.set(call, { shown: false, reason: access.reason, note: REPLY_NOW });
+              continue;
+            }
+            channel = access.channel;
+          }
+          const source = await channel.messages.fetch(wanted).catch(() => null);
           // The cap is what hid it in the first place, so it does not apply
           // here: the model has asked for this one picture in particular.
           const found = source ? await imagePartsFor([source], MAX_IMAGE_REQUESTS * 4) : { images: [], unseen: new Map() };

@@ -7,7 +7,7 @@ import { DEFAULT_SETTINGS } from '../../src/shared/constants';
 const m = vi.hoisted(() => ({
   chat: vi.fn(), addFacts: vi.fn(), deleteFact: vi.fn(), searchFacts: vi.fn(), recall: vi.fn(),
   canExtract: vi.fn(), runTool: vi.fn(), fetchOlder: vi.fn(), readChannel: vi.fn(),
-  collectTools: vi.fn(),
+  collectTools: vi.fn(), fetchRecent: vi.fn(), images: vi.fn(),
 }));
 // Only the call is replaced; building the user message stays real, so the
 // material and its pictures are assembled exactly as in production.
@@ -24,10 +24,15 @@ vi.mock('../../src/server/db/repositories/factsRepo', () => ({
 vi.mock('../../src/server/db/repositories/cachedMessagesRepo', () => ({ cacheMessages: vi.fn(), getMessages: () => [] }));
 vi.mock('../../src/server/plugins/engine', () => ({ collectTools: m.collectTools, runTool: m.runTool }));
 vi.mock('../../src/server/bot/channelAccess', () => ({ resolveReadableChannel: m.readChannel }));
+vi.mock('../../src/server/bot/attachments', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/server/bot/attachments')>(),
+  imagePartsFor: m.images,
+}));
 vi.mock('../../src/server/ai/context', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/server/ai/context')>(),
   effectiveMaxDepth: () => 1,
   fetchOlderMessages: m.fetchOlder,
+  fetchRecentMessages: m.fetchRecent,
   listGuildPeople: () => ({ people: [{ id: '12345678901234567', name: 'Alice', status: 'online' }], visibleOnly: true }),
 }));
 import { generateReply } from '../../src/server/ai/replyGeneration';
@@ -77,6 +82,8 @@ describe('the reply protocol', () => {
     m.addFacts.mockResolvedValue(['saved']); m.deleteFact.mockResolvedValue(true); m.runTool.mockResolvedValue({ ok: true });
     m.collectTools.mockReturnValue([{ pluginId: 'example', tool: { name: 'assess' }, declaration: { name: 'example__assess', description: 'Assess', parameters: {} } }]);
     m.chat.mockReset(); m.chat.mockResolvedValue(answer());
+    m.readChannel.mockReset(); m.fetchRecent.mockReset();
+    m.images.mockReset(); m.images.mockResolvedValue({ images: [], unseen: new Map() });
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -345,5 +352,71 @@ describe('looking things up mid-reply', () => {
     expect(result.olderMessages).toHaveLength(1);
     expect(result).not.toHaveProperty('additionalFacts');
     expect(m.recall).not.toHaveBeenCalled();
+  });
+});
+
+describe('pictures in another channel', () => {
+  const otherChannelId = '44444444444444444';
+  const foreignId = '33333333333333333';
+  const picture = { messageId: foreignId, mimeType: 'image/png', data: 'cG5n' };
+  const foreignMessage = { ...windowMessage, id: foreignId, content: '' };
+  /** The pictures that arrived as their own message after the tool results of a call. */
+  const picturesSent = (call: number) => sentMessages(call)
+    .filter((entry: { role: string; content: unknown }) => entry.role === 'user' && Array.isArray(entry.content))
+    .flatMap((entry: { content: Array<{ type: string }> }) => entry.content.filter((part) => part.type === 'image_url'));
+
+  beforeEach(() => {
+    m.canExtract.mockReturnValue(true); m.recall.mockResolvedValue([]);
+    m.collectTools.mockReturnValue([]);
+    m.chat.mockReset(); m.chat.mockResolvedValue(answer());
+    m.readChannel.mockReset(); m.fetchRecent.mockReset();
+    m.images.mockReset(); m.images.mockResolvedValue({ images: [], unseen: new Map() });
+  });
+
+  it('fetches a message read out of another channel from that channel, through the access gate', async () => {
+    const source = { id: foreignId };
+    const fetch = vi.fn().mockResolvedValue(source);
+    m.readChannel.mockResolvedValue({ ok: true, channel: { messages: { fetch } } });
+    m.images.mockResolvedValueOnce({ images: [picture], unseen: new Map() });
+    m.chat.mockResolvedValueOnce(answer('', [{ name: 'see_image', args: { messageId: foreignId } }]));
+
+    const ctx = context();
+    ctx.foreignMessages = [{ channelId: otherChannelId, channelName: 'files', messages: [foreignMessage] }];
+    await generateReply(draft(), ctx);
+
+    expect(m.readChannel).toHaveBeenCalledWith(undefined, 'g', otherChannelId);
+    expect(fetch).toHaveBeenCalledWith(foreignId);
+    expect(m.images).toHaveBeenCalledWith([source], expect.any(Number));
+    expect(picturesSent(1)).toHaveLength(1);
+  });
+
+  it('refuses to look when that channel can no longer be read', async () => {
+    m.readChannel.mockResolvedValue({ ok: false, reason: 'Reading that channel has been switched off.' });
+    m.chat.mockResolvedValueOnce(answer('', [{ name: 'see_image', id: 'look', args: { messageId: foreignId } }]));
+
+    const ctx = context();
+    ctx.foreignMessages = [{ channelId: otherChannelId, channelName: 'files', messages: [foreignMessage] }];
+    await generateReply(draft(), ctx);
+
+    expect(m.images).not.toHaveBeenCalled();
+    expect(toolResults(1)).toEqual([
+      ['look', expect.objectContaining({ shown: false, reason: 'Reading that channel has been switched off.' })],
+    ]);
+  });
+
+  it('brings the pictures of a channel it reads, and marks the ones that did not fit', async () => {
+    const discord = [{ id: foreignId }];
+    m.readChannel.mockResolvedValue({ ok: true, channel: {} });
+    m.fetchRecent.mockResolvedValue({ window: [foreignMessage], discord });
+    m.images.mockResolvedValueOnce({ images: [picture], unseen: new Map([[foreignId, 5]]) });
+    m.chat.mockResolvedValueOnce(answer('', [{ name: 'read_channel', id: 'read', args: { channelId: otherChannelId } }]));
+
+    await generateReply(draft(), context());
+
+    expect(m.images).toHaveBeenCalledWith(discord, DEFAULT_SETTINGS.maxImages);
+    const [[, result]] = toolResults(1);
+    expect(result.picturesAttached).toBe(1);
+    expect(result.messages[0]).toEqual(expect.objectContaining({ id: foreignId, unseenImages: 5 }));
+    expect(picturesSent(1)).toHaveLength(1);
   });
 });

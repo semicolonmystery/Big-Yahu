@@ -7,6 +7,7 @@ const m = vi.hoisted(() => ({
   extract: vi.fn(), generate: vi.fn(), cache: vi.fn(), facts: vi.fn(), sources: vi.fn(), log: vi.fn(),
   canExtract: vi.fn(), admit: vi.fn(), release: vi.fn(), stopTyping: vi.fn(), images: vi.fn(),
   before: vi.fn(), after: vi.fn(), controller: vi.fn(), referenceWindow: vi.fn(), settings: vi.fn(),
+  access: vi.fn(), recent: vi.fn(),
 }));
 vi.mock('../../src/server/ai/topicExtraction', () => ({ extractTopic: m.extract }));
 vi.mock('../../src/server/ai/replyGeneration', () => ({ generateReply: m.generate }));
@@ -24,12 +25,13 @@ vi.mock('../../src/server/bot/attachments', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/server/bot/attachments')>(),
   imagePartsFor: m.images,
 }));
-vi.mock('../../src/server/bot/channelAccess', () => ({ readableChannelRoster: () => '', resolveReadableChannel: vi.fn() }));
+vi.mock('../../src/server/bot/channelAccess', () => ({ readableChannelRoster: () => '', resolveReadableChannel: m.access }));
 vi.mock('../../src/server/plugins/engine', () => ({
   collectAnnotations: () => '', collectInstructions: () => [], runBeforeReply: m.before, runAfterReply: m.after,
 }));
 vi.mock('../../src/server/ai/context', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/server/ai/context')>(), windowMessagesWithAttachments: m.referenceWindow,
+  fetchRecentMessages: m.recent,
 }));
 import { OverloadedError } from '../../src/server/ai/errors';
 import { AIRequestBudgetError } from '../../src/server/ai/requestBudget';
@@ -246,13 +248,34 @@ describe('complete reply pipeline boundaries', () => {
     msg.fetchReference.mockResolvedValue(oldImage);
     m.referenceWindow.mockResolvedValueOnce([{ ...window, id: 'old', content: '' }]);
     await handleMention(msg as unknown as Message);
-    expect(m.images).toHaveBeenCalledExactlyOnceWith([oldImage], DEFAULT_SETTINGS.maxImages);
+    expect(m.images).toHaveBeenCalledExactlyOnceWith([oldImage], DEFAULT_SETTINGS.maxImages, []);
     expect(download).toHaveBeenCalledTimes(1);
     const [draft, context] = m.generate.mock.calls[0];
     expect(draft.material.quoted).toEqual([expect.objectContaining({ id: 'old', unseenImages: 1 })]);
     expect(draft.material.images).toBeUndefined();
     expect(context.quotedMessages).toEqual([expect.objectContaining({ id: 'old', unseenImages: 1 })]);
     expect(draft.images).toEqual([]);
+  });
+  it('shows a pointed-at channel\'s pictures first and marks the ones that did not fit', async () => {
+    const foreign = { ...window, id: '33', authorId: '76543210987654321', content: '' };
+    const foreignDiscord = { id: '33' };
+    m.access.mockResolvedValueOnce({ ok: true, channel: { name: 'files' } });
+    m.recent.mockResolvedValueOnce({ window: [foreign], discord: [foreignDiscord] });
+    m.images.mockResolvedValueOnce({
+      images: [{ messageId: '33', mimeType: 'image/png', data: 'cG5n' }],
+      unseen: new Map([['33', 5]]),
+    });
+    const msg = message();
+    msg.mentions.channels.set('files-id', {});
+    await handleMention(msg as unknown as Message);
+
+    expect(m.images).toHaveBeenCalledWith([null], DEFAULT_SETTINGS.maxImages, [foreignDiscord]);
+    const [draft, context] = m.generate.mock.calls[0];
+    expect(draft.material.images).toEqual([{ index: 1, messageId: '33', channelId: 'files-id' }]);
+    expect(draft.material.otherChannels).toEqual([{
+      id: 'files-id', name: 'files', messages: [expect.objectContaining({ id: '33', unseenImages: 5 })],
+    }]);
+    expect(context.foreignMessages[0].messages[0]).toEqual(expect.objectContaining({ id: '33', unseenImages: 5 }));
   });
   it('marks recent and quoted images when vision is disabled without downloading either', async () => {
     const { imagePartsFor } = await vi.importActual<typeof import('../../src/server/bot/attachments')>('../../src/server/bot/attachments');
@@ -278,7 +301,7 @@ describe('complete reply pipeline boundaries', () => {
     Object.assign(msg, { type: MessageType.Reply, reference: { messageId: 'old' } });
     msg.fetchReference.mockResolvedValue(oldImage);
     await handleMention(msg as unknown as Message);
-    expect(m.images).toHaveBeenCalledExactlyOnceWith([recentImage, oldImage], 0);
+    expect(m.images).toHaveBeenCalledExactlyOnceWith([recentImage, oldImage], 0, []);
     expect(download).not.toHaveBeenCalled();
     const [draft, context] = m.generate.mock.calls[0];
     expect(draft.material.messages[0].unseenImages).toBe(1);

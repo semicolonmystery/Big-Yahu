@@ -112,6 +112,11 @@ const pause = (ms: number): Promise<void> => new Promise((resolve) => { setTimeo
 /** Mentioning half the server is not a question; two channels is already generous. */
 const MAX_AUTOMATIC_CHANNEL_READS = 2;
 
+/** A mentioned channel's transcript, plus the Discord messages its pictures are on. */
+interface MentionedChannelRead extends ForeignChannelMessages {
+  discord: Message[];
+}
+
 /**
  * A channel named in the same breath as the ping is almost always what the
  * question is about — "what happened in #general" — so it is read without
@@ -123,10 +128,10 @@ async function readMentionedChannels(
   guildId: string,
   limit: number,
   attachmentBudget: TextAttachmentBudget,
-): Promise<ForeignChannelMessages[]> {
+): Promise<MentionedChannelRead[]> {
   if (limit <= 0) return [];
 
-  const reads: ForeignChannelMessages[] = [];
+  const reads: MentionedChannelRead[] = [];
   for (const channelId of message.mentions.channels.keys()) {
     if (channelId === message.channelId) continue;
     if (reads.length >= MAX_AUTOMATIC_CHANNEL_READS) break;
@@ -137,9 +142,9 @@ async function readMentionedChannels(
       continue;
     }
 
-    const messages = await fetchRecentMessages(access.channel, limit, attachmentBudget);
+    const { window: messages, discord } = await fetchRecentMessages(access.channel, limit, attachmentBudget);
     if (messages.length === 0) continue;
-    reads.push({ channelId, channelName: access.channel.name, messages });
+    reads.push({ channelId, channelName: access.channel.name, messages, discord });
     console.log(`[bot] read ${messages.length} message(s) from #${access.channel.name} for a mention`);
   }
   return reads;
@@ -208,7 +213,7 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
   // None of these three depend on each other: working out the topic is a model
   // call, the quoted message is a Discord fetch, and a channel the ping pointed
   // at is another. Waiting for them one after another was pure latency.
-  const [{ topic, windowMessages, discordMessages }, repliedTo, foreign] = await Promise.all([
+  const [{ topic, windowMessages, discordMessages }, repliedTo, mentionedReads] = await Promise.all([
     extractTopic(message, guildId, settings.replyContextMessages, attachmentBudget),
     // A reply can point at a message far outside the recent window, so it is
     // fetched rather than referred to by an id the model was never shown.
@@ -270,10 +275,23 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
 
   // Pictures come first: what could not be sent is marked in the transcript, so
   // a message whose whole content was an image does not read as blank.
-  // A zero budget counts unseen images without downloading them.
-  const { images, unseen } = await imagePartsFor([...discordMessages, repliedTo], imageLimitFrom(settings));
+  // A zero budget counts unseen images without downloading them. A channel the
+  // ping pointed at is what the question is about, so its pictures go first.
+  const { images, unseen } = await imagePartsFor(
+    [...discordMessages, repliedTo],
+    imageLimitFrom(settings),
+    mentionedReads.flatMap((read) => read.discord),
+  );
   const window = markUnseenImages(windowMessages, unseen);
   const quoted = markUnseenImages(quotedMessages, unseen);
+  const foreign: ForeignChannelMessages[] = mentionedReads.map((read) => ({
+    channelId: read.channelId,
+    channelName: read.channelName,
+    messages: markUnseenImages(read.messages, unseen),
+  }));
+  const foreignChannelByMessageId = new Map(
+    foreign.flatMap((read) => read.messages.map((windowMessage) => [windowMessage.id, read.channelId] as const)),
+  );
 
   // Caching what another channel said is what lets the reply quote and link it.
   for (const read of foreign) {
@@ -317,7 +335,11 @@ async function respond(message: Message, guildId: string, outcome: ReplyOutcome)
   };
   if (quoted.length > 0) material.quoted = messagesMaterial(quoted);
   if (images.length > 0) {
-    material.images = images.map((image, index) => ({ index: index + 1, messageId: image.messageId }));
+    // A picture from another channel says which, so it is not read as said here.
+    material.images = images.map((image, index) => {
+      const channelId = foreignChannelByMessageId.get(image.messageId);
+      return { index: index + 1, messageId: image.messageId, ...(channelId ? { channelId } : {}) };
+    });
   }
   if (foreign.length > 0) {
     material.otherChannels = foreign.map((read) => ({

@@ -175,7 +175,9 @@ describe('history and attachment context', () => {
     const budget = { bytes: 1000, files: 2 };
     const result = await fetchRecentMessages(object, 999, budget);
     expect(fetch).toHaveBeenCalledWith({ limit: 100 });
-    expect(result.map((entry) => entry.id)).toEqual(['20', '30']);
+    expect(result.window.map((entry) => entry.id)).toEqual(['20', '30']);
+    // The Discord messages come back in the same order, for their pictures.
+    expect(result.discord.map((entry) => entry.id)).toEqual(['20', '30']);
     expect(state.attachments.mock.calls[0][1]).toBe(budget);
   });
 
@@ -193,7 +195,7 @@ describe('history and attachment context', () => {
 
   it('skips disabled or unreadable history without any fetch', async () => {
     const { object, fetch } = channel([message(10)]);
-    expect(await fetchRecentMessages(object, 0)).toEqual([]);
+    expect(await fetchRecentMessages(object, 0)).toEqual({ window: [], discord: [] });
     expect(fetch).not.toHaveBeenCalled();
     expect(await fetchOlderMessages({} as TextBasedChannel, '50', 0)).toEqual([]);
   });

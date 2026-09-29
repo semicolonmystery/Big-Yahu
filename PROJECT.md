@@ -636,6 +636,13 @@ the window with both ends always included, and the budget is always filled
 exactly. Taking the newest instead meant a burst of memes just before the bot was
 tagged could bury the one screenshot the conversation was about.
 
+A channel the ping points at is the exception: its pictures fill the budget
+first, and the window gets whatever is left. The question is about that channel,
+and sharing one budget evenly let the local chatter crowd out the six images
+somebody was actually asking about — which then read as one empty message. What
+does not fit is marked unseen like anything else, and `see_image` fetches it from
+the channel it was posted in, through the same gate as reading that channel.
+
 A picture that does not fit the budget, or that fails to fetch, is not dropped
 silently: its message is marked `[image not shown]` in the transcript. Otherwise
 an image-only message reads as blank, which is the thing this was meant to fix in
@@ -1362,6 +1369,7 @@ does not queue or invoke AI.
 | Reading a mentioned channel automatically | IMPL | `<#id>` in the tagging message pulls that channel's recent history |
 | `read_channel` tool + readable-channel roster | IMPL | on-demand reads, gated on "read for facts" and on Discord's own permissions |
 | `crossChannelMessages` setting | IMPL | caps the history pulled; 0 disables cross-channel reading entirely |
+| Pictures from other channels | IMPL | a pointed-at channel's pictures fill `maxImages` first, the rest are marked `unseenImages`; `read_channel` brings pictures too; `see_image` fetches from the message's own channel through the same gate |
 | Plugin `annotateExtraction` hook | IMPL | opt-in reach into the periodic pass; `annotateContext` stays reply-only |
 | Plugin `saveFacts` in the context | IMPL | plugins write facts through the dedupe path rather than the raw collection |
 | Versioned plugin API | IMPL | exact API v4 match from the SDK major or `bigYahu.apiVersion`; a mismatch is listed, never imported, never runnable |

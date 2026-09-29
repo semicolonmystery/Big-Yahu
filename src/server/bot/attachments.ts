@@ -125,23 +125,40 @@ export function imageLimitFrom(settings: { visionEnabled: boolean; maxImages: nu
   return settings.imageLimitDisabled ? Number.MAX_SAFE_INTEGER : settings.maxImages;
 }
 
-export async function imagePartsFor(messages: (Message | null)[], limit: number): Promise<ImageSelection> {
+/**
+ * `first` is served before `messages`: a channel somebody pointed the bot at is
+ * what the question is about, so its pictures fill the budget and the window
+ * gets what is left. Both share one call, so one byte allowance covers them.
+ */
+export async function imagePartsFor(
+  messages: (Message | null)[],
+  limit: number,
+  first: Message[] = [],
+): Promise<ImageSelection> {
   const seen = new Set<string>();
-  const candidates: Candidate[] = [];
-  for (const message of messages) {
-    if (!message) continue;
-    for (const candidate of collect(message)) {
-      // The same picture reaches us twice when a message is both in the window
-      // and quoted as the one being replied to.
-      if (seen.has(candidate.url)) continue;
-      seen.add(candidate.url);
-      candidates.push(candidate);
+  const gather = (group: (Message | null)[]): Candidate[] => {
+    const found: Candidate[] = [];
+    for (const message of group) {
+      if (!message) continue;
+      for (const candidate of collect(message)) {
+        // The same picture reaches us twice when a message is both in the window
+        // and quoted as the one being replied to.
+        if (seen.has(candidate.url)) continue;
+        seen.add(candidate.url);
+        found.push(candidate);
+      }
     }
-  }
+    return found;
+  };
+  const preferred = gather(first);
+  const rest = gather(messages);
+  const candidates = [...preferred, ...rest];
   if (candidates.length === 0) return { images: [], unseen: new Map() };
   if (limit <= 0) return { images: [], unseen: countBy(candidates) };
 
-  const budgeted = spread(candidates, limit);
+  const firstPicks = spread(preferred, limit);
+  const remaining = limit - firstPicks.length;
+  const budgeted = remaining > 0 ? [...firstPicks, ...spread(rest, remaining)] : firstPicks;
   const chosen = new Set(budgeted.map((candidate) => candidate.url));
 
   const downloaded: Array<MessageImage | null> = [];

@@ -309,12 +309,18 @@ export async function fetchOlderMessages(
  * out for the same reason as above: the bot reading its own chatter back is not
  * history, it is an echo.
  */
-export async function fetchRecentMessages(channel: TextBasedChannel, limit: number, attachmentBudget?: TextAttachmentBudget): Promise<WindowMessage[]> {
-  if (!isReadable(channel) || limit <= 0) return [];
+export async function fetchRecentMessages(
+  channel: TextBasedChannel,
+  limit: number,
+  attachmentBudget?: TextAttachmentBudget,
+): Promise<{ window: WindowMessage[]; discord: Message[] }> {
+  if (!isReadable(channel) || limit <= 0) return { window: [], discord: [] };
   const batch = await channel.messages.fetch({ limit: Math.min(limit, FETCH_LIMIT) });
   const messages = [...batch.values()].filter((message) => !message.author.bot)
     .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-  return windowMessagesWithAttachments(messages, attachmentBudget);
+  // The Discord messages come back too: the pictures are on them, and the
+  // transcript alone would show a message that is only pictures as blank.
+  return { window: await windowMessagesWithAttachments(messages, attachmentBudget), discord: messages };
 }
 
 export function effectiveMaxDepth(): number {

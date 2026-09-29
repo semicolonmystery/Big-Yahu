@@ -359,7 +359,8 @@ export const seeImageDeclaration: ToolDeclaration = {
     'Look at a picture you were not sent. A message marked with `unseenImages` had pictures that did not fit '
     + "the call's budget, so you cannot see them — call this with that message's id and they are shown to you. "
     + 'Use it when somebody is talking about a picture you have not been given and the answer depends on what '
-    + 'is in it. Never guess at what a picture you have not seen contains.',
+    + 'is in it. It works for a message in another channel too, one you were shown out of `otherChannels` or '
+    + 'read_channel. Never guess at what a picture you have not seen contains.',
   parameters: {
     type: 'object',
     properties: {
@@ -400,7 +401,8 @@ export const readChannelDeclaration: ToolDeclaration = {
     'Read the recent messages of another channel in this server. Reach for it when what you are asked '
     + 'about happened somewhere else — somebody points at a channel, or asks what is going on in one. '
     + 'Only pass a channel id you were actually given; the channels you may read are listed for you. '
-    + 'For older messages in the channel you are already in, use read_history instead.',
+    + 'Pictures in those messages come with them; any that did not fit are marked `unseenImages`, and '
+    + 'see_image shows them. For older messages in the channel you are already in, use read_history instead.',
   parameters: {
     type: 'object',
     properties: {

@@ -19,6 +19,20 @@ describe('image attachment limits', () => {
     expect(result.images[0]).toEqual({ messageId: '0', mimeType: 'image/png', data: Buffer.from('png').toString('base64') });
     expect([...result.unseen.keys()]).toEqual(['1', '3']);
   });
+  it('fills the budget from a pointed-at channel first and gives the window what is left', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('png', { headers: { 'content-type': 'image/png' } })));
+    const foreign = messages(6).map((message) => ({
+      ...message, id: `f${message.id}`,
+      attachments: new Map([['image', { contentType: 'image/png', proxyURL: `https://media.discordapp.net/attachments/9/9/${message.id}.png` }]]),
+    } as unknown as Message));
+    const result = await imagePartsFor(messages(3), 4, foreign);
+    // All four go to the channel the question is about; the local ones are marked.
+    expect(result.images.map((image) => image.messageId)).toEqual(['f0', 'f2', 'f3', 'f5']);
+    expect([...result.unseen.keys()].sort()).toEqual(['0', '1', '2', 'f1', 'f4']);
+
+    const roomy = await imagePartsFor(messages(3), 5, foreign.slice(0, 2));
+    expect(roomy.images.map((image) => image.messageId)).toEqual(['f0', 'f1', '0', '1', '2']);
+  });
   it('never downloads images with a zero budget', async () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
     const result = await imagePartsFor(messages(2), 0);
