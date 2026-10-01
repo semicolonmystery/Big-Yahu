@@ -388,6 +388,14 @@ from `beforeReply`: doing it there would mean re-deriving that "never repeat thi
 by hand, and a slip would let the note leak into the visible reply — which is itself a new
 message the next extraction pass reads, and could turn straight back into a stored fact.
 
+That framing is also the test for whether this is the right hook at all. **Use
+`annotateContext` only for something the bot may act on but must never say. Anything the
+channel can already see belongs in `material` through `beforeReply` instead.** Both
+bundled users of that hook turned on this distinction: a reputation score is private and
+belongs here, while a rolling memory and a message's reaction counts are public, and
+arriving wrapped in "never read it out" would mean the bot holding a list of what is
+pinned or what people reacted with while being forbidden to answer a question about it.
+
 A plugin that throws out of `annotateContext` is logged and skipped, the same as any
 other hook — the reply still goes out, just without that plugin's annotations.
 
@@ -633,6 +641,15 @@ anything else is wrapped as `{ result: <value> }` so the model always gets a
 predictable shape. **A handler that throws does not kill the reply** — the engine
 catches it and hands the model `{ error: "<message>" }` instead, so it can say plainly
 that the lookup failed rather than the whole turn erroring out.
+
+**Say no in a shape the host recognises.** The reply loop decides a call was refused by
+looking for `error`, `ok: false`, `success: false`, `saved: false`, `deleted: false` or
+`attached: false`. A refusal it cannot see is treated as a success: prose the model wrote
+in the same turn survives, and on an `effect: true` tool the turn ends there — so the
+channel gets a message announcing something that never happened. `ok: false` was not on
+that list until a bundled plugin tripped over it; it is now, but the rule stands for any
+shape you invent. If a refusal needs a field of its own, add it to that check rather than
+inventing a key the host ignores.
 
 Eligible tools from every enabled plugin are collected once per reply, but a **call budget**
 (currently 10 calls total, shared across all plugin tools) bounds how many times the
@@ -1228,7 +1245,7 @@ code as the bot.** Treat the ability to install one as equivalent to admin login
 
 ## 11. A complete worked example
 
-Three bundled plugins exercise most of the surface, and all are worth reading alongside
+Four bundled plugins exercise most of the surface, and all are worth reading alongside
 this document rather than treated as toys.
 
 `reputation` (`src/server/plugins/bundled/reputation/`) — `instructions`, a tool,
@@ -1241,8 +1258,15 @@ promoting something into permanent memory.
 
 `discord-admin` (`src/server/plugins/bundled/discord-admin/`) — controller-only tools for
 inspection, nicknames, timeouts, kicks, bans, member roles, role and channel-permission
-management, and voice moderation. Each group has its own typed `enable*` config switch;
-Discord's permissions and role hierarchy remain the final authority.
+management, voice moderation, and pinning. Each group has its own typed `enable*` config
+switch; Discord's permissions and role hierarchy remain the final authority.
+
+`extended-messages` (`src/server/plugins/bundled/extended-messages/`) — native Discord
+polls, embeds, and reactions the bot can both see and add. Its `beforeReply` is the worked
+example of the rule in section 3: it hangs each message's reactions off
+`material.messages` rather than annotating them, because a reaction is public and the bot
+must be free to talk about it. It reads them from the payload of one channel fetch per
+reply, so seeing reactions needs no gateway reaction events and no extra intent.
 `requireMutationConfirmation` defaults to true, making every state change require an
 exact, payload-bound phrase in a new controller message. Turning it off does not weaken
 the hard floor: kicks, bans, role or overwrite deletion, and Administrator grants always

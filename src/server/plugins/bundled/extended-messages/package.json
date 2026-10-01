@@ -1,0 +1,13 @@
+{
+  "name": "extended-messages",
+  "version": "1.0.0",
+  "description": "Lets the bot see reactions, react itself, and send Discord polls and embeds.",
+  "main": "index.ts",
+  "type": "module",
+  "bigYahu": {
+    "displayName": "Extended Messages"
+  },
+  "devDependencies": {
+    "@big-yahu/plugin-sdk": "^4"
+  }
+}

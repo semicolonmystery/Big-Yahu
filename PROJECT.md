@@ -889,6 +889,31 @@ tell anyone what it says", which is right for a private score and exactly wrong 
 whole value of a rolling memory is that the bot can say "yeah, you said you'd be back by
 six".
 
+### Extended Messages
+
+The fourth bundled plugin covers the parts of a Discord message the reply pipeline itself
+does not send: a native poll, an embed, and reactions. `send_poll` and `send_embed` go out
+as their own message beside the ordinary reply rather than replacing it, so the bot still
+answers in its own voice; both carry `allowedMentions: { parse: ['users'] }`, so neither
+can mass-ping whatever the model writes into them. Discord's own limits are refused rather
+than truncated — a 30-field embed is a mistake worth reporting, not something to quietly
+cut down to 25. A cap per reply stops a single answer firing a run of them, keyed on the
+host-authenticated message id so the model cannot reset its own budget.
+
+Reactions work in both directions. What people reacted with arrives attached to the
+messages in the material, so the bot simply sees it without deciding to look; `add_reaction`
+lets it react itself, often a better answer than another message; and `who_reacted` resolves
+which people reacted with what, which is the one part that costs extra Discord calls and is
+therefore capped and separately switchable.
+
+Seeing reactions needs no new gateway intent. Discord returns a message's reactions in the
+payload of the REST fetch that reads the channel, and discord.js builds the reaction manager
+from that payload, so one fetch per reply is the whole cost. `GuildMessageReactions` would
+only buy live cache updates between fetches, which nothing here depends on. They are
+attached per message through `beforeReply` rather than `annotateContext`, because an
+annotation arrives wrapped in "never read it out" — the right framing for a private score,
+and the wrong one for something everybody in the channel can see.
+
 ### Discord Admin
 
 The third bundled plugin gives the model Discord administration tools, but only on a
@@ -1348,6 +1373,8 @@ does not queue or invoke AI.
 | Themes | IMPL | system, light and dark from the sidebar, `next-themes` against the `.dark` variant the stylesheet already had; sonner's own `useTheme` starts working as a side effect |
 | Controllers by name | IMPL | picked from the guild roster rather than typed as a snowflake; `label` dropped, and the name is resolved by the server rather than matched against a roster in the browser |
 | `read_audit_log` | IMPL | Discord Admin gains a controller-gated read of the audit log with a configurable look-back, answering in Discord only; executor and target come back as mentions |
+| Extended Messages plugin | IMPL | bundled: native Discord polls, embeds, `add_reaction` and `who_reacted`, each behind its own switch and capped per reply; reactions on the recent messages ride in the material, read from one channel fetch rather than any gateway event |
+| A refused plugin call is noticed | IMPL | the reply loop's rejection check covers `ok: false`, the shape a plugin reaches for first; without it a refusal read as a success and an `effect` tool let the model announce what had just been refused |
 | Pinning messages | IMPL | Discord Admin gains `pin_message`, `unpin_message` and `read_pins`, gated and confirmed exactly like its other mutations; the channel's most recent pins ride in every reply's material, capped by `visiblePinnedMessages` |
 | No empty enum member reaches a model | IMPL | "search everything" is `any` rather than an empty string, which Google refuses outright and, being in the tool list, fails every reply rather than one call; `any` is reserved as a type id, and every declaration is checked |
 | A reply is sent the way somebody types | IMPL | every newline is a message, 0.4s apart by default and configurable; the first hangs under the tagging message and the rest do not, capped at eight parts with the tail joined on rather than dropped |
