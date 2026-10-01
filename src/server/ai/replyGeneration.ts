@@ -679,7 +679,13 @@ export async function generateReply(draft: DraftPrompt, context: ReplyContext): 
         needsResult = true;
       }
     }
+    // `ok: false` is here because it is the shape a plugin author reaches for
+    // first, and it used to be read as a success: the model kept the prose it had
+    // already written and, for an `effect` tool, finished the turn announcing
+    // something that was refused. A refusal the host cannot see is worse than no
+    // refusal at all.
     const rejected = [...responses.values()].some((result) => result.error || result.success === false
+      || result.ok === false
       || result.saved === false || (result.deleted === false && result.replaced !== true) || result.attached === false);
     if (rejected || needsResult) pendingText = '';
     if (rejected) needsResult = true;

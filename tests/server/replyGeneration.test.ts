@@ -279,6 +279,23 @@ describe('the reply protocol', () => {
     expect((await generateReply(draft(), context())).text).toBe('');
   });
 
+  it('treats a plugin refusing with ok:false as a refusal, not a success', async () => {
+    // The shape a plugin author reaches for first. Read as a success, the prose
+    // written in the same turn survived and an `effect` tool finished the reply
+    // announcing something that never happened.
+    m.collectTools.mockReturnValue([{
+      pluginId: 'example', tool: { name: 'assess', effect: true },
+      declaration: { name: 'example__assess', description: 'Assess', parameters: {} },
+    }]);
+    m.runTool.mockResolvedValueOnce({ ok: false, reason: 'That is already the limit.' });
+    m.chat.mockResolvedValue(answer('hotovo'));
+    m.chat.mockResolvedValueOnce(answer('poslal jsem anketu', [{ name: 'example__assess' }]));
+
+    await generateReply(draft(), context());
+    // Asked again rather than short-circuited, so the claim never reaches the channel.
+    expect(m.chat).toHaveBeenCalledTimes(2);
+  });
+
   it('bounds empty model responses and output length', async () => {
     m.chat.mockResolvedValue(answer(''));
     expect((await generateReply(draft(), context())).text).toBe('');
