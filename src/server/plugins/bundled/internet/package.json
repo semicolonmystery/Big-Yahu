@@ -1,0 +1,14 @@
+{
+  "name": "internet",
+  "version": "1.0.0",
+  "description": "Lets the bot search the live internet and read a page, with everything it finds treated as quoted material.",
+  "main": "index.ts",
+  "type": "module",
+  "bigYahu": {
+    "id": "internet",
+    "displayName": "Internet"
+  },
+  "devDependencies": {
+    "@big-yahu/plugin-sdk": "^4"
+  }
+}
