@@ -4,6 +4,7 @@ import {
   PermissionsBitField,
   type Guild,
   type GuildMember,
+  type GuildTextBasedChannel,
   type PermissionsString,
 } from 'discord.js';
 import type { PluginTool, PluginToolContext } from '@big-yahu/plugin-sdk';
@@ -119,9 +120,36 @@ export async function botMember(guild: Guild): Promise<GuildMember> {
   return guild.members.me ?? guild.members.fetchMe({ force: true });
 }
 
+/**
+ * Only ever returns the channel this tool invocation actually came from. Model
+ * arguments cannot point pinning, or anything else built on this, at another
+ * channel — the invocation is host-authenticated, a model-written id is not.
+ */
+export async function invocationChannel(ctx: PluginToolContext): Promise<GuildTextBasedChannel> {
+  const guild = invocationGuild(ctx);
+  const channel = await guild.channels.fetch(ctx.invocation.channelId, { force: true });
+  if (!channel || !channel.isTextBased() || channel.isDMBased()) {
+    throw new Error('This channel is no longer available.');
+  }
+  return channel;
+}
+
 export function requirePermission(member: GuildMember, permission: PermissionsString, label?: string): void {
   if (!member.permissions.has(PermissionFlagsBits[permission])) {
     throw new Error(`The bot needs the ${label ?? permission} permission for that.`);
+  }
+}
+
+/** Channel overwrites can grant or deny a permission regardless of the member's guild-wide bits, so check in-channel. */
+export function requireChannelPermission(
+  channel: GuildTextBasedChannel,
+  member: GuildMember,
+  permission: PermissionsString,
+  label?: string,
+): void {
+  const effective = channel.permissionsFor(member);
+  if (!effective || !effective.has(PermissionFlagsBits[permission])) {
+    throw new Error(`The bot needs the ${label ?? permission} permission in that channel.`);
   }
 }
 

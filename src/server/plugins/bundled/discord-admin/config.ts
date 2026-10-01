@@ -11,6 +11,9 @@ export interface DiscordAdminConfig {
   enableRoleManagement: boolean;
   enableChannelPermissions: boolean;
   enableVoiceModeration: boolean;
+  enablePinning: boolean;
+  /** How many of the channel's most recent pins are always shown in the reply prompt. */
+  visiblePinnedMessages: number;
   allowAdministratorPermission: boolean;
   requireMutationConfirmation: boolean;
   autonomousModeration: boolean;
@@ -18,7 +21,8 @@ export interface DiscordAdminConfig {
 
 export type DiscordAdminFeature = Exclude<
   keyof DiscordAdminConfig,
-  'allowAdministratorPermission' | 'requireMutationConfirmation' | 'autonomousModeration' | 'auditLogLookbackHours'
+  'allowAdministratorPermission' | 'requireMutationConfirmation' | 'autonomousModeration'
+  | 'auditLogLookbackHours' | 'visiblePinnedMessages'
 >;
 
 export const DEFAULT_CONFIG: DiscordAdminConfig = {
@@ -36,6 +40,10 @@ export const DEFAULT_CONFIG: DiscordAdminConfig = {
   enableRoleManagement: true,
   enableChannelPermissions: true,
   enableVoiceModeration: true,
+  enablePinning: true,
+  // A handful, not the whole board — this is meant to be the few things worth
+  // never scrolling past, not a second copy of the channel.
+  visiblePinnedMessages: 5,
   // Administrator bypasses every channel overwrite. It stays behind its own
   // opt-in even after the plugin itself and role management have been enabled.
   allowAdministratorPermission: false,
@@ -53,7 +61,7 @@ export function withDefaults(config: Partial<DiscordAdminConfig>): DiscordAdminC
     | 'autonomousModeration'): boolean =>
     typeof config[key] === 'boolean' ? config[key] : DEFAULT_CONFIG[key];
 
-  const whole = (key: 'auditLogLookbackHours', min: number, max: number): number => {
+  const whole = (key: 'auditLogLookbackHours' | 'visiblePinnedMessages', min: number, max: number): number => {
     const value = config[key];
     if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_CONFIG[key];
     return Math.min(max, Math.max(min, Math.round(value)));
@@ -72,6 +80,9 @@ export function withDefaults(config: Partial<DiscordAdminConfig>): DiscordAdminC
     enableRoleManagement: boolean('enableRoleManagement'),
     enableChannelPermissions: boolean('enableChannelPermissions'),
     enableVoiceModeration: boolean('enableVoiceModeration'),
+    enablePinning: boolean('enablePinning'),
+    // A cap of 0 is a valid, deliberate "show none" — it is not clamped to a minimum of 1.
+    visiblePinnedMessages: whole('visiblePinnedMessages', 0, 25),
     allowAdministratorPermission: boolean('allowAdministratorPermission'),
     requireMutationConfirmation: boolean('requireMutationConfirmation'),
     autonomousModeration: boolean('autonomousModeration'),

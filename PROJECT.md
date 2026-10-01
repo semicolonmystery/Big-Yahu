@@ -895,11 +895,23 @@ The third bundled plugin gives the model Discord administration tools, but only 
 request from a controller id configured in Settings. It can inspect members, roles and
 channel overwrites; change nicknames; apply and remove timeouts; kick; ban and unban;
 add and remove member roles; create, edit and delete roles; set role or member channel
-overwrites; and mute, deafen, move or disconnect members in voice.
+overwrites; mute, deafen, move or disconnect members in voice; and pin or unpin messages.
+
+Pinning sits here rather than in the core because deciding what is worth pinning is the
+same kind of judgement as deciding who to mute, and it belongs next to it. `pin_message`
+and `unpin_message` are mutations like any other, so they take the same payload-bound
+confirmation phrase, and both check `ManageMessages` on the channel itself rather than
+the guild-wide bit. What is *already* pinned is not gated that way: the channel's most
+recent pins travel in every reply's material, capped by `visiblePinnedMessages`, so the
+bot can answer "what is pinned here" without calling anything. They go in the material
+rather than through `annotateContext`, because an annotation arrives wrapped in "never
+read it out" — right for a reputation score, wrong for something the whole channel can
+already see. `read_pins` pages further back, by a pin's own timestamp rather than a
+message id, which is what Discord's pins API actually takes.
 
 That surface is split into independent `enable*` switches for inspection, nicknames,
-timeouts, kicks, bans, member roles, role management, channel permissions and voice
-moderation. The plugin is disabled as a whole until an operator enables it, and every
+timeouts, kicks, bans, member roles, role management, channel permissions, voice
+moderation and pinning. The plugin is disabled as a whole until an operator enables it, and every
 capability starts behind its own setting. Granting the Discord `Administrator`
 permission is blocked unless `allowAdministratorPermission` is deliberately enabled;
 `requireMutationConfirmation` defaults to true, so every mutation requires an exact
@@ -1336,6 +1348,7 @@ does not queue or invoke AI.
 | Themes | IMPL | system, light and dark from the sidebar, `next-themes` against the `.dark` variant the stylesheet already had; sonner's own `useTheme` starts working as a side effect |
 | Controllers by name | IMPL | picked from the guild roster rather than typed as a snowflake; `label` dropped, and the name is resolved by the server rather than matched against a roster in the browser |
 | `read_audit_log` | IMPL | Discord Admin gains a controller-gated read of the audit log with a configurable look-back, answering in Discord only; executor and target come back as mentions |
+| Pinning messages | IMPL | Discord Admin gains `pin_message`, `unpin_message` and `read_pins`, gated and confirmed exactly like its other mutations; the channel's most recent pins ride in every reply's material, capped by `visiblePinnedMessages` |
 | No empty enum member reaches a model | IMPL | "search everything" is `any` rather than an empty string, which Google refuses outright and, being in the tool list, fails every reply rather than one call; `any` is reserved as a type id, and every declaration is checked |
 | A reply is sent the way somebody types | IMPL | every newline is a message, 0.4s apart by default and configurable; the first hangs under the tagging message and the rest do not, capped at eight parts with the tail joined on rather than dropped |
 | Asking to see a picture | IMPL | `see_image` fetches the pictures of one message it was shown, ignoring the cap that hid them, and they arrive as their own message since a tool result cannot carry an image. Plus a switch that turns the cap off entirely and hides the number |

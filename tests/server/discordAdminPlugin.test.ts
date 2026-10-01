@@ -37,6 +37,9 @@ const EXPECTED_GATES = {
   edit_role: 'enableRoleManagement',
   delete_role: 'enableRoleManagement',
   set_channel_permissions: 'enableChannelPermissions',
+  pin_message: 'enablePinning',
+  unpin_message: 'enablePinning',
+  read_pins: 'enablePinning',
 } as const satisfies Record<string, keyof DiscordAdminConfig>;
 
 const tools = discordAdminPlugin.tools ?? [];
@@ -803,6 +806,239 @@ describe('Discord Admin permission mutation', () => {
       ROLE_ID,
       `Big Yahu controller ${REQUESTER_ID}: remove override`,
     );
+  });
+});
+
+describe('Discord Admin message pinning', () => {
+  const PINNED_MESSAGE_ID = '800000000000000001';
+
+  function pinChannel(overrides: {
+    permissionsFor?: () => PermissionsBitField;
+    pin?: ReturnType<typeof vi.fn>;
+    unpin?: ReturnType<typeof vi.fn>;
+    fetchPins?: ReturnType<typeof vi.fn>;
+  } = {}) {
+    return {
+      id: CHANNEL_ID,
+      isTextBased: () => true,
+      isDMBased: () => false,
+      permissionsFor: overrides.permissionsFor ?? (() => permissions('ManageMessages')),
+      messages: {
+        pin: overrides.pin ?? vi.fn().mockResolvedValue(undefined),
+        unpin: overrides.unpin ?? vi.fn().mockResolvedValue(undefined),
+        fetchPins: overrides.fetchPins ?? vi.fn().mockResolvedValue({ items: [], hasMore: false }),
+      },
+    };
+  }
+
+  function guildWithChannel(channel: ReturnType<typeof pinChannel>) {
+    return {
+      id: GUILD_ID,
+      members: { me: botMember() },
+      channels: { fetch: vi.fn().mockResolvedValue(channel) },
+    };
+  }
+
+  it('pins a message after confirmation, with an audit reason, once Manage Messages is held', async () => {
+    const pin = vi.fn().mockResolvedValue(undefined);
+    const channel = pinChannel({ pin, permissionsFor: () => permissions('ManageMessages') });
+    const guild = guildWithChannel(channel);
+
+    const completed = await requestAndConfirm('pin_message', {
+      messageId: PINNED_MESSAGE_ID,
+      reason: 'keep the announcement visible',
+    }, { guild });
+    expect(completed.result).toEqual({ success: true, pinned: PINNED_MESSAGE_ID });
+    expect(pin).toHaveBeenCalledWith(
+      PINNED_MESSAGE_ID,
+      `Big Yahu controller ${REQUESTER_ID}: keep the announcement visible`,
+    );
+  });
+
+  it('unpins a message after confirmation', async () => {
+    const unpin = vi.fn().mockResolvedValue(undefined);
+    const channel = pinChannel({ unpin, permissionsFor: () => permissions('ManageMessages') });
+    const guild = guildWithChannel(channel);
+
+    const completed = await requestAndConfirm('unpin_message', {
+      messageId: PINNED_MESSAGE_ID,
+      reason: 'no longer relevant',
+    }, { guild });
+    expect(completed.result).toEqual({ success: true, unpinned: PINNED_MESSAGE_ID });
+    expect(unpin).toHaveBeenCalledWith(
+      PINNED_MESSAGE_ID,
+      `Big Yahu controller ${REQUESTER_ID}: no longer relevant`,
+    );
+  });
+
+  it('answers with a plain reason, not a throw, when the bot lacks Manage Messages in that channel', async () => {
+    const pin = vi.fn();
+    const channel = pinChannel({ pin, permissionsFor: () => permissions() });
+    const guild = guildWithChannel(channel);
+
+    const completed = await requestAndConfirm('pin_message', {
+      messageId: PINNED_MESSAGE_ID,
+      reason: 'test',
+    }, { guild });
+    expect(completed.result).toEqual({
+      success: false,
+      error: 'The bot needs the Manage Messages permission in that channel.',
+    });
+    expect(pin).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid message id before any Discord access', async () => {
+    let discordAccesses = 0;
+    await expect(tool('pin_message').handler({
+      messageId: 'not-an-id',
+      reason: 'test',
+    }, context({ onDiscordAccess: () => { discordAccesses += 1; } }))).resolves.toEqual({
+      success: false,
+      error: 'messageId must be a Discord id.',
+    });
+    expect(discordAccesses).toBe(0);
+  });
+
+  it('requires confirmation before touching Discord, same as other mutations', async () => {
+    const pin = vi.fn();
+    const channel = pinChannel({ pin });
+    const guild = guildWithChannel(channel);
+    const phrase = await requestConfirmation('pin_message', {
+      messageId: PINNED_MESSAGE_ID,
+      reason: 'keep visible',
+    }, { guild });
+    expect(phrase).toMatch(new RegExp(`^CONFIRM PIN MESSAGE ${PINNED_MESSAGE_ID} `));
+    expect(pin).not.toHaveBeenCalled();
+  });
+
+  it('reads pinned messages without requiring confirmation, newest first as given by Discord', async () => {
+    const fetchPins = vi.fn().mockResolvedValue({
+      items: [
+        { pinnedTimestamp: 1000, message: { id: PINNED_MESSAGE_ID, author: { id: USER_ID }, content: 'Oldest visible pin' } },
+      ],
+      hasMore: true,
+    });
+    const channel = pinChannel({ fetchPins });
+    const guild = guildWithChannel(channel);
+
+    const result = await tool('read_pins').handler({ limit: 1 }, context({ guild }));
+    expect(result).toEqual({
+      success: true,
+      hasMore: true,
+      pins: [{
+        messageId: PINNED_MESSAGE_ID,
+        authorId: USER_ID,
+        content: 'Oldest visible pin',
+        pinnedAt: new Date(1000).toISOString(),
+      }],
+    });
+    expect(fetchPins).toHaveBeenCalledWith({ limit: 1 });
+  });
+
+  it('pages read_pins with an explicit before timestamp', async () => {
+    const fetchPins = vi.fn().mockResolvedValue({ items: [], hasMore: false });
+    const channel = pinChannel({ fetchPins });
+    const guild = guildWithChannel(channel);
+    const before = '2024-01-01T00:00:00.000Z';
+
+    await tool('read_pins').handler({ before }, context({ guild }));
+    expect(fetchPins).toHaveBeenCalledWith({ limit: 10, before: new Date(before) });
+  });
+
+  it('rejects an invalid before timestamp on read_pins before Discord access', async () => {
+    let discordAccesses = 0;
+    await expect(tool('read_pins').handler({
+      before: 'not-a-timestamp',
+    }, context({ onDiscordAccess: () => { discordAccesses += 1; } }))).resolves.toEqual({
+      success: false,
+      error: 'before must be a valid timestamp.',
+    });
+    expect(discordAccesses).toBe(0);
+  });
+});
+
+describe('Discord Admin pinned messages in the reply draft', () => {
+  function fakeChannel(fetchPins: ReturnType<typeof vi.fn>) {
+    return { isTextBased: () => true, isDMBased: () => false, messages: { fetchPins } };
+  }
+
+  function baseDraftPrompt() {
+    return {
+      systemInstruction: 'system',
+      material: { existing: true },
+      images: [],
+      retrievedFacts: [],
+      sourceMessages: [],
+    };
+  }
+
+  async function runBeforeReply(config: Partial<DiscordAdminConfig>, fetchPins: ReturnType<typeof vi.fn>) {
+    const taggedMessage = { channel: fakeChannel(fetchPins) };
+    return discordAdminPlugin.beforeReply?.({
+      taggedMessage,
+      draftPrompt: baseDraftPrompt(),
+      getConfig: () => ({ ...DEFAULT_CONFIG, ...config }),
+    } as never);
+  }
+
+  it('puts the channel\'s most recent pins in draftPrompt.material.pinnedMessages, newest first and capped', async () => {
+    const fetchPins = vi.fn().mockResolvedValue({
+      items: [
+        { pinnedTimestamp: 1000, message: { id: '800000000000000010', author: { id: USER_ID }, content: 'First pin' } },
+        { pinnedTimestamp: 2000, message: { id: '800000000000000011', author: { id: SECOND_USER_ID }, content: 'Second pin' } },
+      ],
+      hasMore: false,
+    });
+
+    const result = await runBeforeReply({ enablePinning: true, visiblePinnedMessages: 2 }, fetchPins);
+    expect(fetchPins).toHaveBeenCalledWith({ limit: 2 });
+    expect(result).toMatchObject({
+      draftPrompt: {
+        material: {
+          existing: true,
+          pinnedMessages: [
+            {
+              messageId: '800000000000000011',
+              authorId: SECOND_USER_ID,
+              content: 'Second pin',
+              pinnedAt: new Date(2000).toISOString(),
+            },
+            {
+              messageId: '800000000000000010',
+              authorId: USER_ID,
+              content: 'First pin',
+              pinnedAt: new Date(1000).toISOString(),
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it('leaves the draft untouched and fetches nothing when the cap is 0', async () => {
+    const fetchPins = vi.fn();
+    const result = await runBeforeReply({ enablePinning: true, visiblePinnedMessages: 0 }, fetchPins);
+    expect(result).toBeUndefined();
+    expect(fetchPins).not.toHaveBeenCalled();
+  });
+
+  it('leaves the draft untouched and fetches nothing when pinning is disabled, even with a nonzero cap', async () => {
+    const fetchPins = vi.fn();
+    const result = await runBeforeReply({ enablePinning: false, visiblePinnedMessages: 5 }, fetchPins);
+    expect(result).toBeUndefined();
+    expect(fetchPins).not.toHaveBeenCalled();
+  });
+
+  it('leaves the draft untouched, rather than throwing, when the channel cannot be read', async () => {
+    const fetchPins = vi.fn().mockRejectedValue(new Error('Missing Access'));
+    const result = await runBeforeReply({ enablePinning: true, visiblePinnedMessages: 5 }, fetchPins);
+    expect(result).toBeUndefined();
+  });
+
+  it('leaves the draft untouched when the channel has nothing pinned', async () => {
+    const fetchPins = vi.fn().mockResolvedValue({ items: [], hasMore: false });
+    const result = await runBeforeReply({ enablePinning: true, visiblePinnedMessages: 5 }, fetchPins);
+    expect(result).toBeUndefined();
   });
 });
 
