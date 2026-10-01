@@ -951,6 +951,25 @@ lets it react itself, often a better answer than another message; and `who_react
 which people reacted with what, which is the one part that costs extra Discord calls and is
 therefore capped and separately switchable.
 
+Polls read back as well as out. A poll on a message in the window arrives attached to it:
+the question, every answer with its votes and emoji, whether people may pick more than
+one, when voting closes and whether it has. That costs nothing — Discord returns a poll in
+the same payload it returns reactions in, so the one fetch per reply already carried it.
+`read_poll` covers a poll further back than the window, and the voter breakdown, which is
+the only part that costs calls at one per answer and is therefore capped and separately
+switchable. An answer past the cap still reports its count, marked as not looked up, and a
+truncated voter list says how many others there were. Nothing here can end or alter a
+poll — reading only.
+
+The honesty problem is why this is more than a field. Discord does not promise a vote count
+is exact until a poll ends, so every poll carries `voteCountsFinal`, named for the decision
+the model actually has to make rather than after Discord's `is_finalized`, and present
+whichever way it reads, because a missing flag would be read as safe to assert. The
+instructions say it plainly: while that is false the numbers are the tally at this moment
+and are reported as such — "pizza is ahead so far, eleven to four" — and only a finished
+poll has a result to announce. An answer Discord gave no text, an emoji-only option, is
+reported by its emoji and answer number rather than as the word `null`.
+
 Seeing reactions needs no new gateway intent. Discord returns a message's reactions in the
 payload of the REST fetch that reads the channel, and discord.js builds the reaction manager
 from that payload, so one fetch per reply is the whole cost. `GuildMessageReactions` would
@@ -1419,7 +1438,7 @@ does not queue or invoke AI.
 | Controllers by name | IMPL | picked from the guild roster rather than typed as a snowflake; `label` dropped, and the name is resolved by the server rather than matched against a roster in the browser |
 | `read_audit_log` | IMPL | Discord Admin gains a controller-gated read of the audit log with a configurable look-back, answering in Discord only; executor and target come back as mentions |
 | Internet plugin | IMPL | bundled: `web_search` over an operator-ordered chain of Brave, Tavily, Exa, SearXNG and DuckDuckGo, and `fetch_page` behind a DNS-resolving SSRF guard re-run at every redirect hop, with its own `page_extract` call for a long page; everything returned is quoted untrusted material |
-| Extended Messages plugin | IMPL | bundled: native Discord polls, embeds, `add_reaction` and `who_reacted`, each behind its own switch and capped per reply; reactions on the recent messages ride in the material, read from one channel fetch rather than any gateway event |
+| Extended Messages plugin | IMPL | bundled: native Discord polls, embeds, `add_reaction`, `who_reacted` and `read_poll`, each behind its own switch and capped per reply; reactions and poll standings on the recent messages both ride in the material, read from one channel fetch rather than any gateway event |
 | A refused plugin call is noticed | IMPL | the reply loop's rejection check covers `ok: false`, the shape a plugin reaches for first; without it a refusal read as a success and an `effect` tool let the model announce what had just been refused |
 | Pinning messages | IMPL | Discord Admin gains `pin_message`, `unpin_message` and `read_pins`, gated and confirmed exactly like its other mutations; the channel's most recent pins ride in every reply's material, capped by `visiblePinnedMessages` |
 | No empty enum member reaches a model | IMPL | "search everything" is `any` rather than an empty string, which Google refuses outright and, being in the tool list, fails every reply rather than one call; `any` is reserved as a type id, and every declaration is checked |

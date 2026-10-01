@@ -22,6 +22,7 @@ const EXPECTED_GATES = {
   send_embed: 'enableEmbeds',
   add_reaction: 'enableReactions',
   who_reacted: 'enableWhoReacted',
+  read_poll: 'enableReadPoll',
 } as const satisfies Record<string, keyof ExtendedMessagesConfig>;
 
 const tools = extendedMessagesPlugin.tools ?? [];
@@ -53,6 +54,57 @@ function reaction(emoji: { name?: string; id?: string }, count: number, options:
   };
 }
 
+/** One poll answer, shaped like the parts of PollAnswer this plugin reads. */
+interface FakeAnswer {
+  id?: number;
+  /** Null is the real thing a partial answer carries, and must never reach the model as "null". */
+  text?: string | null;
+  emoji?: { name?: string; id?: string };
+  votes: number;
+  voters?: string[];
+  onFetch?: (options: { limit?: number }) => void;
+}
+
+interface FakePollOptions {
+  question?: string | null;
+  answers: FakeAnswer[];
+  /** Discord's own results.is_finalized, which is false until a poll ends. */
+  finalized?: boolean;
+  allowMultiselect?: boolean;
+  expiresTimestamp?: number | null;
+}
+
+/** A poll shaped like the parts of discord.js's Poll this plugin reads off a fetched message. */
+function fakePoll(options: FakePollOptions) {
+  const answers = options.answers.map((answer, index) => {
+    const id = answer.id ?? index + 1;
+    const voters = answer.voters ?? [];
+    return [id, {
+      id,
+      text: answer.text === undefined ? `option ${id}` : answer.text,
+      emoji: answer.emoji
+        ? { id: answer.emoji.id ?? null, name: answer.emoji.name ?? null }
+        : null,
+      voteCount: answer.votes,
+      voters: {
+        fetch: vi.fn(async (fetchOptions: { limit?: number } = {}) => {
+          answer.onFetch?.(fetchOptions);
+          const limit = fetchOptions.limit ?? voters.length;
+          return new Map(voters.slice(0, limit).map((id2) => [id2, { id: id2, bot: false }]));
+        }),
+      },
+    }] as const;
+  });
+  return {
+    question: { text: options.question === undefined ? 'pizza or kebab' : options.question },
+    answers: new Map(answers),
+    resultsFinalized: options.finalized ?? false,
+    allowMultiselect: options.allowMultiselect ?? false,
+    expiresTimestamp: options.expiresTimestamp ?? null,
+    voterFetches: answers.map(([, answer]) => answer.voters.fetch),
+  };
+}
+
 interface Fakes {
   send: ReturnType<typeof vi.fn>;
   react: ReturnType<typeof vi.fn>;
@@ -65,6 +117,8 @@ interface ContextOptions {
   permissions?: PermissionsString[];
   /** Reactions on the message a tool is pointed at. */
   reactions?: ReturnType<typeof reaction>[];
+  /** The poll on the message a tool is pointed at, where there is one. */
+  poll?: ReturnType<typeof fakePoll>;
   guildEmoji?: boolean;
   messageId?: string;
 }
@@ -76,6 +130,8 @@ function fakes(options: ContextOptions): Fakes {
     id: TARGET_ID,
     react,
     reactions: { cache: new Map((options.reactions ?? []).map((entry, index) => [String(index), entry])) },
+    // `Message#poll` is `Poll | null`, and null is what nearly every message has.
+    poll: options.poll ?? null,
   }));
   const permissions = new PermissionsBitField(options.permissions
     ?? ['SendMessages', 'EmbedLinks', 'AddReactions', 'ReadMessageHistory', 'ViewChannel']);
@@ -151,8 +207,10 @@ describe('Extended Messages declarations', () => {
     expect(tool('send_poll').effect).toBe(true);
     expect(tool('send_embed').effect).toBe(true);
     expect(tool('add_reaction').effect).toBe(true);
-    // who_reacted answers a question, so the model has to see the answer.
+    // who_reacted and read_poll both answer a question, so the model has to see
+    // the answer: neither may be an effect tool.
     expect(tool('who_reacted').effect).toBeUndefined();
+    expect(tool('read_poll').effect).toBeUndefined();
   });
 
   it('never offers a channel argument, so nothing can be posted outside the request', () => {
@@ -176,6 +234,7 @@ describe('Extended Messages config gates', () => {
       ['send_embed', { title: 'Rules', description: 'be nice' }],
       ['add_reaction', { messageId: TARGET_ID, emoji: '👍' }],
       ['who_reacted', { messageId: TARGET_ID }],
+      ['read_poll', { messageId: TARGET_ID }],
     ];
     for (const [name, args] of cases) {
       const ctx = context({ config: { [EXPECTED_GATES[name]]: false } });
@@ -398,6 +457,149 @@ describe('who_reacted', () => {
   });
 });
 
+describe('read_poll', () => {
+  const VOTER_A = '520000000000000001';
+  const VOTER_B = '520000000000000002';
+  const VOTER_C = '520000000000000003';
+  const VOTER_D = '520000000000000004';
+
+  it('reads a running poll back, and never states its counts as the final ones', async () => {
+    const closesAt = Date.now() + 3_600_000;
+    const ctx = context({
+      config: { enablePollVoters: false },
+      poll: fakePoll({
+        answers: [{ text: 'pizza', votes: 11 }, { text: 'kebab', votes: 4 }],
+        allowMultiselect: true,
+        expiresTimestamp: closesAt,
+      }),
+    });
+
+    const result = await tool('read_poll').handler({ messageId: TARGET_ID }, ctx) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      ok: true,
+      messageId: TARGET_ID,
+      question: 'pizza or kebab',
+      // Discord does not promise a count is exact until a poll ends, so this
+      // flag is on every payload and says outright that these are not final.
+      voteCountsFinal: false,
+      multipleChoice: true,
+      expiresAt: new Date(closesAt).toISOString(),
+    });
+    expect(result.closed).toBeUndefined();
+    expect(result.answers).toEqual([
+      { id: 1, text: 'pizza', votes: 11 },
+      { id: 2, text: 'kebab', votes: 4 },
+    ]);
+    // Forced, or a cached copy's vote counts would be as old as the copy.
+    expect(ctx.fetchMessage).toHaveBeenCalledWith({ message: TARGET_ID, force: true });
+  });
+
+  it('says a finished poll is finished, so its numbers can be given as the result', async () => {
+    const ctx = context({
+      config: { enablePollVoters: false },
+      poll: fakePoll({
+        answers: [{ text: 'pizza', votes: 11 }],
+        finalized: true,
+        expiresTimestamp: Date.now() - 60_000,
+      }),
+    });
+    expect(await tool('read_poll').handler({ messageId: TARGET_ID }, ctx))
+      .toMatchObject({ ok: true, voteCountsFinal: true, closed: true });
+  });
+
+  it('treats a poll whose time is up as closed even before Discord finalises the counts', async () => {
+    const ctx = context({
+      config: { enablePollVoters: false },
+      poll: fakePoll({ answers: [{ text: 'pizza', votes: 1 }], expiresTimestamp: Date.now() - 1_000 }),
+    });
+    expect(await tool('read_poll').handler({ messageId: TARGET_ID }, ctx))
+      .toMatchObject({ ok: true, closed: true, voteCountsFinal: false });
+  });
+
+  it('names who voted for what, within both of its caps, and says where a list was cut', async () => {
+    const limits: Array<number | undefined> = [];
+    const poll = fakePoll({
+      answers: [
+        { text: 'pizza', votes: 3, voters: [VOTER_A, VOTER_B, VOTER_C], onFetch: (o) => limits.push(o.limit) },
+        { text: 'kebab', votes: 1, voters: [VOTER_D], onFetch: (o) => limits.push(o.limit) },
+        { text: 'neither', votes: 7, voters: [VOTER_A], onFetch: (o) => limits.push(o.limit) },
+      ],
+    });
+    const ctx = context({ config: { readPollMaxAnswers: 2, readPollMaxVoters: 2 }, poll });
+
+    const result = await tool('read_poll').handler({ messageId: TARGET_ID }, ctx) as Record<string, unknown>;
+    // Only the two answers the cap allows cost a call at all.
+    expect(limits).toEqual([2, 2]);
+    expect(poll.voterFetches[2]).not.toHaveBeenCalled();
+    expect(result.answers).toEqual([
+      {
+        id: 1,
+        text: 'pizza',
+        votes: 3,
+        people: [{ id: VOTER_A, name: 'Person 1' }, { id: VOTER_B, name: 'Person 2' }],
+        // The third vote is said outright rather than left to look like two.
+        andOthers: 1,
+      },
+      { id: 2, text: 'kebab', votes: 1, people: [{ id: VOTER_D, name: 'Person 4' }] },
+      // Still counted, but nobody was looked up, and that is on the answer.
+      { id: 3, text: 'neither', votes: 7, votersNotLookedUp: true },
+    ]);
+  });
+
+  it('leaves the voters alone entirely while that switch is off', async () => {
+    const poll = fakePoll({ answers: [{ text: 'pizza', votes: 3, voters: [VOTER_A] }] });
+    const ctx = context({ config: { enablePollVoters: false }, poll });
+
+    const result = await tool('read_poll').handler({ messageId: TARGET_ID }, ctx) as Record<string, unknown>;
+    expect(poll.voterFetches[0]).not.toHaveBeenCalled();
+    // Not an empty list and not a marker: the counts come back, the names do not.
+    expect(result.answers).toEqual([{ id: 1, text: 'pizza', votes: 3 }]);
+    expect(JSON.stringify(result)).not.toContain('people');
+  });
+
+  it('reports an answer Discord gave no text without ever writing the word null', async () => {
+    const ctx = context({
+      config: { enablePollVoters: false },
+      poll: fakePoll({
+        question: null,
+        answers: [{ text: null, emoji: { name: '🍕' }, votes: 2 }, { text: null, votes: 1 }],
+      }),
+    });
+
+    const result = await tool('read_poll').handler({ messageId: TARGET_ID }, ctx) as Record<string, unknown>;
+    expect(result.answers).toEqual([
+      // The emoji identifies it; the answer id is what is left when nothing else does.
+      { id: 1, emoji: '🍕', votes: 2 },
+      { id: 2, votes: 1 },
+    ]);
+    expect(result.question).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain('null');
+  });
+
+  it('says plainly that a message carries no poll rather than throwing', async () => {
+    const ctx = context();
+    expect(refusal(await tool('read_poll').handler({ messageId: TARGET_ID }, ctx)))
+      .toMatch(/does not carry a poll/);
+  });
+
+  it('refuses an invented message id before it goes anywhere near Discord', async () => {
+    const ctx = context({ poll: fakePoll({ answers: [{ votes: 1 }] }) });
+    expect(refusal(await tool('read_poll').handler({ messageId: '12' }, ctx)))
+      .toMatch(/messageId must be a Discord id/);
+    expect(ctx.fetchMessage).not.toHaveBeenCalled();
+  });
+
+  it('refuses without Read Message History, rather than letting Discord say no', async () => {
+    const ctx = context({
+      permissions: ['SendMessages', 'ViewChannel'],
+      poll: fakePoll({ answers: [{ votes: 1 }] }),
+    });
+    expect(refusal(await tool('read_poll').handler({ messageId: TARGET_ID }, ctx)))
+      .toMatch(/Read Message History/);
+    expect(ctx.fetchMessage).not.toHaveBeenCalled();
+  });
+});
+
 describe('the per-reply cap', () => {
   it('stops one reply firing more of these than the operator allows', async () => {
     const options: ContextOptions = { config: { maxActionsPerReply: 2 } };
@@ -416,7 +618,7 @@ describe('the per-reply cap', () => {
   });
 });
 
-describe('the reaction list in the reply prompt', () => {
+describe('what the reply prompt gains from the channel', () => {
   const draft = (): DraftPrompt => ({
     systemInstruction: 'be yourself',
     material: {
@@ -433,12 +635,19 @@ describe('the reaction list in the reply prompt', () => {
 
   function replyContext(options: {
     config?: Partial<ExtendedMessagesConfig>;
-    messages?: Array<{ id: string; reactions: ReturnType<typeof reaction>[] }>;
+    messages?: Array<{
+      id: string;
+      reactions?: ReturnType<typeof reaction>[];
+      poll?: ReturnType<typeof fakePoll>;
+    }>;
   } = {}): BeforeReplyContext & { fetch: ReturnType<typeof vi.fn> } {
     const fetch = vi.fn(async (_options: { limit?: number }) => new Map(
       (options.messages ?? []).map((entry) => [entry.id, {
         id: entry.id,
-        reactions: { cache: new Map(entry.reactions.map((value, index) => [String(index), value])) },
+        reactions: { cache: new Map((entry.reactions ?? []).map((value, index) => [String(index), value])) },
+        // Discord returns a poll with its message, so this arrives in the same
+        // payload the reactions do — null on every message that is not a poll.
+        poll: entry.poll ?? null,
       } as unknown as Message]),
     ));
     return {
@@ -486,19 +695,131 @@ describe('the reaction list in the reply prompt', () => {
     }]);
   });
 
-  it('fetches nothing at all while the feature is off, or its window is zero', async () => {
-    for (const config of [{ enableReactionSummary: false }, { reactionSummaryMessages: 0 }]) {
+  it('fetches nothing at all while both features are off, or the window is zero', async () => {
+    for (const config of [
+      { enableReactionSummary: false, enablePollSummary: false },
+      { reactionSummaryMessages: 0 },
+    ]) {
       const ctx = replyContext({ config });
       expect(await extendedMessagesPlugin.beforeReply!(ctx)).toBeUndefined();
       expect(ctx.fetch).not.toHaveBeenCalled();
     }
   });
 
-  it('hands the draft back untouched when nobody has reacted to anything', async () => {
+  it('hands the draft back untouched when there is no reaction and no poll about', async () => {
     const ctx = replyContext({ messages: [{ id: '810000000000000001', reactions: [] }] });
     // Not an empty field on every reply: the material is sent with every call.
     expect(await extendedMessagesPlugin.beforeReply!(ctx)).toBeUndefined();
     expect(ctx.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('attaches a poll\'s standing to the message carrying it, counts and all', async () => {
+    const closesAt = Date.now() + 7_200_000;
+    const ctx = replyContext({
+      messages: [{
+        id: '810000000000000002',
+        poll: fakePoll({
+          answers: [{ text: 'pizza', votes: 11 }, { text: 'kebab', emoji: { name: '🥙' }, votes: 4 }],
+          allowMultiselect: true,
+          expiresTimestamp: closesAt,
+        }),
+      }],
+    });
+
+    const result = await extendedMessagesPlugin.beforeReply!(ctx);
+    const material = (result as { draftPrompt: DraftPrompt }).draftPrompt.material;
+    expect((material.messages as Array<Record<string, unknown>>)[1]).toEqual({
+      id: '810000000000000002',
+      at: 'then',
+      authorId: 'you',
+      content: 'my line',
+      poll: {
+        question: 'pizza or kebab',
+        answers: [
+          { id: 1, text: 'pizza', votes: 11 },
+          { id: 2, text: 'kebab', emoji: '🥙', votes: 4 },
+        ],
+        // Carried whichever way it reads: a missing flag would be read as "safe
+        // to state as the result", which is exactly what it is not.
+        voteCountsFinal: false,
+        multipleChoice: true,
+        expiresAt: new Date(closesAt).toISOString(),
+      },
+    });
+    // The message nobody polled or reacted to gains nothing at all.
+    expect((material.messages as Array<Record<string, unknown>>)[0].poll).toBeUndefined();
+  });
+
+  it('adds no Discord call for the poll state: one fetch carries both', async () => {
+    const both = () => [
+      {
+        id: '810000000000000001',
+        reactions: [reaction({ name: '😂' }, 3)],
+        poll: fakePoll({ answers: [{ text: 'pizza', votes: 2 }], finalized: true }),
+      },
+    ];
+
+    // Reactions on their own: one fetch.
+    const reactionsOnly = replyContext({ config: { enablePollSummary: false }, messages: both() });
+    await extendedMessagesPlugin.beforeReply!(reactionsOnly);
+    expect(reactionsOnly.fetch).toHaveBeenCalledTimes(1);
+
+    // Poll state as well: still one fetch, because the poll came back in that
+    // same payload. Switching it on is free.
+    const withPolls = replyContext({ messages: both() });
+    const result = await extendedMessagesPlugin.beforeReply!(withPolls);
+    expect(withPolls.fetch).toHaveBeenCalledTimes(1);
+
+    const line = ((result as { draftPrompt: DraftPrompt }).draftPrompt
+      .material.messages as Array<Record<string, unknown>>)[0];
+    expect(line.reactions).toEqual([{ emoji: '😂', count: 3 }]);
+    expect(line.poll).toEqual({
+      question: 'pizza or kebab',
+      answers: [{ id: 1, text: 'pizza', votes: 2 }],
+      voteCountsFinal: true,
+      closed: true,
+    });
+
+    // And the poll state on its own is one fetch too, not a second one.
+    const pollsOnly = replyContext({ config: { enableReactionSummary: false }, messages: both() });
+    const pollResult = await extendedMessagesPlugin.beforeReply!(pollsOnly);
+    expect(pollsOnly.fetch).toHaveBeenCalledTimes(1);
+    const pollLine = ((pollResult as { draftPrompt: DraftPrompt }).draftPrompt
+      .material.messages as Array<Record<string, unknown>>)[0];
+    expect(pollLine.reactions).toBeUndefined();
+    expect(pollLine.poll).toBeDefined();
+  });
+
+  it('hands the draft back untouched when no message in the window carries a poll', async () => {
+    const ctx = replyContext({
+      config: { enableReactionSummary: false },
+      messages: [{ id: '810000000000000001', reactions: [reaction({ name: '😂' }, 3)] }],
+    });
+    // The reactions are there but switched off, and there is no poll: nothing to
+    // attach, so the material is not rebuilt around an empty field.
+    expect(await extendedMessagesPlugin.beforeReply!(ctx)).toBeUndefined();
+    expect(ctx.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('never writes the word null for an answer Discord gave no text', async () => {
+    const ctx = replyContext({
+      config: { enableReactionSummary: false },
+      messages: [{
+        id: '810000000000000001',
+        poll: fakePoll({ answers: [{ text: null, emoji: { name: 'yahu', id: GUILD_EMOJI_ID }, votes: 2 }] }),
+      }],
+    });
+
+    const result = await extendedMessagesPlugin.beforeReply!(ctx);
+    const material = (result as { draftPrompt: DraftPrompt }).draftPrompt.material;
+    const line = (material.messages as Array<Record<string, unknown>>)[0];
+    expect(line.poll).toEqual({
+      question: 'pizza or kebab',
+      // Named by the emoji it was labelled with, with its id left to identify it.
+      answers: [{ id: 1, emoji: `yahu:${GUILD_EMOJI_ID}`, votes: 2 }],
+      voteCountsFinal: false,
+    });
+    expect(JSON.stringify(material)).not.toContain('null');
   });
 
   it('keeps the reply going when Discord will not let it read the channel', async () => {

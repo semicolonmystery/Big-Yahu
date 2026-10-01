@@ -3,12 +3,13 @@ import { DEFAULT_CONFIG, withDefaults } from './config';
 import { pollTool } from './pollTool';
 import { embedTool } from './embedTool';
 import { addReactionTool, whoReactedTool } from './reactionTools';
-import { withReactions } from './reactionSummary';
+import { readPollTool } from './readPollTool';
+import { withMessageState } from './messageState';
 
 const plugin: BigYahuPlugin = {
   id: 'extended-messages',
   name: 'Extended Messages',
-  description: 'Lets the bot see reactions, react itself, and send Discord polls and embeds.',
+  description: 'Lets the bot see reactions and polls, react itself, and send Discord polls and embeds.',
   version: '1.0.0',
   defaultConfig: { ...DEFAULT_CONFIG },
 
@@ -27,6 +28,16 @@ const plugin: BigYahuPlugin = {
       );
     }
 
+    if (config.enablePollSummary && config.reactionSummaryMessages > 0) {
+      lines.push(
+        'A message in `messages` may carry `poll`: the question, every answer with its `votes`, `closed` once '
+        + 'voting is over, `expiresAt` when it closes, and `multipleChoice` where people may pick more than one. '
+        + 'Like a reaction, a poll is public — the counts are on the message for everybody to see, so say what the '
+        + 'vote looks like whenever it is relevant, and do not recite it for its own sake. An answer with no `text` '
+        + 'is one Discord labelled with only an emoji; call it by that emoji, never by its number.',
+      );
+    }
+
     if (config.enableReactions) {
       lines.push(
         'add_reaction puts a reaction on a message here. It is the cheapest thing you can do and often the better '
@@ -41,6 +52,35 @@ const plugin: BigYahuPlugin = {
         'who_reacted puts names to a message\'s reactions. Only reach for it when who reacted is the actual question — '
         + 'the counts are already in front of you, so asking again to learn the same number is a wasted call. It is '
         + 'capped, so a long list comes back short and says so.',
+      );
+    }
+
+    if (config.enableReadPoll) {
+      lines.push(
+        'read_poll reads a poll back: the question, the answers and their counts'
+        + (config.enablePollVoters ? ', and which people voted for which answer' : '')
+        + '. For a poll further back than the messages you were given'
+        + (config.enablePollVoters ? ', or when who voted is the actual question' : '')
+        + '. A poll on a recent message already has its counts in front of you, so asking again to learn the same '
+        + 'number is a wasted call'
+        + (config.enablePollVoters
+          ? `. Naming voters is capped at ${config.readPollMaxAnswers} answers and `
+            + `${config.readPollMaxVoters} people each, and a list cut short says so: \`andOthers\` is how many `
+            + 'voted beyond the ones named, and `votersNotLookedUp` marks an answer nobody was looked up for. '
+            + 'Never read a capped list out as though it were everybody.'
+          : '.'),
+      );
+    }
+
+    if ((config.enablePollSummary && config.reactionSummaryMessages > 0) || config.enableReadPoll) {
+      lines.push(
+        'About poll numbers, and be careful here: Discord only promises a count is exact once the poll has '
+        + 'ended. Every poll you are shown carries `voteCountsFinal`. Where it is false the poll is still running '
+        + 'and the counts are the tally at this moment — they can move, and they can be approximate. Say them as '
+        + 'that: "pizza is ahead so far, eleven to four", not "pizza won with eleven". Only where '
+        + '`voteCountsFinal` is true are the numbers the result, and only then is there a winner to announce. '
+        + 'Never round a running tally up to a settled one, and never state a vote total as final because it '
+        + 'looks finished.',
       );
     }
 
@@ -74,16 +114,16 @@ const plugin: BigYahuPlugin = {
     return lines.join('\n\n');
   },
 
-  tools: [pollTool, embedTool, addReactionTool, whoReactedTool],
+  tools: [pollTool, embedTool, addReactionTool, whoReactedTool, readPollTool],
 
   /**
-   * The reaction list goes in through beforeReply rather than annotateContext.
+   * Reactions and poll state go in through beforeReply rather than annotateContext.
    * Everything annotateContext contributes is wrapped in "never read it out,
    * quote it, or tell anyone what it says", which is right for a private score
-   * and exactly wrong here: a reaction is public, and the whole point is that
-   * the bot can say three people laughed at that.
+   * and exactly wrong here: a reaction and a poll are both public, and the whole
+   * point is that the bot can say three people laughed at that.
    */
-  beforeReply: withReactions,
+  beforeReply: withMessageState,
 
   configSchema: [
     {
@@ -92,18 +132,29 @@ const plugin: BigYahuPlugin = {
       type: 'boolean',
       description:
         'Attach what people have reacted with, and how many, to the messages in every reply prompt. '
-        + 'Costs one extra Discord call per reply, whatever the conversation holds.',
+        + 'Costs one extra Discord call per reply, whatever the conversation holds — the same single call the '
+        + 'poll state below reads from, so having both on costs no more than having one.',
+    },
+    {
+      name: 'enablePollSummary',
+      label: 'See the state of polls',
+      type: 'boolean',
+      description:
+        'Attach a poll\'s question, answers and vote counts to the message carrying it, in every reply prompt. '
+        + 'Free: Discord returns a poll with its message, so this reads more out of the call the reactions '
+        + 'above already make and adds none of its own.',
     },
     {
       name: 'reactionSummaryMessages',
-      label: 'Reactions read off the last N messages',
+      label: 'Reactions and polls read off the last N messages',
       type: 'number',
       min: 0,
       max: 100,
       step: 1,
       description:
-        'How far back that one call looks. Zero switches the call off without switching the feature off, '
-        + 'which is how you measure what it was costing. Discord\'s own maximum is 100.',
+        'How far back that one call looks, for reactions and polls alike. Zero switches the call off without '
+        + 'switching either feature off, which is how you measure what it was costing. Discord\'s own maximum '
+        + 'is 100.',
     },
     {
       name: 'enableReactions',
@@ -140,6 +191,42 @@ const plugin: BigYahuPlugin = {
       description: 'How many people one reaction names. A longer list comes back short and says how many are missing.',
     },
     {
+      name: 'enableReadPoll',
+      label: 'Read polls back',
+      type: 'boolean',
+      description:
+        'Let the bot look a poll up by message id: the question, the answers and their counts, and whether '
+        + 'voting is still open. One Discord call, for a poll older than the messages it was given.',
+    },
+    {
+      name: 'enablePollVoters',
+      label: 'Look up who voted',
+      type: 'boolean',
+      description:
+        'Let that lookup also name which people voted for which answer. The expensive half — one Discord call '
+        + 'per answer — so it is capped by the two settings below. Off leaves the counts and drops the names.',
+    },
+    {
+      name: 'readPollMaxAnswers',
+      label: 'Answers whose voters are resolved',
+      type: 'number',
+      min: 1,
+      max: 10,
+      step: 1,
+      description:
+        'How many of a poll\'s answers get their voters looked up. Every answer is still reported with its '
+        + 'count; the ones past this are marked as nobody having been looked up. Discord allows 10 answers.',
+    },
+    {
+      name: 'readPollMaxVoters',
+      label: 'People named per answer',
+      type: 'number',
+      min: 1,
+      max: 100,
+      step: 1,
+      description: 'How many people one answer names. A longer list comes back short and says how many are missing.',
+    },
+    {
       name: 'enablePolls',
       label: 'Send polls',
       type: 'boolean',
@@ -161,7 +248,7 @@ const plugin: BigYahuPlugin = {
       max: 10,
       step: 1,
       description:
-        'The total any one reply may fire, across all four tools. Two is a poll or an embed plus a reaction; much '
+        'The total any one reply may fire, across all five tools. Two is a poll or an embed plus a reaction; much '
         + 'more than that and a single mention turns into a page of boxes.',
     },
   ] satisfies PluginField[],

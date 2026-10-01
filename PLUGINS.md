@@ -1278,11 +1278,15 @@ silently, a failure falls through, an exhausted chain names what it tried), and 
 handle text from outside the bot, below.
 
 `extended-messages` (`src/server/plugins/bundled/extended-messages/`) — native Discord
-polls, embeds, and reactions the bot can both see and add. Its `beforeReply` is the worked
-example of the rule in section 3: it hangs each message's reactions off
-`material.messages` rather than annotating them, because a reaction is public and the bot
-must be free to talk about it. It reads them from the payload of one channel fetch per
-reply, so seeing reactions needs no gateway reaction events and no extra intent.
+polls, embeds, and reactions the bot can both see and add. Its `beforeReply`
+(`messageState.ts`) is the worked example of the rule in section 3: it hangs each message's
+reactions and poll standing off `material.messages` rather than annotating them, because
+both are public and the bot must be free to talk about them. It reads both out of the
+payload of **one** channel fetch per reply — the pattern worth copying is taking everything
+you need from a payload you already have, rather than adding a call per feature — so
+neither needs a gateway event or an extra intent. `read_poll` is its second non-`effect`
+read beside `who_reacted`, and a clean example of `{ ok: false, reason }` for a legitimate
+negative answer: a message that simply has no poll is not an error.
 `requireMutationConfirmation` defaults to true, making every state change require an
 exact, payload-bound phrase in a new controller message. Turning it off does not weaken
 the hard floor: kicks, bans, role or overwrite deletion, and Administrator grants always
