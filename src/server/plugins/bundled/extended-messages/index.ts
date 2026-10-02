@@ -4,6 +4,7 @@ import { pollTool } from './pollTool';
 import { embedTool } from './embedTool';
 import { addReactionTool, whoReactedTool } from './reactionTools';
 import { readPollTool } from './readPollTool';
+import { endPollTool } from './endPollTool';
 import { withMessageState } from './messageState';
 
 const plugin: BigYahuPlugin = {
@@ -72,6 +73,16 @@ const plugin: BigYahuPlugin = {
       );
     }
 
+    if (config.enableEndPoll) {
+      lines.push(
+        'end_poll closes a poll you posted, right now, before its own clock would. It is final: once it is ended '
+        + 'nobody can vote again and nobody, including you, can reopen it, so it is for a poll that has done its '
+        + 'job or should never have gone out the way it did, not one that is merely still running. A poll cannot '
+        + 'be edited, so fixing a wrong one means ending it and posting the corrected version — say so in the '
+        + 'channel rather than doing it silently.',
+      );
+    }
+
     if ((config.enablePollSummary && config.reactionSummaryMessages > 0) || config.enableReadPoll) {
       lines.push(
         'About poll numbers, and be careful here: Discord only promises a count is exact once the poll has '
@@ -114,7 +125,7 @@ const plugin: BigYahuPlugin = {
     return lines.join('\n\n');
   },
 
-  tools: [pollTool, embedTool, addReactionTool, whoReactedTool, readPollTool],
+  tools: [pollTool, embedTool, addReactionTool, whoReactedTool, readPollTool, endPollTool],
 
   /**
    * Reactions and poll state go in through beforeReply rather than annotateContext.
@@ -225,6 +236,14 @@ const plugin: BigYahuPlugin = {
       max: 100,
       step: 1,
       description: 'How many people one answer names. A longer list comes back short and says how many are missing.',
+    },
+    {
+      name: 'enableEndPoll',
+      label: 'End polls early',
+      type: 'boolean',
+      description:
+        'Let the bot close a poll it posted before its own timer would. Final — nobody can vote again and '
+        + 'nobody can reopen it. Discord only allows this on a poll the bot itself posted.',
     },
     {
       name: 'enablePolls',

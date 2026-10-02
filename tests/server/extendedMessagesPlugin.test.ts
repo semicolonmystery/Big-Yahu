@@ -16,6 +16,7 @@ const TRIGGER_ID = '700000000000000001';
 const TARGET_ID = '800000000000000001';
 const GUILD_EMOJI_ID = '900000000000000001';
 const FOREIGN_EMOJI_ID = '900000000000000002';
+const OTHER_AUTHOR_ID = '600000000000000001';
 
 const EXPECTED_GATES = {
   send_poll: 'enablePolls',
@@ -23,6 +24,7 @@ const EXPECTED_GATES = {
   add_reaction: 'enableReactions',
   who_reacted: 'enableWhoReacted',
   read_poll: 'enableReadPoll',
+  end_poll: 'enableEndPoll',
 } as const satisfies Record<string, keyof ExtendedMessagesConfig>;
 
 const tools = extendedMessagesPlugin.tools ?? [];
@@ -109,6 +111,7 @@ interface Fakes {
   send: ReturnType<typeof vi.fn>;
   react: ReturnType<typeof vi.fn>;
   fetchMessage: ReturnType<typeof vi.fn>;
+  endPoll: ReturnType<typeof vi.fn>;
   client: Client;
 }
 
@@ -121,6 +124,8 @@ interface ContextOptions {
   poll?: ReturnType<typeof fakePoll>;
   guildEmoji?: boolean;
   messageId?: string;
+  /** Who the message a tool is pointed at was posted by. Defaults to this bot. */
+  authorId?: string;
 }
 
 function fakes(options: ContextOptions): Fakes {
@@ -128,10 +133,18 @@ function fakes(options: ContextOptions): Fakes {
   const react = vi.fn(async () => ({}));
   const fetchMessage = vi.fn(async () => ({
     id: TARGET_ID,
+    author: { id: options.authorId ?? BOT_ID },
     react,
     reactions: { cache: new Map((options.reactions ?? []).map((entry, index) => [String(index), entry])) },
     // `Message#poll` is `Poll | null`, and null is what nearly every message has.
     poll: options.poll ?? null,
+  }));
+  // `MessageManager#endPoll` hands back the message Discord just finalised, poll
+  // included — mirrored here by marking the same poll finalized rather than
+  // reshaping it, since that is exactly what the handler then reads.
+  const endPoll = vi.fn(async (messageId: string) => ({
+    id: messageId,
+    poll: options.poll ? { ...options.poll, resultsFinalized: true } : null,
   }));
   const permissions = new PermissionsBitField(options.permissions
     ?? ['SendMessages', 'EmbedLinks', 'AddReactions', 'ReadMessageHistory', 'ViewChannel']);
@@ -140,7 +153,7 @@ function fakes(options: ContextOptions): Fakes {
     isTextBased: () => true,
     permissionsFor: () => permissions,
     send,
-    messages: { fetch: fetchMessage },
+    messages: { fetch: fetchMessage, endPoll },
   };
   const guild = {
     id: GUILD_ID,
@@ -155,7 +168,7 @@ function fakes(options: ContextOptions): Fakes {
     user: { id: BOT_ID },
     guilds: { cache: new Map([[GUILD_ID, guild]]) },
   } as unknown as Client;
-  return { send, react, fetchMessage, client };
+  return { send, react, fetchMessage, endPoll, client };
 }
 
 function context(options: ContextOptions = {}): PluginToolContext & Fakes {
@@ -211,6 +224,8 @@ describe('Extended Messages declarations', () => {
     // the answer: neither may be an effect tool.
     expect(tool('who_reacted').effect).toBeUndefined();
     expect(tool('read_poll').effect).toBeUndefined();
+    // Ending a poll is finished the moment Discord accepts it, same as the three above.
+    expect(tool('end_poll').effect).toBe(true);
   });
 
   it('never offers a channel argument, so nothing can be posted outside the request', () => {
@@ -235,6 +250,7 @@ describe('Extended Messages config gates', () => {
       ['add_reaction', { messageId: TARGET_ID, emoji: '👍' }],
       ['who_reacted', { messageId: TARGET_ID }],
       ['read_poll', { messageId: TARGET_ID }],
+      ['end_poll', { messageId: TARGET_ID }],
     ];
     for (const [name, args] of cases) {
       const ctx = context({ config: { [EXPECTED_GATES[name]]: false } });
@@ -597,6 +613,97 @@ describe('read_poll', () => {
     expect(refusal(await tool('read_poll').handler({ messageId: TARGET_ID }, ctx)))
       .toMatch(/Read Message History/);
     expect(ctx.fetchMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('end_poll', () => {
+  it('ends a poll this bot posted, and reports its final standing', async () => {
+    const ctx = context({
+      poll: fakePoll({ answers: [{ text: 'pizza', votes: 11 }, { text: 'kebab', votes: 4 }] }),
+    });
+
+    const result = await tool('end_poll').handler({ messageId: TARGET_ID, why: 'served its purpose' }, ctx);
+    expect(result).toMatchObject({
+      ok: true,
+      ended: true,
+      messageId: TARGET_ID,
+      question: 'pizza or kebab',
+      // endPoll hands back the message Discord just finalised, so the standing
+      // reported is the settled one, not the tally from a moment before.
+      voteCountsFinal: true,
+      closed: true,
+    });
+    expect((result as Record<string, unknown>).answers).toEqual([
+      { id: 1, text: 'pizza', votes: 11 },
+      { id: 2, text: 'kebab', votes: 4 },
+    ]);
+    expect(ctx.endPoll).toHaveBeenCalledWith(TARGET_ID);
+  });
+
+  it('says plainly that a message carries no poll rather than throwing', async () => {
+    const ctx = context();
+    expect(refusal(await tool('end_poll').handler({ messageId: TARGET_ID }, ctx)))
+      .toMatch(/does not carry a poll/);
+    expect(ctx.endPoll).not.toHaveBeenCalled();
+  });
+
+  it('refuses a poll this bot did not post, without writing anything to Discord', async () => {
+    const ctx = context({
+      authorId: OTHER_AUTHOR_ID,
+      poll: fakePoll({ answers: [{ text: 'pizza', votes: 1 }] }),
+    });
+    expect(refusal(await tool('end_poll').handler({ messageId: TARGET_ID }, ctx)))
+      .toMatch(/did not post that poll/);
+    // The message was read to check who posted it, but never ended.
+    expect(ctx.fetchMessage).toHaveBeenCalled();
+    expect(ctx.endPoll).not.toHaveBeenCalled();
+  });
+
+  it('refuses a poll that has already ended', async () => {
+    const finalized = context({ poll: fakePoll({ answers: [{ votes: 3 }], finalized: true }) });
+    expect(refusal(await tool('end_poll').handler({ messageId: TARGET_ID }, finalized)))
+      .toMatch(/already ended/);
+    expect(finalized.endPoll).not.toHaveBeenCalled();
+  });
+
+  it('refuses a poll whose time has already run out, even before Discord finalises it', async () => {
+    const expired = context({
+      poll: fakePoll({ answers: [{ votes: 3 }], expiresTimestamp: Date.now() - 1_000 }),
+    });
+    expect(refusal(await tool('end_poll').handler({ messageId: TARGET_ID }, expired)))
+      .toMatch(/already ended/);
+    expect(expired.endPoll).not.toHaveBeenCalled();
+  });
+
+  it('refuses an invented message id before it goes anywhere near Discord', async () => {
+    const ctx = context({ poll: fakePoll({ answers: [{ votes: 1 }] }) });
+    expect(refusal(await tool('end_poll').handler({ messageId: '12' }, ctx)))
+      .toMatch(/messageId must be a Discord id/);
+    expect(ctx.fetchMessage).not.toHaveBeenCalled();
+  });
+
+  it('refuses without Read Message History, rather than letting Discord say no', async () => {
+    const ctx = context({
+      permissions: ['SendMessages', 'ViewChannel'],
+      poll: fakePoll({ answers: [{ votes: 1 }] }),
+    });
+    expect(refusal(await tool('end_poll').handler({ messageId: TARGET_ID }, ctx)))
+      .toMatch(/Read Message History/);
+    expect(ctx.fetchMessage).not.toHaveBeenCalled();
+  });
+
+  it('counts toward the per-reply cap shared with the other acting tools', async () => {
+    const options: ContextOptions = {
+      config: { maxActionsPerReply: 1 },
+      poll: fakePoll({ answers: [{ votes: 1 }] }),
+    };
+    expect(await tool('end_poll').handler({ messageId: TARGET_ID }, context(options)))
+      .toMatchObject({ ok: true });
+
+    const second = context(options);
+    expect(refusal(await tool('end_poll').handler({ messageId: TARGET_ID }, second)))
+      .toMatch(/is the limit/);
+    expect(second.fetchMessage).not.toHaveBeenCalled();
   });
 });
 

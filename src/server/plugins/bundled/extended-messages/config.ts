@@ -10,6 +10,7 @@ export interface ExtendedMessagesConfig {
   enableReactions: boolean;
   enableWhoReacted: boolean;
   enableReadPoll: boolean;
+  enableEndPoll: boolean;
   /** The reaction list attached to the messages in every reply prompt. */
   enableReactionSummary: boolean;
   /** The state of a poll attached to the message carrying it, in every reply prompt. */
@@ -35,7 +36,7 @@ export interface ExtendedMessagesConfig {
 
 /** The switches a tool can be gated on, one per tool. */
 export type ExtendedMessagesFeature =
-  'enablePolls' | 'enableEmbeds' | 'enableReactions' | 'enableWhoReacted' | 'enableReadPoll';
+  'enablePolls' | 'enableEmbeds' | 'enableReactions' | 'enableWhoReacted' | 'enableReadPoll' | 'enableEndPoll';
 
 type NumericKey =
   | 'reactionSummaryMessages'
@@ -59,6 +60,11 @@ export const DEFAULT_CONFIG: ExtendedMessagesConfig = {
   // only what the channel already shows everybody. The cost is in the voters,
   // which have their own switch and their own two caps.
   enableReadPoll: true,
+  // Ending a poll is the one irreversible thing in this file — nobody can vote
+  // again and nobody can reopen it — but Discord already confines it to a poll
+  // this bot posted, so the only risk left is the bot acting on its own say-so.
+  // On by default like the rest; an operator who wants it off has one switch.
+  enableEndPoll: true,
   enableReactionSummary: true,
   enablePollSummary: true,
   // Discord's own per-call maximum is 100. Forty is the recent conversation,
@@ -93,6 +99,7 @@ export function withDefaults(config: Partial<ExtendedMessagesConfig>): ExtendedM
     enableReactions: boolean('enableReactions'),
     enableWhoReacted: boolean('enableWhoReacted'),
     enableReadPoll: boolean('enableReadPoll'),
+    enableEndPoll: boolean('enableEndPoll'),
     enableReactionSummary: boolean('enableReactionSummary'),
     enablePollSummary: boolean('enablePollSummary'),
     // Zero is meaningful: it switches the extra fetch off without switching the
