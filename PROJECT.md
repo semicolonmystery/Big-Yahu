@@ -903,11 +903,21 @@ network, because it is the operator's own and no model can change it. OpenRouter
 option here: its web search only exists inside a chat completion, and `chat()` has no
 pass-through for the `plugins` body field.
 
-DuckDuckGo is the floor rather than a real search: it has no public API over its web index,
-and its instant-answer endpoint answers an entity query and returns nothing at all for most
-others. It sits last and exists so the plugin does something before a key is configured —
-anyone who wants search to actually work wants a Brave key, which is free for 2,000 queries
-a month.
+There is no keyless provider, and the attempt to have one is worth recording. DuckDuckGo
+shipped first as the floor, on the assumption that its public API searched the web. It does
+not: `api.duckduckgo.com` is the Instant Answer API, a fact box over curated sources, and a
+direct probe settles it — "Linus Torvalds" comes back with a real abstract while `typescript
+5.9 release notes` returns every field empty and `Results: []`. There is no public API over
+DuckDuckGo's web index at all, and the scrapeable endpoints answer a bot with a challenge
+page. So it was removed rather than left in: a provider that answers a handful of entity
+queries and nothing else made an unconfigured plugin look like a broken one.
+
+What replaced it is honesty about the two different states. A chain where nothing is
+configured says so and names the fix — a Brave key, free for 2,000 queries a month, or a
+SearXNG instance URL — and that message is deliberately distinguishable from the one a
+chain gives when it really did run and found nothing. The `instructions` carry the same
+split, so a model facing an unconfigured search says plainly that it could not look
+anything up rather than filling the gap from its own training.
 
 `fetch_page` is https only, refuses credentials in the URL and any port but 443, resolves
 the host and refuses loopback, private, CGNAT, link-local, unique-local, multicast and
@@ -1437,7 +1447,7 @@ does not queue or invoke AI.
 | Themes | IMPL | system, light and dark from the sidebar, `next-themes` against the `.dark` variant the stylesheet already had; sonner's own `useTheme` starts working as a side effect |
 | Controllers by name | IMPL | picked from the guild roster rather than typed as a snowflake; `label` dropped, and the name is resolved by the server rather than matched against a roster in the browser |
 | `read_audit_log` | IMPL | Discord Admin gains a controller-gated read of the audit log with a configurable look-back, answering in Discord only; executor and target come back as mentions |
-| Internet plugin | IMPL | bundled: `web_search` over an operator-ordered chain of Brave, Tavily, Exa, SearXNG and DuckDuckGo, and `fetch_page` behind a DNS-resolving SSRF guard re-run at every redirect hop, with its own `page_extract` call for a long page; everything returned is quoted untrusted material |
+| Internet plugin | IMPL | bundled: `web_search` over an operator-ordered chain of Brave, Tavily, Exa and SearXNG, and `fetch_page` behind a DNS-resolving SSRF guard re-run at every redirect hop, with its own `page_extract` call for a long page; everything returned is quoted untrusted material, and a chain with nothing configured says so rather than reading as a failed search |
 | Extended Messages plugin | IMPL | bundled: native Discord polls, embeds, `add_reaction`, `who_reacted` and `read_poll`, each behind its own switch and capped per reply; reactions and poll standings on the recent messages both ride in the material, read from one channel fetch rather than any gateway event |
 | A refused plugin call is noticed | IMPL | the reply loop's rejection check covers `ok: false`, the shape a plugin reaches for first; without it a refusal read as a success and an `effect` tool let the model announce what had just been refused |
 | Pinning messages | IMPL | Discord Admin gains `pin_message`, `unpin_message` and `read_pins`, gated and confirmed exactly like its other mutations; the channel's most recent pins ride in every reply's material, capped by `visiblePinnedMessages` |

@@ -2,7 +2,7 @@
  * Every search provider this plugin knows how to drive. The operator orders
  * them; the chain walks that order and takes the first one that answers.
  */
-export const PROVIDER_IDS = ['brave', 'tavily', 'exa', 'searxng', 'duckduckgo'] as const;
+export const PROVIDER_IDS = ['brave', 'tavily', 'exa', 'searxng'] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 export interface InternetConfig {
@@ -39,12 +39,11 @@ export interface InternetConfig {
 export const DEFAULT_CONFIG: InternetConfig = {
   enableSearch: true,
   enableFetch: true,
-  // Keyed providers first: each is skipped in silence until its key exists, so
-  // this order costs nothing while they are unconfigured. DuckDuckGo sits last
-  // because it is the one that needs no key — it is what makes the plugin do
-  // something the moment it is switched on, not what should answer first once
-  // an operator has paid for a real index.
-  providerOrder: ['brave', 'tavily', 'exa', 'searxng', 'duckduckgo'],
+  // Keyed providers, each skipped in silence until its key exists. None of
+  // these need no key, so a fresh install with nothing filled in has nothing
+  // configured at all — web_search says so plainly rather than pretending it
+  // searched.
+  providerOrder: ['brave', 'tavily', 'exa', 'searxng'],
   maxResults: 6,
   searchTimeoutMs: 8_000,
   // A megabyte of HTML reduces to far more text than any reply needs, and it is

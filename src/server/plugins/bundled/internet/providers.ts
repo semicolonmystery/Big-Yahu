@@ -2,7 +2,7 @@ import { readBoundedBody } from '../../../bot/boundedDownload';
 import type { InternetConfig, ProviderId } from './config';
 
 /**
- * Search, behind one interface, with five implementations and an order the
+ * Search, behind one interface, with four implementations and an order the
  * operator sets.
  *
  * The point of the chain is that the bot keeps working as the operator's setup
@@ -13,7 +13,12 @@ import type { InternetConfig, ProviderId } from './config';
  * tool say so — and then it says which ones it tried and what each did, because
  * "search failed" leaves an operator with nowhere to look.
  *
- * Every response is parsed defensively. These are five external APIs that can
+ * Every provider here needs a key or an instance URL, so a fresh install with
+ * none of them filled in has nothing configured at all. That is a setup
+ * problem, not a failed search, and the chain reports it as one rather than
+ * naming providers that were never going to run.
+ *
+ * Every response is parsed defensively. These are four external APIs that can
  * each rename a field in a release nobody told us about; a missing `description`
  * should cost a snippet, not the search.
  */
@@ -78,7 +83,7 @@ function asHttpUrl(value: unknown): string | null {
 }
 
 /**
- * Dates come back in every shape these five APIs can think of: ISO, RFC 1123,
+ * Dates come back in every shape these four APIs can think of: ISO, RFC 1123,
  * a bare year, and Brave's "3 days ago". An ISO day is produced where the string
  * parses as a date and the original is kept where it does not, because "3 days
  * ago" is still worth more to a reader than nothing.
@@ -338,77 +343,7 @@ const searxng: SearchProvider = {
   },
 };
 
-// ---------------------------------------------------------------------------
-// DuckDuckGo
-//
-// Be clear about what this is, because the name promises more than the endpoint
-// delivers. DuckDuckGo publishes no API over its web index. What it publishes is
-// the Instant Answer API at api.duckduckgo.com — the zero-click box above the
-// results, built from curated sources such as Wikipedia. For an entity ("python
-// programming language") it returns a solid abstract with a link. For an
-// ordinary query ("typescript release notes") it returns an object with every
-// field empty, and this provider then reports no results and the chain moves on.
-//
-// The html.duckduckgo.com and lite.duckduckgo.com endpoints do carry real web
-// results, and scraping them is deliberately not done here: from a server they
-// answer with an anti-bot challenge rather than results, so the code would be
-// both against the spirit of their terms and unreliable in exactly the way a
-// fallback must not be.
-//
-// So this is the floor, not the plan: it needs no key, which means the plugin
-// does something the moment it is switched on, and it is last in the default
-// order because any configured provider is better.
-// ---------------------------------------------------------------------------
-const duckduckgo: SearchProvider = {
-  id: 'duckduckgo',
-  label: 'DuckDuckGo Instant Answer',
-  requires: 'nothing — it needs no key',
-  configured: () => true,
-
-  async search(request, deps) {
-    const url = new URL('https://api.duckduckgo.com/');
-    url.searchParams.set('q', withSiteOperator(request.query, request.site));
-    url.searchParams.set('format', 'json');
-    url.searchParams.set('no_html', '1');
-    url.searchParams.set('no_redirect', '1');
-    url.searchParams.set('skip_disambig', '1');
-    // Their documented courtesy: identify the caller.
-    url.searchParams.set('t', 'big-yahu');
-
-    const body = asRecord(await requestJson({
-      url,
-      label: 'DuckDuckGo',
-      timeoutMs: deps.config.searchTimeoutMs,
-    }));
-
-    const hits: SearchHit[] = [];
-    const push = (entry: SearchHit | null): void => { if (entry) hits.push(entry); };
-
-    push(hit(body.Heading, body.AbstractURL, body.AbstractText));
-    push(hit(body.Heading, body.DefinitionURL, body.Definition));
-    for (const entry of asArray(body.Results)) {
-      const result = asRecord(entry);
-      push(hit(result.Text, result.FirstURL, result.Text));
-    }
-    // RelatedTopics is either a flat list of topics or a list of named groups
-    // each holding its own Topics array, depending on the query.
-    for (const entry of asArray(body.RelatedTopics)) {
-      const topic = asRecord(entry);
-      const nested = asArray(topic.Topics);
-      if (nested.length > 0) {
-        for (const inner of nested) {
-          const child = asRecord(inner);
-          push(hit(child.Text, child.FirstURL, child.Text));
-        }
-        continue;
-      }
-      push(hit(topic.Text, topic.FirstURL, topic.Text));
-    }
-    return hits;
-  },
-};
-
-const PROVIDERS: Record<ProviderId, SearchProvider> = { brave, tavily, exa, searxng, duckduckgo };
+const PROVIDERS: Record<ProviderId, SearchProvider> = { brave, tavily, exa, searxng };
 
 export function providerLabel(id: ProviderId): string {
   return PROVIDERS[id].label;
@@ -424,6 +359,11 @@ export interface ChainResult {
   /** Which provider answered, or null when none did. */
   provider: ProviderId | null;
   attempts: ProviderAttempt[];
+  /**
+   * False when not one provider in the order had credentials to even try —
+   * a setup problem, distinct from a chain that ran and came up empty.
+   */
+  anyConfigured: boolean;
 }
 
 function normaliseForDedupe(url: string): string {
@@ -459,6 +399,7 @@ function tidy(hits: SearchHit[], request: SearchRequest): SearchHit[] {
 /** Walks the operator's order and returns the first real answer, with a record of what it took. */
 export async function searchWithChain(request: SearchRequest, deps: ProviderDeps): Promise<ChainResult> {
   const attempts: ProviderAttempt[] = [];
+  let anyConfigured = false;
 
   for (const id of deps.config.providerOrder) {
     const provider = PROVIDERS[id];
@@ -468,6 +409,7 @@ export async function searchWithChain(request: SearchRequest, deps: ProviderDeps
       attempts.push({ provider: id, outcome: `not set up (needs ${provider.requires})` });
       continue;
     }
+    anyConfigured = true;
     try {
       const hits = tidy(await provider.search(request, deps), request);
       if (hits.length === 0) {
@@ -475,7 +417,7 @@ export async function searchWithChain(request: SearchRequest, deps: ProviderDeps
         continue;
       }
       attempts.push({ provider: id, outcome: `answered with ${hits.length} result(s)` });
-      return { hits, provider: id, attempts };
+      return { hits, provider: id, attempts, anyConfigured };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'failed';
       // The message is built from status codes and fixed strings, never from a
@@ -485,5 +427,5 @@ export async function searchWithChain(request: SearchRequest, deps: ProviderDeps
     }
   }
 
-  return { hits: [], provider: null, attempts };
+  return { hits: [], provider: null, attempts, anyConfigured };
 }

@@ -458,7 +458,6 @@ describe('the provider chain', () => {
   const BRAVE = 'https://api.search.brave.com/res/v1/web/search';
   const TAVILY = 'https://api.tavily.com/search';
   const EXA = 'https://api.exa.ai/search';
-  const DDG = 'https://api.duckduckgo.com/';
 
   it('skips the provider with no key, falls past the one that fails, and takes the third', async () => {
     const stub = routes([
@@ -553,36 +552,14 @@ describe('the provider chain', () => {
     expect(String((result.quotedResults as Array<Record<string, unknown>>)[0].quotedSnippet)).toContain('from searxng');
   });
 
-  it('takes what DuckDuckGo\'s instant answers do give, and nothing when they give nothing', async () => {
-    routes([[DDG, () => json({
-      Heading: 'Python',
-      AbstractText: 'A high-level programming language.',
-      AbstractURL: 'https://en.wikipedia.org/wiki/Python_(programming_language)',
-      Results: [{ Text: 'python.org', FirstURL: 'https://www.python.org/' }],
-      RelatedTopics: [{ Name: 'Software', Topics: [{ Text: 'CPython', FirstURL: 'https://github.com/python/cpython' }] }],
-    })]]);
-    const answered = await search({ query: 'python programming language' }, {
-      config: { providerOrder: ['duckduckgo'], maxResults: 5 },
-    });
-    expect(answered.answeredBy).toBe('DuckDuckGo Instant Answer');
-    expect((answered.quotedResults as unknown[]).length).toBe(3);
-
-    // What it does for most real queries: an object with every field empty.
-    routes([[DDG, () => json({ AbstractText: '', Results: [], RelatedTopics: [] })]]);
-    const empty = await search({ query: 'typescript release notes' }, {
-      config: { providerOrder: ['duckduckgo'] },
-    });
-    expect(empty.error).toContain('DuckDuckGo Instant Answer (answered with nothing)');
-  });
-
   it('says what it tried, and what each one did, once the order is exhausted', async () => {
     const stub = routes([
       [TAVILY, () => json({ error: 'quota' }, 429)],
-      [DDG, () => json({ Results: [], RelatedTopics: [] })],
+      [EXA, () => json({ results: [] })],
     ]);
     const result = await search({ query: 'anything' }, {
-      config: { providerOrder: ['brave', 'tavily', 'searxng', 'exa', 'duckduckgo'] },
-      env: { TAVILY_API_KEY: 'tvly-secret' },
+      config: { providerOrder: ['brave', 'tavily', 'searxng', 'exa'] },
+      env: { TAVILY_API_KEY: 'tvly-secret', EXA_API_KEY: 'exa-secret' },
     });
 
     const error = String(result.error);
@@ -590,26 +567,46 @@ describe('the provider chain', () => {
     expect(error).toContain('Brave Search (not set up (needs BRAVE_API_KEY))');
     expect(error).toContain('Tavily (failed: Tavily answered HTTP 429 — rate limited)');
     expect(error).toContain('SearXNG (not set up (needs SearXNG instance URL))');
-    expect(error).toContain('Exa (not set up (needs EXA_API_KEY))');
-    expect(error).toContain('DuckDuckGo Instant Answer (answered with nothing)');
+    expect(error).toContain('Exa (answered with nothing)');
     expect(error).not.toContain('tvly-secret');
+    expect(error).not.toContain('exa-secret');
     expect(result.searchedFor).toBe('anything');
     // Only the two that were actually set up were ever called.
     expect(stub).toHaveBeenCalledTimes(2);
   });
 
+  it('answers plainly that nothing is configured, rather than naming providers that were never going to run', async () => {
+    const stub = routes([]);
+    const result = await search({ query: 'anything' }, {
+      config: { providerOrder: ['brave', 'tavily', 'searxng', 'exa'] },
+    });
+
+    const error = String(result.error);
+    // Distinguishable from a chain that ran and came up empty: it never says
+    // "No search provider answered" or names what each provider did, and it
+    // tells the operator what to do instead.
+    expect(error).not.toContain('No search provider answered');
+    expect(error).not.toContain('answered with nothing');
+    expect(error).toContain('No search provider is configured');
+    expect(error).toContain('BRAVE_API_KEY');
+    expect(error).toContain('2,000 queries a month');
+    expect(error).toContain('SearXNG');
+    expect(result.searchedFor).toBe('anything');
+    // Nothing was configured, so no provider was ever actually called.
+    expect(stub).not.toHaveBeenCalled();
+  });
+
   it('keeps a provider that answers with nonsense from taking the whole search down', async () => {
     const stub = routes([
       [TAVILY, () => new Response('<html>not json</html>', { status: 200, headers: { 'content-type': 'text/html' } })],
-      [EXA, () => json({ results: 'not an array' })],
-      [DDG, () => json({ AbstractText: 'something', AbstractURL: 'https://example.org/a', Heading: 'A' })],
+      [EXA, () => json({ results: [{ title: 'E', url: 'https://example.org/e', summary: 'from exa' }] })],
     ]);
     const result = await search({ query: 'anything' }, {
-      config: { providerOrder: ['tavily', 'exa', 'duckduckgo'] },
+      config: { providerOrder: ['tavily', 'exa'] },
       env: { TAVILY_API_KEY: 'k', EXA_API_KEY: 'k' },
     });
-    expect(result.answeredBy).toBe('DuckDuckGo Instant Answer');
-    expect(stub).toHaveBeenCalledTimes(3);
+    expect(result.answeredBy).toBe('Exa');
+    expect(stub).toHaveBeenCalledTimes(2);
   });
 
   it('refuses a query it cannot use and a site filter that is not a host', async () => {
@@ -638,18 +635,18 @@ describe('the instructions tell the model the rule before any tool is called', (
 
   it('names the providers that are actually set up, and never their keys', () => {
     const configured = instructionsFor({
-      config: { providerOrder: ['brave', 'exa', 'duckduckgo'] },
+      config: { providerOrder: ['brave', 'exa'] },
       env: { BRAVE_API_KEY: 'brave-secret' },
     });
     expect(configured).toContain('Brave Search');
     expect(configured).not.toContain('Exa');
     expect(configured).not.toContain('brave-secret');
 
-    // A provider the operator left out is appended rather than disabled, so
-    // DuckDuckGo is always reachable — and a fresh install with nothing else set
-    // up is told plainly that its searching is barely searching.
+    // Every provider needs a key or an instance URL, so a fresh install with
+    // none of them filled in is told plainly that search cannot work yet,
+    // rather than being left to interpret an empty result as nothing found.
     const fresh = instructionsFor({ config: { providerOrder: ['brave'] } });
-    expect(fresh).toContain('No real search index is set up');
+    expect(fresh).toContain('No search provider is configured yet');
     expect(fresh).toContain('never fill the gap yourself');
 
     const off = instructionsFor({ config: { enableSearch: false, enableFetch: false } });

@@ -56,13 +56,24 @@ export const searchTool: PluginTool = {
     );
 
     if (!result.provider) {
+      // Two different problems read the same if they are not told apart: nobody
+      // having set anything up is a setup problem, not a search that came back
+      // empty, and the operator needs to be pointed at what to do rather than a
+      // list of providers that were never going to run.
+      if (!result.anyConfigured) {
+        return {
+          error:
+            'No search provider is configured, so nothing was searched. Set one up to enable web_search: a '
+            + 'Brave Search API key is free for 2,000 queries a month (BRAVE_API_KEY), or point the plugin at '
+            + 'your own SearXNG instance if you run one.',
+          searchedFor: query,
+        };
+      }
       // Honest about what was tried, because "search failed" tells an operator
       // nothing and tells the model nothing it can say to the person waiting.
       const tried = result.attempts.map((attempt) => `${providerLabel(attempt.provider)} (${attempt.outcome})`);
       return {
-        error: tried.length > 0
-          ? `No search provider answered. Tried, in order: ${tried.join('; ')}.`
-          : 'No search provider is configured at all; the operator has emptied the provider order.',
+        error: `No search provider answered. Tried, in order: ${tried.join('; ')}.`,
         searchedFor: query,
       };
     }
